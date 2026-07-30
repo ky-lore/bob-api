@@ -62,11 +62,22 @@ def parse_heartbeat_rows(raw_rows: list[list[str]]) -> list[HeartbeatRow]:
                 return i
         return None
 
+    def col_all(*substrings: str) -> int | None:
+        for i, h in enumerate(header):
+            if all(s in h for s in substrings):
+                return i
+        return None
+
     name_i = col("account", "client")
     enabled_i = col("enabled campaign")
     am_build_i = col("am-build", "am build")
     legacy_i = col("legacy")
-    lsa_i = col("lsa")
+    # Bare "lsa" would match "Enabled LSA" (a yes/no flag) ahead of the real
+    # dollar columns "Spend yesterday/today (LSA)" — confirmed against the real
+    # sheet header via GET /admin/heartbeat/headers. That bug made lsa_spend
+    # read as 0 for every account, misclassifying LSA-only-live clients as
+    # legacy-only on the first real run.
+    lsa_i = col_all("lsa", "yesterday") or col_all("lsa", "today") or col("lsa")
     checked_i = col("checked at")
 
     rows = []

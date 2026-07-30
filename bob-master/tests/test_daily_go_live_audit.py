@@ -57,6 +57,28 @@ def test_parse_heartbeat_rows_matches_by_header_name():
     assert rows[0].am_build_spend == 150.0
 
 
+def test_parse_heartbeat_rows_reads_real_lsa_spend_column_not_the_enabled_flag():
+    # Real header pulled from the live sheet via GET /admin/heartbeat/headers.
+    # "Enabled LSA" is a yes/no flag; the real dollar figure is "Spend
+    # yesterday (LSA)". Grabbing the wrong one silently zeroed lsa_spend for
+    # every account and misclassified LSA-only-live clients as legacy-only.
+    header = [
+        "Checked at", "Account name", "CID", "Enabled campaigns", "Enabled LSA",
+        "Spend yesterday (ads)", "Spend yesterday (LSA)", "Spend today (ads)",
+        "Spend today (LSA)", "AM-BUILD spend yest", "Legacy spend yest", "Status", "Flag",
+    ]
+    raw = [
+        header,
+        ["2026-07-30 14:26:00", "Acme Co", "123", "3", "TRUE", "50", "75.50", "10", "20", "0", "40", "", ""],
+    ]
+    rows = parse_heartbeat_rows(raw)
+    assert len(rows) == 1
+    assert rows[0].lsa_spend == 75.50
+    assert rows[0].am_build_spend == 0.0
+    assert rows[0].legacy_spend == 40.0
+    assert is_live(rows[0]) is True  # live via LSA spend, despite legacy spend also being present
+
+
 def test_package_clock_mktg_flags_at_day_14_and_21():
     assert evaluate_package_clock("pkg-mktg", 10, is_live=False) is None
     assert "Day 14" in evaluate_package_clock("pkg-mktg", 14, is_live=False)
