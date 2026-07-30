@@ -76,3 +76,45 @@ def test_package_clock_free_promo_never_flags():
 def test_package_clock_unidentified_flags_for_tagging():
     result = evaluate_package_clock("unknown", 5, is_live=False)
     assert "unidentified" in result
+
+
+def test_parse_heartbeat_rows_skips_blank_account_name():
+    # Real sheet had subtotal/spacer rows with an empty account column, which
+    # produced garbled "stale for  (checked_at ...)" entries with no name.
+    raw = [
+        ["Account", "Enabled Campaigns", "AM-Build Spend", "Legacy Spend", "LSA Spend", "Checked At"],
+        ["", "0", "0", "0", "0", "2026-07-30T14:26:00"],
+        ["   ", "0", "0", "0", "0", "2026-07-30T14:26:00"],
+        ["Acme Co", "2", "150.00", "0", "0", "2026-07-30T14:26:00"],
+    ]
+    rows = parse_heartbeat_rows(raw)
+    assert len(rows) == 1
+    assert rows[0].account_name == "Acme Co"
+
+
+def test_is_stale_interprets_naive_timestamp_as_pacific_not_utc():
+    # The real bug: comparing a Pacific-time "Checked at" value directly against
+    # UTC made every fresh row look ~7-8h old and get flagged stale on the first
+    # live run. A timestamp genuinely 1 hour old in Pacific time must not be stale.
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from app.integrations.google_drive import GoogleDriveClient
+
+    now_pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
+    one_hour_ago_naive = (now_pacific - timedelta(hours=1)).replace(tzinfo=None)
+
+    assert GoogleDriveClient.is_stale(one_hour_ago_naive) is False
+
+
+def test_is_stale_still_flags_genuinely_old_or_missing_timestamps():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from app.integrations.google_drive import GoogleDriveClient
+
+    now_pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
+    six_hours_ago_naive = (now_pacific - timedelta(hours=6)).replace(tzinfo=None)
+
+    assert GoogleDriveClient.is_stale(six_hours_ago_naive) is True
+    assert GoogleDriveClient.is_stale(datetime.min) is True

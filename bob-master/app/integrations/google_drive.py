@@ -23,8 +23,9 @@ import base64
 import csv
 import io
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -35,6 +36,14 @@ _SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/spreadsheets.readonly",
 ]
+
+# The "Checked at" column in the heartbeat sheets is a naive timestamp (no
+# timezone marker) written by a script on the agency's own infrastructure
+# (Orange County HQ, per docs/PROJECT-BRIEF-FOR-NEW-DEV.md). Assumed Pacific
+# until confirmed otherwise — comparing it directly against UTC without this
+# conversion is what made every single row read as "stale" on the first real
+# run (a ~7-8h PDT/UTC gap reliably exceeds the 3h threshold).
+_SHEET_TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 
 class GoogleDriveClient:
@@ -73,5 +82,11 @@ class GoogleDriveClient:
     def is_stale(checked_at: datetime, *, max_age_hours: int = 3) -> bool:
         """FRESHNESS CHECK per SKILL.md: heartbeat sheets are refreshed hourly by
         separate scripts. If the sheet's own 'Checked at' timestamp is older than
-        this, say so in the digest instead of trusting the numbers."""
-        return datetime.utcnow() - checked_at > timedelta(hours=max_age_hours)
+        this, say so in the digest instead of trusting the numbers.
+
+        checked_at is naive — assumed to be _SHEET_TIMEZONE, not UTC. See that
+        constant's comment before changing this."""
+        if checked_at == datetime.min:
+            return True  # unparseable/missing timestamp — treat as stale, not fresh
+        checked_at_utc = checked_at.replace(tzinfo=_SHEET_TIMEZONE).astimezone(timezone.utc)
+        return datetime.now(timezone.utc) - checked_at_utc > timedelta(hours=max_age_hours)

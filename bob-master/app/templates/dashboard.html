@@ -28,9 +28,9 @@
   {% else %}
     <p>Run: {{ run.run_date }} — status: {{ run.status.value }}{% if run.notes %} — {{ run.notes }}{% endif %}</p>
 
-    {% for category, items in run.flags | groupby("category") %}
+    {% for title, items in sections %}
       <section>
-        <h2>{{ category.value.replace('_', ' ') }}</h2>
+        <h2>{{ title }}</h2>
         <ul>
           {% for f in items %}
             <li class="{{ 'unverified' if f.unverified else '' }}">

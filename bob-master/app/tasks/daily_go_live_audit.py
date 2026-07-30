@@ -74,6 +74,11 @@ def parse_heartbeat_rows(raw_rows: list[list[str]]) -> list[HeartbeatRow]:
         if not raw or name_i is None:
             continue
 
+        account_name = raw[name_i].strip() if name_i < len(raw) else ""
+        if not account_name:
+            # Blank/subtotal/spacer rows in the real sheet — not a real account.
+            continue
+
         def get_float(i: int | None) -> float:
             if i is None or i >= len(raw) or not raw[i]:
                 return 0.0
@@ -84,7 +89,7 @@ def parse_heartbeat_rows(raw_rows: list[list[str]]) -> list[HeartbeatRow]:
 
         rows.append(
             HeartbeatRow(
-                account_name=raw[name_i],
+                account_name=account_name,
                 enabled_campaigns=int(get_float(enabled_i)),
                 am_build_spend=get_float(am_build_i),
                 legacy_spend=get_float(legacy_i),
