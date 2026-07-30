@@ -1,18 +1,26 @@
 """
 Port of tasks/daily-go-live-audit/SKILL.md.
 
-What's fully implemented below (deterministic, spec'd precisely in the prompt):
+What's fully implemented below (deterministic, spec'd precisely in the prompt,
+or built against real sandboxed ClickUp data — see chat history):
   - heartbeat sheet pull, freshness check, CSV-export fallback
-  - the LIVE DEFINITION cross-check (AM-BUILD/LSA spend vs. legacy-only spend)
-  - package-clock rule evaluation, given a day count and package type
+  - the LIVE DEFINITION cross-check, now genuinely cross-platform (a client
+    live via Meta no longer gets flagged for a $0 legacy campaign on Google)
+  - package-clock rule evaluation, wired to real ClickUp card data via
+    app/tasks/matching.py (fuzzy name matching) and
+    app/tasks/clickup_correlation.py (package identification + day count)
   - ex-client filtering against the admin-editable list (replaces the hardcoded list)
   - digest assembly from persisted flags, and AuditRun/Flag persistence
 
 What's intentionally left as TODOs — these require judgment calls this port
 should not guess at (see docs/TASK-INVENTORY.md and the chat history this was
 built from for why):
-  - matching a heartbeat-sheet account name to a ClickUp card (fuzzy name
-    matching — SKILL.md itself calls out ambiguous near-duplicates by name)
+  - accounts with heartbeat/GHL data but NO matched ClickUp card are currently
+    silently skipped for clock evaluation, not flagged — could mean a real
+    "no card exists" gap or just a matching miss; needs real volume data
+    before deciding which
+  - GHL "Package Type" field lookup (package ID priority #2) — skipped, no
+    bridge from account name to GHL contact ID exists yet
   - the GHL Closed-Won -> new ClickUp card flow, including reading sales notes
     for the "over-promise" check
   - stage-aware checks that require correlating ClickUp card state with Slack
@@ -27,10 +35,13 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.integrations.clickup import ClickUpClient
 from app.integrations.ghl import GHLClient
 from app.integrations.google_drive import GoogleDriveClient
 from app.integrations.slack import SlackClient
 from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, ManagedClientEntry, ManagedListType, RunStatus
+from app.tasks.clickup_correlation import identify_package, resolve_day_count
+from app.tasks.matching import find_best_match
 
 # --- Package clock day thresholds, per SKILL.md PACKAGE CLOCKS ---
 MKTG_FLAG_DAYS = (14, 21)
@@ -246,6 +257,13 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     notes: list[str] = []
 
     # --- Step 1: heartbeat sheets, freshness + CSV fallback ---
+    # Collected across both sheets before any legacy-only flagging, so the
+    # LIVE DEFINITION cross-check is genuinely cross-platform (see module
+    # docstring) rather than judging each platform in isolation.
+    live_accounts: set[str] = set()
+    all_account_names: set[str] = set()
+    heartbeat_rows: list[tuple[str, HeartbeatRow]] = []  # (platform label, row)
+
     for label, file_id, tab in (
         ("Google Ads", settings.drive_google_ads_heartbeat_file_id, settings.drive_google_ads_heartbeat_tab),
         ("Meta", settings.drive_meta_heartbeat_file_id, settings.drive_meta_heartbeat_tab),
@@ -258,23 +276,92 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
         rows = [r for r in parse_heartbeat_rows(raw_rows) if r.account_name not in ex_clients]
         for row in rows:
+            all_account_names.add(row.account_name)
+            if is_live(row):
+                live_accounts.add(row.account_name)
+            heartbeat_rows.append((label, row))
             if row.checked_at != datetime.min and GoogleDriveClient.is_stale(row.checked_at):
                 notes.append(f"{label} heartbeat sheet stale for {row.account_name} (checked_at {row.checked_at})")
-            if legacy_only_spend_flag(row):
-                flags.append(
-                    Flag(
-                        run_id=run.id,
-                        category=FlagCategory.heartbeat_mismatch,
-                        severity=FlagSeverity.warning,
-                        client_name=row.account_name,
-                        message=f"{label}: legacy campaign burning client budget — confirm intent",
-                        created_at=datetime.utcnow(),
-                    )
+
+    for label, row in heartbeat_rows:
+        if legacy_only_spend_flag(row) and row.account_name not in live_accounts:
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.heartbeat_mismatch,
+                    severity=FlagSeverity.warning,
+                    client_name=row.account_name,
+                    message=f"{label}: legacy campaign burning client budget — confirm intent",
+                    created_at=datetime.utcnow(),
                 )
-        # TODO(port): match `rows` against ClickUp Go-Live board cards (fuzzy name
-        # matching — see module docstring) to run the board-vs-heartbeat cross-check
-        # (SKILL.md DO #2) and the per-card package-clock evaluation (DO #5) via
-        # evaluate_package_clock() above. Needs card day-count + package tag/GHL lookup.
+            )
+
+    # --- ClickUp board correlation + package-clock evaluation ---
+    try:
+        clickup = ClickUpClient()
+        board_data = clickup.get_list_tasks(settings.clickup_go_live_list_id, include_closed=True)
+        cards = [
+            {
+                "id": t.get("id"),
+                "name": t.get("name"),
+                "status": ((t.get("status") or {}).get("status") or "").lower(),
+                "tags": [tag.get("name") for tag in t.get("tags", [])],
+                "date_created": t.get("date_created"),
+            }
+            for t in board_data.get("tasks", [])
+        ]
+    except Exception as exc:
+        cards = []
+        notes.append(f"ClickUp Go-Live board pull failed: {exc}")
+
+    alias_map = get_alias_map(db)
+    _SKIP_STATUSES = {"ignore", "complete"}
+
+    for account_name in sorted(all_account_names):
+        match = find_best_match(account_name, cards, aliases=alias_map)
+
+        if match.confidence == "ambiguous":
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.action_needed,
+                    severity=FlagSeverity.warning,
+                    client_name=account_name,
+                    message=(
+                        f'Ambiguous ClickUp match — closest card is "{match.card_name}" '
+                        f"(similarity {match.score:.2f}); confirm or add an alias at /admin/watchlist"
+                    ),
+                    unverified=True,
+                    created_at=datetime.utcnow(),
+                )
+            )
+            continue
+
+        if match.confidence == "none":
+            # No card found at all — could be a real gap or a matching miss.
+            # Not flagged yet; see module docstring TODO.
+            continue
+
+        card = next((c for c in cards if c["id"] == match.card_id), None)
+        if not card or card["status"] in _SKIP_STATUSES:
+            continue
+
+        package = identify_package(card["tags"], card["name"])
+        days_elapsed = resolve_day_count(card["name"], card["date_created"]) if card["date_created"] else 0
+        clock_message = evaluate_package_clock(package, days_elapsed, is_live=account_name in live_accounts)
+        if clock_message:
+            escalated = package == "pkg-mktg" and days_elapsed >= MKTG_FLAG_DAYS[1]
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.clock_violation,
+                    severity=FlagSeverity.urgent if escalated else FlagSeverity.warning,
+                    client_name=account_name,
+                    message=clock_message,
+                    evidence_url=f"https://app.clickup.com/t/{card['id']}",
+                    created_at=datetime.utcnow(),
+                )
+            )
 
     # --- Step 3 (partial): GHL Closed Won sweep — data pull wired, card creation is not ---
     try:
