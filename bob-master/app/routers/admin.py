@@ -88,16 +88,14 @@ def heartbeat_headers() -> dict:
     }
 
 
-@router.get("/clickup/go-live-sample")
-def clickup_go_live_sample() -> dict:
-    """Debug-only: real Go-Live Pipeline board data (list 901417990784), so the
-    fuzzy name-matching, day-count bookkeeping, and stage-aware logic can be
-    designed against actual card shape (statuses, tags, custom fields) instead
-    of guessed at — same reasoning as the heartbeat-headers endpoint above,
-    applied to ClickUp."""
-    settings = get_settings()
+def _clickup_list_sample(list_id: str) -> dict:
+    """Shared by every clickup/*-sample debug endpoint below: real board data,
+    so fuzzy-matching/stage-aware logic gets designed against actual card
+    shape (statuses, tags, custom fields, description text) instead of
+    guessed at — same reasoning as the heartbeat-headers endpoint, applied
+    to each ClickUp list as it gets connected."""
     clickup = ClickUpClient()
-    data = clickup.get_list_tasks(settings.clickup_go_live_list_id, include_closed=True)
+    data = clickup.get_list_tasks(list_id, include_closed=True)
     tasks = data.get("tasks", [])
 
     cards = [
@@ -107,6 +105,8 @@ def clickup_go_live_sample() -> dict:
             "status": (t.get("status") or {}).get("status"),
             "tags": [tag.get("name") for tag in t.get("tags", [])],
             "date_created": t.get("date_created"),
+            "date_updated": t.get("date_updated"),
+            "description": t.get("description"),
             "custom_fields": [
                 {"name": cf.get("name"), "value": cf.get("value")}
                 for cf in t.get("custom_fields", [])
@@ -122,3 +122,39 @@ def clickup_go_live_sample() -> dict:
         "cards": cards,
         "raw_first_task": tasks[0] if tasks else None,
     }
+
+
+@router.get("/clickup/go-live-sample")
+def clickup_go_live_sample() -> dict:
+    return _clickup_list_sample(get_settings().clickup_go_live_list_id)
+
+
+@router.get("/clickup/web-build-sample")
+def clickup_web_build_sample() -> dict:
+    return _clickup_list_sample(get_settings().clickup_web_build_list_id)
+
+
+@router.get("/clickup/retention-sample")
+def clickup_retention_sample() -> dict:
+    return _clickup_list_sample(get_settings().clickup_retention_list_id)
+
+
+@router.get("/sheets/tv-board-feed")
+def tv_board_feed_sample() -> dict:
+    """Debug-only: the TV board feed sheet — config has had a file ID since
+    the first scaffold, but nothing has ever actually read it. Need to see
+    real tab names (especially the "Ignore" tab SKILL.md references) before
+    wiring it into ex-client filtering."""
+    settings = get_settings()
+    drive = GoogleDriveClient()
+    try:
+        tab_names = drive.list_tabs(settings.drive_tv_board_feed_file_id)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    sample = {}
+    for tab in tab_names:
+        rows = drive.read_sheet_values(settings.drive_tv_board_feed_file_id, tab)
+        sample[tab] = {"header": rows[0] if rows else [], "row_count": max(len(rows) - 1, 0)}
+
+    return {"tabs": tab_names, "sample": sample}

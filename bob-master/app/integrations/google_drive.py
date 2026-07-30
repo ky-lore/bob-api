@@ -56,6 +56,10 @@ class GoogleDriveClient:
         self._sheets = build("sheets", "v4", credentials=credentials)
         self._drive = build("drive", "v3", credentials=credentials)
 
+    def list_tabs(self, file_id: str) -> list[str]:
+        spreadsheet = self._sheets.spreadsheets().get(spreadsheetId=file_id).execute()
+        return [sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])]
+
     def read_sheet_values(self, file_id: str, tab_name: str) -> list[list[str]]:
         try:
             resp = (
