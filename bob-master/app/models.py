@@ -32,6 +32,12 @@ class FlagSeverity(str, enum.Enum):
 class ManagedListType(str, enum.Enum):
     watchlist = "watchlist"    # replaces the hardcoded named-client watch-list in SKILL.md
     ex_client = "ex_client"    # replaces the hardcoded ex-client exclusion list in SKILL.md
+    # Human-confirmed name pairs for real cross-system near-duplicates (e.g.
+    # "Roof City Inc - CC" on the heartbeat sheet vs "Roof City Professionals"
+    # on the ClickUp board) that no fuzzy-matching algorithm resolves on its
+    # own. client_name = canonical/heartbeat-side name, note = the ClickUp-side
+    # alias. See app/tasks/matching.py.
+    alias = "alias"
 
 
 class AuditRun(Base):

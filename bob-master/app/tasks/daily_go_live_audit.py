@@ -185,6 +185,16 @@ def get_active_client_names(db: Session, list_type: ManagedListType) -> set[str]
     return {r.client_name for r in rows}
 
 
+def get_alias_map(db: Session) -> dict[str, str]:
+    """Normalized alias -> canonical map for matching.find_best_match, sourced
+    from the human-maintained alias table (/admin/watchlist, list_type=alias).
+    client_name = canonical/heartbeat-side name, note = the ClickUp-side name."""
+    from app.tasks.matching import normalize
+
+    rows = db.query(ManagedClientEntry).filter_by(list_type=ManagedListType.alias, active=True).all()
+    return {normalize(r.note): normalize(r.client_name) for r in rows if r.note}
+
+
 def build_digest(flags: list[Flag]) -> str:
     """Assembles the six-section digest per SKILL.md DO #6. Caps section length
     loosely toward the ~40-line target — trim further once real flag volume is known."""

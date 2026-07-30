@@ -44,10 +44,11 @@
         <select name="list_type">
           <option value="watchlist">watchlist</option>
           <option value="ex_client">ex_client</option>
+          <option value="alias">alias (canonical name in "Client name", ClickUp-side name in "Note")</option>
         </select>
       </label>
       <label>Client name <input name="client_name" required></label>
-      <label>Note <textarea name="note" rows="2"></textarea></label>
+      <label>Note <textarea name="note" rows="2" placeholder="For alias entries: the other system's name for this client"></textarea></label>
       <label>Added by <input name="created_by" placeholder="your name"></label>
       <button type="submit">Add</button>
     </form>
