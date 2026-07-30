@@ -4,14 +4,22 @@ fallback in SKILL.md's TOOL QUIRK note: try the Sheets values.get read first,
 fall back to exporting the file as CSV via the Drive API if that comes back
 empty. Only report a sheet unreadable if both methods fail.
 
-Setup requirement, not yet done anywhere: the service account (GOOGLE_SERVICE_ACCOUNT_JSON)
+Setup requirement, not yet done anywhere: the service account (GOOGLE_SERVICE_ACCOUNT_JSON_B64)
 must be individually shared (as Viewer) on each of the heartbeat/TV-feed sheets —
 service accounts don't inherit the human bob@advancedmarketers.co's existing access.
 
-GOOGLE_SERVICE_ACCOUNT_JSON holds the *raw JSON key content*, not a file path — a
-Railway deploy has no pre-populated local file to point at, only env vars. Paste
-the whole downloaded service-account JSON in as one env var value.
+GOOGLE_SERVICE_ACCOUNT_JSON_B64 holds the service-account JSON key, base64-encoded
+into a single line — not a file path (no pre-populated local file in a Railway
+deploy) and not raw JSON (Railway's variable editor has been observed truncating/
+mangling a pasted multi-line JSON blob with embedded quotes and \n escapes).
+Base64 sidesteps that: it's plain alphanumeric text, nothing for a web form's
+input widget to misinterpret.
+
+Generate it locally with:
+    base64 -i service-account.json | tr -d '\n' | pbcopy   # macOS, copies to clipboard
+    base64 -w0 service-account.json                         # Linux
 """
+import base64
 import csv
 import io
 import json
@@ -32,7 +40,7 @@ _SCOPES = [
 class GoogleDriveClient:
     def __init__(self) -> None:
         settings = get_settings()
-        info = json.loads(settings.google_service_account_json)
+        info = json.loads(base64.b64decode(settings.google_service_account_json_b64))
         credentials = service_account.Credentials.from_service_account_info(
             info, scopes=_SCOPES
         )

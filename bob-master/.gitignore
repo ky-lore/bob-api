@@ -3,6 +3,7 @@
 *credentials*
 *.env
 .env.*
+!.env.example
 
 # Call recordings / transcripts — large, sensitive, not needed to rebuild logic
 *transcripts*/
