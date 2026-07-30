@@ -11,7 +11,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db import get_db
+from app.integrations.google_drive import GoogleDriveClient
 from app.integrations.slack import SlackClient
 from app.models import ManagedClientEntry, ManagedListType
 
@@ -64,3 +66,22 @@ def join_public_channels() -> dict:
     already in. Requires the channels:join bot scope. Public channels only —
     private channels still need a human invite, see app/integrations/slack.py."""
     return SlackClient().join_all_public_channels()
+
+
+@router.get("/heartbeat/headers")
+def heartbeat_headers() -> dict:
+    """Debug-only: dumps row 1 (the header row) of both heartbeat sheets, so
+    parse_heartbeat_rows()'s column-matching can be checked against the real
+    sheet without anyone having to go dig through the spreadsheet by hand."""
+    settings = get_settings()
+    drive = GoogleDriveClient()
+    google_ads_rows = drive.read_sheet_values(
+        settings.drive_google_ads_heartbeat_file_id, settings.drive_google_ads_heartbeat_tab
+    )
+    meta_rows = drive.read_sheet_values(
+        settings.drive_meta_heartbeat_file_id, settings.drive_meta_heartbeat_tab
+    )
+    return {
+        "google_ads_header": google_ads_rows[0] if google_ads_rows else [],
+        "meta_header": meta_rows[0] if meta_rows else [],
+    }
