@@ -73,7 +73,19 @@ def test_find_best_match_returns_none_for_unrelated_card():
 
 
 def test_find_best_match_flags_close_but_unconfirmed_as_ambiguous():
-    cards = [{"id": "1", "name": "[Live]Andys Pool Inc"}]  # missing apostrophe, singular "Pool"
-    result = find_best_match("Andy's Pools Inc", cards)
+    # Real false-positive from the first live run: different companies sharing
+    # only the generic word "Electric", scoring 0.83 — inside the ambiguous
+    # band, correctly NOT auto-applied.
+    cards = [{"id": "1", "name": "[Live]Reel Electric"}]
+    result = find_best_match("LG Electric", cards)
     assert result.confidence == "ambiguous"
+    assert result.card_id == "1"
+
+
+def test_find_best_match_high_confidence_for_formatting_only_differences():
+    # Real high-scoring correct match from the first live run (0.98) —
+    # auto-applied, not flagged for confirmation.
+    cards = [{"id": "1", "name": "1) Onboarding · Roberts Garage Doors · Day 9"}]
+    result = find_best_match("Robert's Garage Doors", cards)
+    assert result.confidence == "high"
     assert result.card_id == "1"

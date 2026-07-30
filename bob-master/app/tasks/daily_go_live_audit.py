@@ -29,6 +29,7 @@ built from for why):
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -196,6 +197,17 @@ def get_active_client_names(db: Session, list_type: ManagedListType) -> set[str]
     return {r.client_name for r in rows}
 
 
+def _account_dedupe_key(name: str) -> str:
+    """Casefold + collapse whitespace only — light-touch dedup for the same
+    client appearing with slightly different spelling across the Google Ads
+    vs Meta heartbeat sheets (real example: "vera plumbing and drain" on one
+    sheet, "Vera Plumbing and Drain" on the other, processed as two separate
+    accounts and double-flagged). Deliberately lighter than matching.normalize()
+    — that also strips legal suffixes/punctuation for cross-system fuzzy
+    matching, which would risk over-merging genuinely different accounts here."""
+    return re.sub(r"\s+", " ", name.strip().casefold())
+
+
 def get_alias_map(db: Session) -> dict[str, str]:
     """Normalized alias -> canonical map for matching.find_best_match, sourced
     from the human-maintained alias table (/admin/watchlist, list_type=alias).
@@ -262,7 +274,8 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     # docstring) rather than judging each platform in isolation.
     live_accounts: set[str] = set()
     all_account_names: set[str] = set()
-    heartbeat_rows: list[tuple[str, HeartbeatRow]] = []  # (platform label, row)
+    canonical_names: dict[str, str] = {}  # dedupe key -> display name (first-seen spelling wins)
+    heartbeat_rows: list[tuple[str, HeartbeatRow, str]] = []  # (platform label, row, canonical account name)
 
     for label, file_id, tab in (
         ("Google Ads", settings.drive_google_ads_heartbeat_file_id, settings.drive_google_ads_heartbeat_tab),
@@ -276,21 +289,22 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
         rows = [r for r in parse_heartbeat_rows(raw_rows) if r.account_name not in ex_clients]
         for row in rows:
-            all_account_names.add(row.account_name)
+            canonical_name = canonical_names.setdefault(_account_dedupe_key(row.account_name), row.account_name)
+            all_account_names.add(canonical_name)
             if is_live(row):
-                live_accounts.add(row.account_name)
-            heartbeat_rows.append((label, row))
+                live_accounts.add(canonical_name)
+            heartbeat_rows.append((label, row, canonical_name))
             if row.checked_at != datetime.min and GoogleDriveClient.is_stale(row.checked_at):
                 notes.append(f"{label} heartbeat sheet stale for {row.account_name} (checked_at {row.checked_at})")
 
-    for label, row in heartbeat_rows:
-        if legacy_only_spend_flag(row) and row.account_name not in live_accounts:
+    for label, row, canonical_name in heartbeat_rows:
+        if legacy_only_spend_flag(row) and canonical_name not in live_accounts:
             flags.append(
                 Flag(
                     run_id=run.id,
                     category=FlagCategory.heartbeat_mismatch,
                     severity=FlagSeverity.warning,
-                    client_name=row.account_name,
+                    client_name=canonical_name,
                     message=f"{label}: legacy campaign burning client budget — confirm intent",
                     created_at=datetime.utcnow(),
                 )

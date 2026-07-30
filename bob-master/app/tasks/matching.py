@@ -66,8 +66,19 @@ def normalize(name: str) -> str:
 class MatchResult:
     card_id: str | None
     card_name: str | None
-    confidence: str  # "exact" | "alias" | "ambiguous" | "none"
+    confidence: str  # "exact" | "alias" | "high" | "ambiguous" | "none"
     score: float
+
+
+# Calibrated against the first real run's ambiguous-match output, not guessed:
+# every score >=0.85 in that batch was a correct match (formatting/casing
+# differences only); the 0.72-0.85 band had a real mix — genuine matches
+# (GG&N Plumbing Solutions Inc/GG&N Plumbing, 0.72) alongside false positives
+# from shared generic words (LG Electric/Reel Electric 0.83, Isramar
+# Construction/Amaral's Construction 0.83, Drain It/Drain Force Plumbing 0.81,
+# Abs/Axxel's Plumbing 0.79). One threshold can't serve both purposes.
+HIGH_CONFIDENCE_THRESHOLD = 0.85
+AMBIGUOUS_THRESHOLD = 0.72
 
 
 def find_best_match(
@@ -75,19 +86,22 @@ def find_best_match(
     cards: list[dict],  # each: {"id": str, "name": str}
     *,
     aliases: dict[str, str] | None = None,
-    ambiguous_threshold: float = 0.72,
+    high_confidence_threshold: float = HIGH_CONFIDENCE_THRESHOLD,
+    ambiguous_threshold: float = AMBIGUOUS_THRESHOLD,
 ) -> MatchResult:
     """aliases maps a normalized alias -> normalized canonical name (either
-    direction can be the target; checked both ways). Exact/alias matches are
-    trusted; anything else above the threshold is flagged ambiguous rather
-    than silently accepted, per SKILL.md's own "flag ambiguous mappings"
-    instruction — this is not a place to guess confidently."""
+    direction can be the target; checked both ways). Exact/alias/high-confidence
+    matches are trusted and used directly; the ambiguous band is flagged for a
+    human to confirm or alias rather than guessed at, per SKILL.md's own "flag
+    ambiguous mappings" instruction."""
     from difflib import SequenceMatcher
 
     aliases = aliases or {}
     target_norm = normalize(target_name)
 
-    best: MatchResult = MatchResult(card_id=None, card_name=None, confidence="none", score=0.0)
+    best_card_id: str | None = None
+    best_card_name: str | None = None
+    best_score = 0.0
 
     for card in cards:
         candidate_norm = normalize(extract_candidate_name(card["name"]))
@@ -101,9 +115,11 @@ def find_best_match(
             return MatchResult(card_id=card["id"], card_name=card["name"], confidence="alias", score=1.0)
 
         score = SequenceMatcher(None, target_norm, candidate_norm).ratio()
-        if score > best.score:
-            best = MatchResult(card_id=card["id"], card_name=card["name"], confidence="ambiguous", score=score)
+        if score > best_score:
+            best_score, best_card_id, best_card_name = score, card["id"], card["name"]
 
-    if best.score >= ambiguous_threshold:
-        return best
-    return MatchResult(card_id=None, card_name=None, confidence="none", score=best.score)
+    if best_score >= high_confidence_threshold:
+        return MatchResult(card_id=best_card_id, card_name=best_card_name, confidence="high", score=best_score)
+    if best_score >= ambiguous_threshold:
+        return MatchResult(card_id=best_card_id, card_name=best_card_name, confidence="ambiguous", score=best_score)
+    return MatchResult(card_id=None, card_name=None, confidence="none", score=best_score)
