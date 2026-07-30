@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
+from app.integrations.clickup import ClickUpClient
 from app.integrations.google_drive import GoogleDriveClient
 from app.integrations.slack import SlackClient
 from app.models import ManagedClientEntry, ManagedListType
@@ -84,4 +85,40 @@ def heartbeat_headers() -> dict:
     return {
         "google_ads_header": google_ads_rows[0] if google_ads_rows else [],
         "meta_header": meta_rows[0] if meta_rows else [],
+    }
+
+
+@router.get("/clickup/go-live-sample")
+def clickup_go_live_sample() -> dict:
+    """Debug-only: real Go-Live Pipeline board data (list 901417990784), so the
+    fuzzy name-matching, day-count bookkeeping, and stage-aware logic can be
+    designed against actual card shape (statuses, tags, custom fields) instead
+    of guessed at — same reasoning as the heartbeat-headers endpoint above,
+    applied to ClickUp."""
+    settings = get_settings()
+    clickup = ClickUpClient()
+    data = clickup.get_list_tasks(settings.clickup_go_live_list_id, include_closed=True)
+    tasks = data.get("tasks", [])
+
+    cards = [
+        {
+            "id": t.get("id"),
+            "name": t.get("name"),
+            "status": (t.get("status") or {}).get("status"),
+            "tags": [tag.get("name") for tag in t.get("tags", [])],
+            "date_created": t.get("date_created"),
+            "custom_fields": [
+                {"name": cf.get("name"), "value": cf.get("value")}
+                for cf in t.get("custom_fields", [])
+                if cf.get("value") not in (None, "", [])
+            ],
+        }
+        for t in tasks
+    ]
+
+    return {
+        "total_cards_this_page": len(tasks),
+        "last_page": data.get("last_page", True),
+        "cards": cards,
+        "raw_first_task": tasks[0] if tasks else None,
     }
