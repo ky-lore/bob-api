@@ -1,0 +1,276 @@
+<!DOCTYPE html><script type="application/json" id="cowork-artifact-meta">
+{
+  "name": "Ad Optimization Live",
+  "schemaVersion": 1,
+  "description": "Live ad optimization dashboard reading the GHL \"Lead Update Meta Report\" Google Sheet. Shows leads, wins, lost, win rate, sales cycle, lead quality by creative, leads by campaign and source. CPL/CPQL/ROAS placeholders pending ad-spend connection.",
+  "mcpTools": [
+    "mcp__f26892b7-519f-4c56-8864-4b0882bdf9f5__read_file_content"
+  ],
+  "mcpServerNames": [
+    "Google Drive"
+  ]
+}
+</script>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Advanced Marketers — Live Ad Optimization</title>
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f7f8fa; color: #1a1d23; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.5; padding: 20px; }
+h1 { font-size: 20px; font-weight: 600; margin: 0; }
+.muted { color: #6b7280; font-size: 13px; }
+.banner { background: #eef4ff; border: 1px solid #d3e0fb; color: #1e3a8a; font-size: 13px; padding: 10px 14px; border-radius: 10px; margin: 14px 0 8px; }
+.toggle { display:flex; align-items:center; gap:10px; font-size:13px; margin: 4px 0 18px; }
+.toggle button { appearance:none; cursor:pointer; border:1px solid #d3d7df; background:#fff; color:#374151; font-size:12.5px; font-weight:600; padding:7px 12px; border-radius:8px; }
+.toggle button.active { background:#1463ff; color:#fff; border-color:#1463ff; }
+.grid { display: grid; gap: 12px; }
+.kpis { grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); margin-bottom: 18px; }
+.card { background: #fff; border: 1px solid #e6e8ec; border-radius: 12px; padding: 14px 16px; }
+.kpi { background: #fff; border: 1px solid #e6e8ec; border-radius: 12px; padding: 12px 14px; }
+.kpi-label { font-size: 12px; color: #6b7280; margin-bottom: 5px; }
+.kpi-val { font-size: 22px; font-weight: 600; }
+.kpi.pending .kpi-val { color: #b0b6c0; font-size: 15px; }
+.pill { display:inline-block; font-size: 10px; padding: 1px 7px; border-radius: 999px; margin-left: 5px; background:#f1f2f4; color:#8a909a; vertical-align: middle; }
+.green { color: #15803d; } .red { color: #b91c1c; } .blue { color: #1d4ed8; } .amber { color: #b45309; }
+.section-title { font-size: 15px; font-weight: 600; margin: 22px 0 4px; }
+.section-sub { font-size: 12px; color:#6b7280; margin: 0 0 10px; }
+.tablewrap { overflow-x: auto; border: 1px solid #e6e8ec; border-radius: 12px; background:#fff; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; white-space: nowrap; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef0f3; }
+th { color: #6b7280; font-weight: 600; cursor: pointer; user-select: none; position: sticky; top: 0; background:#fff; }
+th.num, td.num { text-align: right; }
+tr:last-child td { border-bottom: none; }
+.adname { white-space: normal; min-width: 200px; font-weight: 500; }
+.chart-wrap { position: relative; height: 300px; }
+.err { background:#fef2f2; border:1px solid #fecaca; color:#991b1b; padding:12px 14px; border-radius:10px; }
+.foot { color:#9aa0aa; font-size:12px; margin-top:22px; }
+.flag { font-size: 11px; padding: 1px 7px; border-radius: 6px; }
+.flag-warn { background:#fef3e2; color:#b45309; }
+.flag-good { background:#e7f6ec; color:#15803d; }
+.flag-bad { background:#fdeaea; color:#b91c1c; }
+</style>
+</head>
+<body>
+<div style="display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+  <h1>Ad optimization — live</h1>
+  <span class="muted" id="updated"></span>
+</div>
+<div class="banner" id="banner">Loading…</div>
+<div class="toggle">
+  <span class="muted">View:</span>
+  <button id="btnCore" class="active" onclick="setView('core')">Non-event ads</button>
+  <button id="btnEvent" onclick="setView('event')">Event ads only</button>
+  <button id="btnAll" onclick="setView('all')">All ads</button>
+  <span class="muted" id="viewCount"></span>
+</div>
+
+<div id="content"></div>
+<div class="foot" id="foot"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
+<script>
+const FILE_ID = '17qrXY-1HKwj7A8elnJJX93amezXYbKY4jmuNIKIrzAY';
+const TOOL = 'mcp__f26892b7-519f-4c56-8864-4b0882bdf9f5__read_file_content';
+// Event = May 8th Event campaign + raw Lead-Acquisition ads (Houston is TikTok, not in this Meta sheet)
+const EVENT_RE = /May 8th|Lead - Acquisition|raw_ad/i;
+let chartRef = null, allAds = [], leadsAll = [], view = 'core', sortState = { key:'spend', dir:false };
+
+function splitRow(line){
+  let cells = line.split(/(?<!\\)\|/).map(c => c.trim().replace(/\\([|_#*])/g, '$1'));
+  if (cells.length && cells[0] === '') cells.shift();
+  if (cells.length && cells[cells.length-1] === '') cells.pop();
+  return cells;
+}
+function parseTables(md){
+  const lines = md.split('\n');
+  const tables = []; let cur = [];
+  for (const l of lines){
+    if (l.trim().startsWith('|')) cur.push(l);
+    else { if (cur.length) { tables.push(cur); cur = []; } }
+  }
+  if (cur.length) tables.push(cur);
+  return tables.map(tl => {
+    const rows = tl.filter(l => !/^\s*\|[\s:|-]+\|\s*$/.test(l) && !l.includes('---'));
+    if (!rows.length) return null;
+    const header = splitRow(rows[0]);
+    const data = rows.slice(1).map(r => { const c = splitRow(r); const o={}; header.forEach((h,i)=>o[h]=(c[i]||'').trim()); return o; });
+    return { header, data };
+  }).filter(Boolean);
+}
+function clean(v){ if(v==null) return ''; const s=String(v).trim(); return (s==='blank'||s==='-')?'':s; }
+function n(v){ const s=clean(v).replace(/[^0-9.\-]/g,''); const f=parseFloat(s); return isNaN(f)?0:f; }
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function money(v){ return '$'+Math.round(v).toLocaleString(); }
+function money2(v){ return '$'+v.toFixed(2); }
+
+function waitForCowork(ms){
+  return new Promise(resolve=>{
+    const t0=Date.now();
+    (function poll(){
+      if(window.cowork && typeof window.cowork.callMcpTool==='function') return resolve(true);
+      if(Date.now()-t0>ms) return resolve(false);
+      setTimeout(poll,150);
+    })();
+  });
+}
+
+async function load(){
+  const content = document.getElementById('content');
+  try {
+    const ready = await waitForCowork(8000);
+    if(!ready) throw new Error("Live-data bridge not available. Open this dashboard from the Artifacts panel (not a downloaded copy), then press Reload.");
+    const r = await window.cowork.callMcpTool(TOOL, { fileId: FILE_ID });
+    let payload = r.structuredContent ?? (r.content && r.content[0] ? JSON.parse(r.content[0].text) : null);
+    const md = payload && payload.fileContent;
+    if (!md) throw new Error('No data returned.');
+    prepare(parseTables(md));
+    render();
+  } catch(e){
+    document.getElementById('banner').style.display='none';
+    content.innerHTML = '<div class="err">Could not read the sheet: '+esc(e.message||e)+'<br>Use the Reload button at the top.</div>';
+  }
+}
+
+function prepare(tables){
+  const leadsT = tables.find(t => t.header.includes('event_type'));
+  const spendT = tables.find(t => t.header.some(h=>h==='Ad ID') && t.header.some(h=>/Cost/.test(h)));
+  leadsAll = leadsT ? leadsT.data : [];
+  const spend = spendT ? spendT.data : [];
+  const H = spendT ? spendT.header : [];
+  const find = (pred) => H.find(pred) || '';
+  const kAd=find(h=>h==='Ad name'), kId=find(h=>h==='Ad ID'), kCamp=find(h=>h==='Campaign name'),
+        kCost=find(h=>/^Cost/.test(h)), kImpr=find(h=>h==='Impressions'), kCpm=find(h=>/^CPM/.test(h)),
+        kClicks=find(h=>h==='Link clicks'), kFreq=find(h=>h==='Frequency'),
+        kCtr=find(h=>h==='CTR (link click-through rate)'), kS3=find(h=>/second: 3/.test(h)),
+        kThru=find(h=>/ThruPlay/.test(h));
+  const out = {};
+  leadsAll.forEach(r=>{
+    const id = clean(r.ad_id); if(!id) return;
+    const t = (r.event_type||'').toLowerCase();
+    if(!out[id]) out[id]={lead:0,won:0,lost:0};
+    if(t==='lead') out[id].lead++; else if(t==='won') out[id].won++; else if(t==='lost') out[id].lost++;
+  });
+  allAds = spend.map(r=>{
+    const id = clean(r[kId]);
+    const o = out[id]||{lead:0,won:0,lost:0};
+    const spendV=n(r[kCost]), impr=n(r[kImpr]), s3=n(r[kS3]);
+    const camp = clean(r[kCamp]), ad = clean(r[kAd]);
+    return {
+      ad, campaign: camp, id, isEvent: EVENT_RE.test(camp) || EVENT_RE.test(ad),
+      spend: spendV, impr, cpm:n(r[kCpm]), clicks:n(r[kClicks]),
+      freq:n(r[kFreq]), ctr:n(r[kCtr]), hook: impr? (s3/impr*100):0, thru:n(r[kThru]),
+      leads:o.lead, won:o.won, lost:o.lost, cpl: o.lead? spendV/o.lead : null
+    };
+  });
+}
+
+function activeAdsList(){
+  if (view==='core') return allAds.filter(a=>!a.isEvent);
+  if (view==='event') return allAds.filter(a=>a.isEvent);
+  return allAds;
+}
+function setView(v){
+  view = v;
+  document.getElementById('btnCore').classList.toggle('active', v==='core');
+  document.getElementById('btnEvent').classList.toggle('active', v==='event');
+  document.getElementById('btnAll').classList.toggle('active', v==='all');
+  render();
+}
+
+function render(){
+  const ads = activeAdsList();
+  const eventCount = allAds.filter(a=>a.isEvent).length;
+  const coreCount = allAds.length - eventCount;
+
+  const totalSpend=ads.reduce((a,b)=>a+b.spend,0);
+  const totalImpr=ads.reduce((a,b)=>a+b.impr,0);
+  const totalClicks=ads.reduce((a,b)=>a+b.clicks,0);
+  const avgCpm= totalImpr? totalSpend/totalImpr*1000 : 0;
+  const totalLeads=ads.reduce((a,b)=>a+b.leads,0);
+  const wins=ads.reduce((a,b)=>a+b.won,0);
+  const activeAds=ads.filter(a=>a.spend>0).length;
+
+  const kc=(label,val,cls='',pending=false,pill='')=>`<div class="kpi ${pending?'pending':''}"><div class="kpi-label">${label}${pill?`<span class="pill">${pill}</span>`:''}</div><div class="kpi-val ${cls}">${val}</div></div>`;
+  let html='<div class="grid kpis">';
+  html+=kc('Spend (30d)', money(totalSpend));
+  html+=kc('Ads running', activeAds);
+  html+=kc('Avg CPM', money2(avgCpm));
+  html+=kc('Impressions', Math.round(totalImpr).toLocaleString());
+  html+=kc('Link clicks', Math.round(totalClicks).toLocaleString());
+  html+=kc('Leads (GHL)', totalLeads, 'blue');
+  html+=kc('Wins', wins, 'green');
+  html+=kc('Revenue / ROAS', 'add deal value', '', true, 'pending');
+  html+='</div>';
+
+  const label = view==='core' ? 'Non-event ads only' : (view==='event' ? 'Event ads only (May 8th + raw Lead-Acquisition)' : 'All ads');
+  document.getElementById('banner').innerHTML='<b>Meta ad performance — live from your sheet.</b> Showing <b>'+esc(label)+'</b>. Spend, CPM, CTR, frequency and hook rate are exact; CPL/wins sharpen as GHL lead volume builds.';
+  document.getElementById('viewCount').textContent = `${coreCount} non-event · ${eventCount} event`;
+
+  html+='<div class="section-title">Creative performance — '+esc(label)+', joined to your leads</div>';
+  html+='<div class="section-sub">Click a column to sort. Hook % = 3-sec views ÷ impressions. Frequency over ~2.8 = fatigue. CPL = spend ÷ leads captured so far.</div>';
+  html+='<div class="tablewrap"><table id="adt"><thead><tr>'
+      +th('Ad','ad')+th('Campaign','campaign')+thn('Spend','spend')+thn('CPM','cpm')+thn('CTR%','ctr')
+      +thn('Freq','freq')+thn('Hook%','hook')+thn('ThruPlay','thru')+thn('Leads','leads')+thn('CPL','cpl')+thn('W / L','won')
+      +'</tr></thead><tbody id="adtbody"></tbody></table></div>';
+
+  html+='<div class="section-title" style="margin-top:22px;">Top ads by spend</div>';
+  html+='<div class="card"><div class="chart-wrap"><canvas id="spendChart" role="img" aria-label="Bar chart of top ads by spend"></canvas></div></div>';
+
+  document.getElementById('content').innerHTML=html;
+  document.getElementById('updated').textContent='Updated '+new Date().toLocaleString();
+  document.getElementById('foot').textContent='Source: GHL — Lead Update Meta Report (leads + ad_spend tabs). '+ads.length+' ads shown · '+leadsAll.length+' GHL events. Reload to refresh.';
+
+  attachSort(); drawBody(); drawChart();
+}
+function th(label,key){ return `<th data-k="${key}">${label}</th>`; }
+function thn(label,key){ return `<th class="num" data-k="${key}">${label}</th>`; }
+
+function drawBody(){
+  const rows=[...activeAdsList()].sort((a,b)=>{
+    let av=a[sortState.key], bv=b[sortState.key];
+    if(typeof av==='string'){ av=av.toLowerCase(); bv=(bv||'').toLowerCase(); }
+    if(av==null) av=-1; if(bv==null) bv=-1;
+    if(av<bv) return sortState.dir?-1:1; if(av>bv) return sortState.dir?1:-1; return 0;
+  });
+  const body=rows.map(a=>{
+    const freqFlag=a.freq>=2.8?` <span class="flag flag-warn">fatigue</span>`:'';
+    const hookCls=a.hook>=25?'green':(a.thru>0&&a.hook<15?'red':'');
+    const wl=`${a.won?`<span class="green">${a.won}</span>`:'0'} / ${a.lost?`<span class="red">${a.lost}</span>`:'0'}`;
+    const cpl=a.cpl==null?'<span class="muted">—</span>':money2(a.cpl);
+    const leadCell=a.leads?`<span class="blue">${a.leads}</span>`:'0';
+    return `<tr>
+      <td class="adname">${esc(a.ad)}</td>
+      <td class="muted">${esc(a.campaign)}</td>
+      <td class="num">${money(a.spend)}</td>
+      <td class="num">${money2(a.cpm)}</td>
+      <td class="num">${a.ctr.toFixed(2)}</td>
+      <td class="num">${a.freq.toFixed(2)}${freqFlag}</td>
+      <td class="num ${hookCls}">${a.thru>0?a.hook.toFixed(1)+'%':'<span class="muted">—</span>'}</td>
+      <td class="num">${a.thru?Math.round(a.thru).toLocaleString():'<span class="muted">—</span>'}</td>
+      <td class="num">${leadCell}</td>
+      <td class="num">${cpl}</td>
+      <td class="num">${wl}</td></tr>`;
+  }).join('');
+  document.getElementById('adtbody').innerHTML=body;
+}
+function attachSort(){
+  document.querySelectorAll('#adt th').forEach(th=>{
+    th.onclick=()=>{ const k=th.dataset.k; sortState.dir = (sortState.key===k)?!sortState.dir:false; sortState.key=k; drawBody(); };
+  });
+}
+function drawChart(){
+  const top=[...activeAdsList()].sort((a,b)=>b.spend-a.spend).slice(0,10);
+  const ctx=document.getElementById('spendChart'); if(!ctx||!window.Chart) return;
+  if(chartRef) chartRef.destroy();
+  chartRef=new Chart(ctx,{ type:'bar', data:{ labels: top.map(a=>a.ad.length>30?a.ad.slice(0,28)+'…':a.ad),
+    datasets:[{ label:'Spend', data: top.map(a=>Math.round(a.spend)), backgroundColor:'#2563eb', borderRadius:5 }] },
+    options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}},
+      scales:{ x:{ ticks:{ callback:v=>'$'+Number(v).toLocaleString() } } } } });
+}
+load();
+</script>
+</body>
+</html>

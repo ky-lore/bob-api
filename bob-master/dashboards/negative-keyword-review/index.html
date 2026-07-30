@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<script type="application/json" id="cowork-artifact-meta">
+{
+  "name": "Negative Keyword Review",
+  "schemaVersion": 1,
+  "description": "Daily negative-keyword review tool: loads the Google Ads search-term report (matched with keywords) for any Advanced Marketers client via Supermetrics, lets the team check junk terms, and submits them as campaign negative keywords using the verified read-merge-write-verify loop.",
+  "mcpTools": [
+    "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__data_query",
+    "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__get_async_query_results",
+    "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__campaign_and_resource_get",
+    "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__campaign_update"
+  ],
+  "mcpServerNames": [
+    "Supermetrics Marketing Analytics",
+    "Supermetrics Marketing Analytics",
+    "Supermetrics Marketing Analytics",
+    "Supermetrics Marketing Analytics"
+  ]
+}
+</script>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Negative Keyword Review - Advanced Marketers</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background:#0D0D12; color:#EDEDF2; font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; padding:24px; }
+  .kick { font-size:10px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#7D7BF7; }
+  .kick.muted { color:#8A8A99; }
+  h1 { font-size:24px; font-weight:800; margin:4px 0 2px; }
+  h1 .accent { color:#7D7BF7; }
+  .sub { color:#8A8A99; font-size:12px; }
+  header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; }
+  .bar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+  select, button { background:#16161D; color:#EDEDF2; border:1px solid #2B2B35; border-radius:7px; padding:7px 12px; font-size:12px; }
+  select:focus, button:focus { outline:1px solid #7D7BF7; }
+  button { cursor:pointer; font-weight:700; letter-spacing:.5px; }
+  button.primary { background:#7D7BF7; color:#0D0D12; border-color:#7D7BF7; }
+  button.primary:disabled { background:#3a3966; color:#77768c; border-color:#3a3966; cursor:not-allowed; }
+  #status { padding:9px 13px; border:1px solid #2B2B35; border-radius:8px; background:#16161D; color:#8A8A99; margin-bottom:14px; font-size:12px; }
+  #status.err { border-color:#E4604F; color:#E4604F; }
+  #status.ok { border-color:#3FCF95; color:#3FCF95; }
+  table { width:100%; border-collapse:collapse; background:#16161D; border:1px solid #2B2B35; border-radius:10px; overflow:hidden; }
+  thead th { font-size:9px; font-weight:700; letter-spacing:1.5px; text-transform:uppercase; color:#8A8A99; text-align:right; padding:9px 10px; border-bottom:1px solid #2B2B35; background:#1B1B24; }
+  thead th:nth-child(-n+3) { text-align:left; }
+  tbody td { padding:7px 10px; text-align:right; border-bottom:1px solid #22222B; font-variant-numeric:tabular-nums; }
+  tbody td:nth-child(-n+3) { text-align:left; }
+  tbody tr:hover { background:#1B1B24; }
+  tr.checked { background:#231f3d !important; }
+  .term { font-weight:600; }
+  .kw { color:#8A8A99; font-size:11.5px; }
+  .flag { display:inline-block; font-size:9px; font-weight:800; letter-spacing:1px; padding:2px 7px; border-radius:12px; background:rgba(217,164,65,.12); color:#D9A441; border:1px solid #D9A441; margin-left:6px; }
+  .added { display:inline-block; font-size:9px; font-weight:800; letter-spacing:1px; padding:2px 7px; border-radius:12px; background:rgba(63,207,149,.1); color:#3FCF95; border:1px solid #2c5c48; margin-left:6px; }
+  .waste { color:#E4604F; font-weight:700; }
+  input[type=checkbox] { accent-color:#7D7BF7; width:15px; height:15px; }
+  .foot { margin-top:12px; color:#55555f; font-size:10.5px; font-style:italic; }
+  #confirm { display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:10; }
+  #confirm .box { max-width:560px; margin:8vh auto; background:#16161D; border:1px solid #7D7BF7; border-radius:12px; padding:22px; max-height:80vh; overflow:auto; }
+  #confirm h2 { font-size:15px; margin-bottom:10px; }
+  #confirm ul { margin:10px 0 16px 18px; color:#EDEDF2; font-size:12.5px; }
+  #log { margin-top:16px; }
+  .logline { font-size:11.5px; color:#8A8A99; padding:3px 0; }
+  .logline.good { color:#3FCF95; }
+  .logline.bad { color:#E4604F; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="kick">Revenue First, Always</div>
+    <h1>NEGATIVE <span class="accent">KEYWORDS</span></h1>
+    <div class="sub">Daily search-term review &middot; check the junk &middot; submit to add campaign negatives</div>
+  </div>
+  <div style="text-align:right">
+    <div class="kick muted">Advanced Marketers&reg;</div>
+    <div class="sub" id="stamp"></div>
+  </div>
+</header>
+
+<div class="bar">
+  <select id="account"></select>
+  <select id="range">
+    <option value="yesterday">Yesterday</option>
+    <option value="last_3_days" selected>Last 3 days</option>
+    <option value="last_7_days">Last 7 days</option>
+    <option value="last_14_days">Last 14 days</option>
+  </select>
+  <button id="load">LOAD TERMS</button>
+  <span style="flex:1"></span>
+  <select id="mtype">
+    <option value="EXACT" selected>Add as EXACT (safe)</option>
+    <option value="PHRASE">Add as PHRASE (aggressive)</option>
+  </select>
+  <button class="primary" id="submit" disabled>SUBMIT 0 NEGATIVES</button>
+</div>
+
+<div id="status">Pick a client and hit LOAD TERMS.</div>
+<div id="tablewrap"></div>
+<div id="log"></div>
+<div class="foot">
+  Terms already excluded are hidden. "TARGETED KW" rows are actual keywords you bid on — negating them blocks your own traffic, so they can't be selected.
+  Suggestions (⚑) are heuristic: paid clicks with no conversion, or out-of-area/brand patterns — a human always decides. LSA campaigns are never touched.
+</div>
+
+<div id="confirm">
+  <div class="box">
+    <h2>Add these negative keywords?</h2>
+    <div class="sub" id="confirm-sub"></div>
+    <ul id="confirm-list"></ul>
+    <div style="display:flex; gap:10px; justify-content:flex-end">
+      <button id="cancel">CANCEL</button>
+      <button class="primary" id="go">CONFIRM &amp; ADD</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const DQ = "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__data_query";
+const GR = "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__get_async_query_results";
+const CG = "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__campaign_and_resource_get";
+const CU = "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__campaign_update";
+
+// Roster-matched Google Ads accounts (id -> client name)
+const ACCOUNTS = {"1031051775":"Bluepoint Pools","1257416364":"Heavy Duty Metal Buildings","1282833637":"Green Ladder Roofing","1297430835":"Leo's Landscaping","1312101984":"Major League Plumbing","1313981988":"Andy's Pools","1358688007":"Hidden Gem Landscaping","1651214601":"JLG Tree Service","1676606148":"JG Concrete","1753962019":"Precision Air Heating & AC","1925489395":"One Nation Energy","2271397182":"LV Heating & Cooling","2405047429":"Morfin Plumbing","2439100413":"Lorenzo's Painting","2537755600":"Bay Area Roofing Master","2840818097":"Sky View Maintenance","2993364907":"Roof Solutions","3211501986":"Ram Dump Truck","3217451984":"OC Professional Rain Gutters","3362882249":"Paver Rescue (Tampa)","3606379421":"Legendz Construction","3732695598":"QuickFix Home Solutions","4068957505":"Down The Line Plumbing","4363689052":"Contreras Welding","4777558591":"Caliber K9 Training","4781538868":"GG&N Plumbing","5773415499":"Premium Floor & Design","6014031582":"Absolute Best Service Plumbing","6149092715":"Prestige Heating & Air","6295796429":"His Hands Plumbing","6361937793":"Palm Valley Insurance","6535500805":"Piggies Air Conditioning","7000074284":"Rosewood Landscape","7145681413":"LG Electric","7196209317":"At Your Service Heating (LSA)","7240141945":"Longhorn Landscapes","7266435044":"Lopez Brothers Drywall","7314021821":"JH Disposal","7600055319":"On Stage Cuts and Styles","7768476970":"All City Janitorial","8118243442":"The Reel Electric Company","8144144464":"Moreno Building & Development","8405520158":"JQGlassworks","8617008899":"Roofing Pro","8633821943":"Javiers Landscape","8784005764":"Mad Differential","8990563468":"Haro HVAC","9152156731":"Roof City","9236832650":"Aquacare Pools","9336346574":"Prime Lux Floors","9353838254":"J&C Concrete Restoration","9368379590":"Pro Integrity Plumbing","9466593544":"LA Mini Splits","9475349656":"Pinpon Junk Removal","9510063547":"East Valley Feed & Tack","9581576521":"Central Roofing","9731233729":"Total Door Service","9736283774":"Platinum Paving & Landscaping","9766370401":"WestCoast Fence Pro","9824944905":"Vera Plumbing and Drain","9848833215":"Forbes Fencing","9862134305":"Precision Drywall and Paint","9950847531":"Prestige Builders & Design"};
+
+const OUT_OF_AREA = /\b(al|ak|az|ar|co|ct|de|fl|ga|hi|id|il|in|ia|ks|ky|la|me|md|ma|mi|mn|ms|mo|mt|ne|nv|nh|nj|nm|ny|nc|nd|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|vt|va|wa|wv|wi|wy)\b|las vegas|phoenix|dallas|houston|seattle|denver|chicago|atlanta|orlando|miami|nyc|new york|anchorage|indianapolis|vancouver|tampa|alabama|florence/i;
+const JUNK_INTENT = /\b(free|diy|how to|jobs?|hiring|salary|career|used|craigslist|cheap|cheapest|cost of|price list|rental|supply|supplies|wholesale)\b/i;
+
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+async function call(name, args){
+  const r = await window.cowork.callMcpTool(name, args);
+  let obj = r.structuredContent;
+  if (!obj && r.content && r.content[0] && r.content[0].text){
+    try { obj = JSON.parse(r.content[0].text); } catch(e){ obj = {success:false, error:r.content[0].text}; }
+  }
+  if (r.isError) throw new Error(typeof obj === "string" ? obj : (obj && obj.error) || "tool error");
+  return obj;
+}
+
+function csvLine(line){
+  const out = []; let cur = "", q = false;
+  for (let i=0;i<line.length;i++){
+    const ch = line[i];
+    if (q){
+      if (ch === '"' && line[i+1] === '"'){ cur+='"'; i++; }
+      else if (ch === '"') q = false;
+      else cur += ch;
+    } else {
+      if (ch === '"') q = true;
+      else if (ch === ','){ out.push(cur); cur=""; }
+      else cur += ch;
+    }
+  }
+  out.push(cur); return out;
+}
+function parseCompact(str){
+  if (Array.isArray(str)) return str;
+  const rows = [];
+  for (const line of String(str).split("\n")){
+    const m = line.match(/^\s*-\s*\[\d*,?\]:\s*(.*)$/);
+    if (m) rows.push(csvLine(m[1]));
+  }
+  return rows;
+}
+async function runQuery(input){
+  const sub = await call(DQ, input);
+  if (!sub.success) throw new Error(sub.error || "submit failed");
+  const sid = sub.data.schedule_id;
+  for (let i=0;i<40;i++){
+    await new Promise(r=>setTimeout(r,1500));
+    const res = await call(GR, {schedule_id:sid, compress:true});
+    if (!res.success) throw new Error(res.error || "query failed");
+    if (res.data && res.data.status === "completed") return parseCompact(res.data.data);
+  }
+  throw new Error("query timed out");
+}
+const toNum = v => { const n = parseFloat(String(v).replace(/[$,]/g,"")); return isNaN(n)?0:n; };
+
+// ---------- state ----------
+let ROWS = [];   // {campaign, term, kw, mtype, status, imp, clicks, cost, conv, flagged, checked, targeted}
+const accountSel = document.getElementById("account");
+for (const [id,name] of Object.entries(ACCOUNTS).sort((a,b)=>a[1].localeCompare(b[1]))){
+  const o = document.createElement("option"); o.value = id; o.textContent = name; accountSel.appendChild(o);
+}
+const savedAcct = localStorage.getItem("am-nk-account");
+if (savedAcct && ACCOUNTS[savedAcct]) accountSel.value = savedAcct;
+document.getElementById("stamp").textContent = new Date().toLocaleDateString();
+
+function setStatus(msg, cls){ const s = document.getElementById("status"); s.textContent = msg; s.className = cls||""; }
+function refreshSubmit(){
+  const n = ROWS.filter(r=>r.checked).length;
+  const b = document.getElementById("submit");
+  b.textContent = `SUBMIT ${n} NEGATIVE${n===1?"":"S"}`;
+  b.disabled = n === 0;
+}
+
+function render(){
+  let html = `<table><thead><tr><th></th><th>Search term</th><th>Matched keyword</th><th>Campaign</th><th>Impr</th><th>Clicks</th><th>Cost</th><th>Conv</th></tr></thead><tbody>`;
+  ROWS.forEach((r,i)=>{
+    const waste = r.cost > 0 && r.conv === 0;
+    html += `<tr class="${r.checked?"checked":""}" data-i="${i}">
+      <td style="text-align:center">${r.targeted ? "" : `<input type="checkbox" data-i="${i}" ${r.checked?"checked":""}>`}</td>
+      <td><span class="term">${esc(r.term)}</span>${r.flagged?'<span class="flag">⚑ SUGGESTED</span>':""}${r.targeted?'<span class="added">TARGETED KW</span>':""}</td>
+      <td class="kw">${esc(r.kw)} <span style="color:#55555f">(${esc(r.mtype)})</span></td>
+      <td class="kw">${esc(r.campaign.length>34 ? r.campaign.slice(0,34)+"…" : r.campaign)}</td>
+      <td>${r.imp}</td><td>${r.clicks}</td>
+      <td class="${waste?"waste":""}">$${r.cost.toFixed(2)}</td><td>${r.conv}</td>
+    </tr>`;
+  });
+  html += "</tbody></table>";
+  document.getElementById("tablewrap").innerHTML = html;
+  refreshSubmit();
+}
+
+document.getElementById("tablewrap").addEventListener("change", e => {
+  if (e.target.type === "checkbox"){
+    ROWS[+e.target.dataset.i].checked = e.target.checked;
+    render();
+  }
+});
+
+document.getElementById("load").addEventListener("click", async () => {
+  const acct = accountSel.value;
+  localStorage.setItem("am-nk-account", acct);
+  setStatus(`Loading search terms for ${ACCOUNTS[acct]}…`);
+  document.getElementById("tablewrap").innerHTML = ""; document.getElementById("log").innerHTML = "";
+  ROWS = []; refreshSubmit();
+  try {
+    const rows = await runQuery({
+      ds_id:"AW", ds_accounts:acct,
+      fields:"Campaignname,Searchterm,Keyword,Matchtype,QueryTargetingStatus,Impressions,Clicks,Cost,Conversions",
+      date_range_type: document.getElementById("range").value,
+      timezone:"America/Los_Angeles", max_rows:500
+    });
+    if (rows.length <= 1){ setStatus("No search terms in this window.", "err"); return; }
+    const h = rows[0];
+    const idx = n => h.findIndex(x => x.toLowerCase().includes(n));
+    const iC = idx("campaign"), iT = idx("search term"), iK = idx("keyword"), iM = idx("match type"),
+          iS = idx("targeting status"), iI = idx("impressions"), iCl = idx("clicks"), iCo = idx("cost"), iCv = idx("conversions");
+    for (const r of rows.slice(1)){
+      const status = r[iS] || "";
+      if (status === "Excluded") continue;
+      if ((r[iC]||"").startsWith("LocalServicesCampaign")) continue;
+      const term = r[iT], cost = toNum(r[iCo]), clicks = toNum(r[iCl]), conv = toNum(r[iCv]);
+      ROWS.push({
+        campaign:r[iC], term, kw:r[iK], mtype:r[iM], status,
+        imp:toNum(r[iI]), clicks, cost, conv,
+        targeted: status === "Added",
+        flagged: status !== "Added" && ((cost > 0 && conv === 0 && (OUT_OF_AREA.test(term) || JUNK_INTENT.test(term))) || (cost >= 15 && conv === 0)),
+        checked:false
+      });
+    }
+    // dedupe identical term+campaign (keep max cost row)
+    const seen = {};
+    ROWS = ROWS.filter(r => { const k = r.campaign+"|"+r.term; if (seen[k]) return false; seen[k]=1; return true; });
+    ROWS.sort((a,b)=> (b.cost*(b.conv===0?2:0.2)) - (a.cost*(a.conv===0?2:0.2)) || b.imp - a.imp);
+    setStatus(`${ROWS.length} terms loaded for ${ACCOUNTS[acct]} · ${ROWS.filter(r=>r.flagged).length} suggested · sorted by wasted spend.`);
+    render();
+  } catch(e){ setStatus("Load failed: "+e.message, "err"); }
+});
+
+// ---------- submit ----------
+document.getElementById("submit").addEventListener("click", () => {
+  const sel = ROWS.filter(r=>r.checked);
+  const mt = document.getElementById("mtype").value;
+  document.getElementById("confirm-sub").textContent =
+    `${ACCOUNTS[accountSel.value]} · ${sel.length} term(s) as ${mt} negatives, applied to the campaign(s) they appeared in:`;
+  document.getElementById("confirm-list").innerHTML =
+    sel.map(r=>`<li>"${esc(r.term)}" → ${esc(r.campaign.length>44?r.campaign.slice(0,44)+"…":r.campaign)}</li>`).join("");
+  document.getElementById("confirm").style.display = "block";
+});
+document.getElementById("cancel").addEventListener("click", () => document.getElementById("confirm").style.display = "none");
+
+document.getElementById("go").addEventListener("click", async () => {
+  document.getElementById("confirm").style.display = "none";
+  const acct = accountSel.value;
+  const mt = document.getElementById("mtype").value;
+  const sel = ROWS.filter(r=>r.checked);
+  const log = document.getElementById("log");
+  const line = (msg, cls) => { const d = document.createElement("div"); d.className = "logline "+(cls||""); d.textContent = msg; log.appendChild(d); };
+
+  try {
+    setStatus("Fetching campaign list…");
+    const cl = await call(CG, {ds_id:"AW", account_id:acct, resource_type:"campaigns"});
+    const nameToId = {};
+    for (const c of cl.data.data.results) nameToId[c.name] = c.campaign_id;
+
+    // group selected terms by campaign
+    const byCampaign = {};
+    for (const r of sel){
+      const cid = nameToId[r.campaign];
+      if (!cid){ line(`✗ Campaign not found: ${r.campaign}`, "bad"); continue; }
+      (byCampaign[cid] = byCampaign[cid] || {name:r.campaign, terms:[]}).terms.push(r.term);
+    }
+
+    for (const [cid, g] of Object.entries(byCampaign)){
+      setStatus(`Updating ${g.name}…`);
+      // 1. read current campaign targeting
+      const cur = await call(CG, {ds_id:"AW", account_id:acct, resource_type:"campaigns",
+                                  params:{campaign_id:cid, campaign_detail_level:"campaign"}});
+      const camp = cur.data.data.results[0];
+      const targeting = JSON.parse(JSON.stringify(camp.targeting || {}));
+      const existing = targeting.negative_keywords || [];
+      const have = new Set(existing.map(k => k.text.toLowerCase()+"|"+k.match_type));
+      const additions = [];
+      for (const t of g.terms){
+        const key = t.toLowerCase()+"|"+mt;
+        if (!have.has(key)){ additions.push({text:t, match_type:mt}); have.add(key); }
+      }
+      if (!additions.length){ line(`= ${g.name}: all already present`, ""); continue; }
+      targeting.negative_keywords = existing.concat(additions);
+      const beforeCount = existing.length;
+
+      // 2. write full targeting back
+      const up = await call(CU, {ds_id:"AW", account_id:acct, campaign_id:cid, targeting});
+      if (!up.success) { line(`✗ ${g.name}: ${up.error}`, "bad"); continue; }
+
+      // 3. verify with fresh read
+      const chk = await call(CG, {ds_id:"AW", account_id:acct, resource_type:"campaigns",
+                                  params:{campaign_id:cid, campaign_detail_level:"campaign"}});
+      const after = chk.data.data.results[0];
+      const afterNegs = (after.targeting && after.targeting.negative_keywords) || [];
+      const allIn = additions.every(a => afterNegs.some(k => k.text.toLowerCase() === a.text.toLowerCase()));
+      const langOk = JSON.stringify(after.targeting.languages||[]) === JSON.stringify(camp.targeting.languages||[]);
+      const statusOk = after.status === camp.status && after.budget_amount === camp.budget_amount;
+      if (allIn && langOk && statusOk){
+        line(`✓ ${g.name}: ${beforeCount} → ${afterNegs.length} negatives (+${additions.length}), settings verified intact`, "good");
+      } else {
+        line(`⚠ ${g.name}: written but verification mismatch — CHECK IN GOOGLE ADS UI`, "bad");
+      }
+    }
+    // clear submitted rows
+    for (const r of sel) r.checked = false;
+    ROWS = ROWS.filter(r => !sel.some(s => s.campaign === r.campaign && s.term === r.term));
+    render();
+    setStatus("Done. See log below — reload terms tomorrow for the next batch.", "ok");
+  } catch(e){ setStatus("Submit failed: "+e.message, "err"); }
+});
+</script>
+</body>
+</html>

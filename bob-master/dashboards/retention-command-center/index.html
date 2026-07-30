@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<script type="application/json" id="cowork-artifact-meta">
+{
+  "name": "Retention Command Center",
+  "schemaVersion": 1,
+  "description": "Live retention dashboard pulling the ClickUp Cancel & Save pipeline: open requests, MRR at risk, free months in flight, save rate, and the full pipeline board by stage.",
+  "mcpTools": [
+    "mcp__50ecbcef-f627-401d-9c08-42bf5fdc1854__clickup_filter_tasks"
+  ],
+  "mcpServerNames": [
+    "ClickUp"
+  ]
+}
+</script>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AM Retention Scoreboard — TV 1</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, "Segoe UI", "Inter", Arial, sans-serif;
+  background: #0A0F1E; color: #eef2fb;
+  height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
+  padding: 2vh 2vw;
+}
+.head { display: flex; align-items: baseline; justify-content: space-between; flex: none; margin-bottom: 1vh; }
+.head h1 { font-size: clamp(15px, 1.5vw, 26px); font-weight: 800; letter-spacing: 1px; color: #8CA0CB; text-transform: uppercase; }
+.head h1 b { color: #fff; }
+.head .stamp { color: #5F719B; font-size: clamp(10px, .95vw, 15px); }
+.pulse { display: inline-block; width: .55em; height: .55em; border-radius: 50%; background: #22C55E; margin-right: .5em;
+  box-shadow: 0 0 0 0 rgba(34,197,94,.6); animation: pulse 2.2s infinite; }
+@keyframes pulse { 70% { box-shadow: 0 0 0 9px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+
+.main { flex: 1; display: grid; grid-template-columns: 1.35fr 1fr; gap: 2vw; min-height: 0; }
+.left { display: flex; flex-direction: column; justify-content: center; align-items: center;
+  border-right: 1px solid #1F3864; padding-right: 2vw; }
+.left .label { color: #8CA0CB; font-size: clamp(13px, 1.3vw, 24px); letter-spacing: 3px; font-weight: 700; }
+.left .money { color: #fff; font-size: clamp(70px, 11vw, 210px); font-weight: 900; letter-spacing: -.04em; line-height: 1.05;
+  text-shadow: 0 0 60px rgba(127,163,255,.25); }
+.left .accounts { color: #5F719B; font-size: clamp(12px, 1.15vw, 20px); margin-top: .5vh; }
+.trio { display: flex; gap: 4vw; margin-top: 4vh; }
+.trio .cell { text-align: center; }
+.trio .v { font-size: clamp(34px, 4.2vw, 84px); font-weight: 900; line-height: 1; }
+.trio .t { color: #8CA0CB; font-size: clamp(10px, .95vw, 16px); letter-spacing: 2px; margin-top: .8vh; font-weight: 700; }
+.v.green { color: #34D97B; text-shadow: 0 0 30px rgba(52,217,123,.35); }
+.v.red { color: #FF5F6D; text-shadow: 0 0 30px rgba(255,95,109,.35); }
+.v.gold { color: #FFD166; text-shadow: 0 0 30px rgba(255,209,102,.3); }
+
+.right { display: flex; flex-direction: column; justify-content: center; gap: 1.2vh; min-height: 0; }
+.right .rl { color: #FF5F6D; font-size: clamp(12px, 1.15vw, 20px); font-weight: 900; letter-spacing: 2.5px; margin-bottom: .5vh; }
+.hot { background: #14203A; border: 1px solid #24365E; border-left: 5px solid #FF5F6D; border-radius: 10px; padding: 1.6vh 1.4vw;
+  display: flex; justify-content: space-between; align-items: center; gap: 1vw; }
+.hot.warn { border-left-color: #FFD166; }
+.hot .nm { font-size: clamp(14px, 1.5vw, 28px); font-weight: 800; color: #eef2fb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hot .who { font-size: clamp(10px, .9vw, 15px); color: #8CA0CB; margin-top: .3vh; }
+.hot .amt { font-size: clamp(15px, 1.6vw, 30px); font-weight: 900; color: #FFD166; flex: none; }
+.none { color: #34D97B; font-size: clamp(14px, 1.5vw, 26px); font-weight: 800; text-align: center; padding: 4vh 0; }
+.foot { flex: none; text-align: center; color: #46587F; font-size: clamp(10px, .85vw, 14px); margin-top: 1vh; letter-spacing: 1px; }
+.err { background: rgba(120,30,30,.35); border: 1px solid rgba(255,120,120,.4); color: #ffb4b4; padding: 1.2vh; border-radius: 10px; display: none; font-size: 14px; flex: none; margin-bottom: 1vh; }
+</style>
+</head>
+<body>
+<div class="head">
+  <h1><b>ADVANCED MARKETERS</b> · Retention Scoreboard</h1>
+  <div class="stamp"><span class="pulse"></span><span id="stamp">connecting…</span></div>
+</div>
+<div class="err" id="err"></div>
+
+<div class="main">
+  <div class="left">
+    <div class="label">💰 ON THE LINE RIGHT NOW</div>
+    <div class="money" id="k-mrr">–</div>
+    <div class="accounts" id="k-sub">&nbsp;</div>
+    <div class="trio">
+      <div class="cell"><div class="v green" id="k-saved">–</div><div class="t">SAVED</div></div>
+      <div class="cell"><div class="v red" id="k-churn">–</div><div class="t">LOST</div></div>
+      <div class="cell"><div class="v gold" id="k-open">–</div><div class="t">IN PLAY</div></div>
+    </div>
+  </div>
+  <div class="right" id="hotlist"></div>
+</div>
+
+<div class="foot">every save keeps that number recurring · file requests within 1 hour · save calls within 48</div>
+
+<script>
+const LISTS = {
+  newreq: "901417799940", save: "901417799941", free: "901417799942",
+  saved: "901417799943", churn: "901417799944",
+};
+const TOOL = "mcp__50ecbcef-f627-401d-9c08-42bf5fdc1854__clickup_filter_tasks";
+const fmt$ = v => "$" + Math.round(v).toLocaleString();
+const mrrOf = t => { const m = (t.name || "").match(/\$\s?([\d,]+)/); return m ? parseInt(m[1].replace(/,/g, ""), 10) : 0; };
+const clean = n => n.replace(/^\[[A-Z\s-]+\]\s*/, "").replace(/^[🔧📞]\s*/, "").replace(/\s*[—-]\s*\$[\d,]+.*$/, "").replace(/\s*\(.*\)\s*$/, "");
+
+// Dual-mode loader: Cowork artifact (callMcpTool) OR standalone via the mini-server (/api/tasks)
+async function getTasks() {
+  if (window.cowork && window.cowork.callMcpTool) {
+    const r = await window.cowork.callMcpTool(TOOL, { list_ids: Object.values(LISTS), include_closed: true });
+    if (r.isError) throw new Error(r.content?.[0]?.text || "ClickUp call failed");
+    const data = r.structuredContent ?? JSON.parse(r.content[0].text);
+    return data.tasks || [];
+  }
+  const res = await fetch("/api/tasks");
+  if (!res.ok) throw new Error("server " + res.status);
+  return (await res.json()).tasks || [];
+}
+
+async function load() {
+  try {
+    const tasks = (await getTasks()).filter(t => !t.name.startsWith("📋") && !t.name.startsWith("🔧"));
+    const by = id => tasks.filter(t => t.list?.id === id);
+    const inPlay = [...by(LISTS.newreq), ...by(LISTS.save), ...by(LISTS.free)];
+    const saved = by(LISTS.saved).length, churn = by(LISTS.churn).length;
+    const mrrRisk = inPlay.reduce((s, t) => s + mrrOf(t), 0);
+
+    document.getElementById("k-mrr").textContent = fmt$(mrrRisk);
+    document.getElementById("k-sub").textContent = inPlay.length + " client accounts in play";
+    document.getElementById("k-saved").textContent = saved;
+    document.getElementById("k-churn").textContent = churn;
+    document.getElementById("k-open").textContent = inPlay.length;
+
+    const now = Date.now();
+    const candidates = [...by(LISTS.newreq), ...by(LISTS.save)]
+      .map(t => ({ t, due: t.due_date ? +t.due_date : null, urgent: t.priority === "urgent" }))
+      .filter(x => x.urgent || (x.due && x.due - now < 86400000 * 2))
+      .sort((a, b) => (a.due || 9e15) - (b.due || 9e15))
+      .slice(0, 5);
+
+    const hl = document.getElementById("hotlist");
+    let html = `<div class="rl">🔥 NEXT 48 HOURS — WHO'S MAKING THESE CALLS?</div>`;
+    if (!candidates.length) {
+      html += `<div class="none">✓ Nothing burning. Keep it that way.</div>`;
+    } else {
+      candidates.forEach(x => {
+        const mrr = mrrOf(x.t);
+        const asg = (x.t.assignees || []).map(a => (a.username || "").split(" ")[0]).filter(Boolean).join(", ");
+        const due = x.due ? new Date(x.due).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "no date";
+        html += `<div class="hot ${x.urgent ? "" : "warn"}">
+          <div style="min-width:0"><div class="nm">${clean(x.t.name)}</div><div class="who">${due}${asg ? " · " + asg : " · unassigned"}</div></div>
+          <div class="amt">${mrr ? fmt$(mrr) : ""}</div>
+        </div>`;
+      });
+    }
+    hl.innerHTML = html;
+    document.getElementById("stamp").textContent = "LIVE · " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    document.getElementById("err").style.display = "none";
+  } catch (e) {
+    document.getElementById("err").textContent = "Could not load pipeline: " + e.message;
+    document.getElementById("err").style.display = "block";
+    document.getElementById("stamp").textContent = "load failed";
+  }
+}
+load();
+if (!(window.cowork && window.cowork.callMcpTool)) setInterval(load, 120000); // auto-refresh every 2 min on the TV
+</script>
+</body>
+</html>

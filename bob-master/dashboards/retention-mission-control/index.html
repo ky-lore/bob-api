@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<script type="application/json" id="cowork-artifact-meta">
+{
+  "name": "Retention Mission Control",
+  "schemaVersion": 1,
+  "description": "Design A — Mission Control TV dashboard: hero MRR-at-risk and Open Requests panels, save-rate gauge, and the full 5-stage pipeline board. Live from the ClickUp Cancel & Save Pipeline, locked to one screen.",
+  "mcpTools": [
+    "mcp__50ecbcef-f627-401d-9c08-42bf5fdc1854__clickup_filter_tasks"
+  ],
+  "mcpServerNames": [
+    "ClickUp"
+  ]
+}
+</script>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AM Retention Mission Control — TV 2</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, "Segoe UI", "Inter", Arial, sans-serif;
+  background: #0A0F1E; color: #eef2fb;
+  height: 100vh; overflow: hidden;
+  display: flex; flex-direction: column;
+  padding: 1.4vh 1.2vw;
+}
+.head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 1.2vh; flex: none; }
+.head h1 { font-size: clamp(16px, 1.7vw, 30px); font-weight: 800; letter-spacing: -.4px; color: #fff; }
+.head h1 span { color: #8CA0CB; font-weight: 600; }
+.head .stamp { color: #5F719B; font-size: clamp(11px, 1vw, 15px); }
+.pulse { display: inline-block; width: .55em; height: .55em; border-radius: 50%; background: #22C55E; margin-right: .5em;
+  box-shadow: 0 0 0 0 rgba(34,197,94,.6); animation: pulse 2.2s infinite; }
+@keyframes pulse { 70% { box-shadow: 0 0 0 9px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+
+.hero { display: grid; grid-template-columns: 1.25fr 1fr 1.25fr; gap: 1vw; height: 30vh; flex: none; margin-bottom: 1.2vh; }
+.panel { background: #14203A; border: 1px solid #24365E; border-radius: 14px; padding: 1.6vh 1.4vw;
+  position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; }
+.panel::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; }
+.panel.red::before { background: #FF5F6D; } .panel.blue::before { background: #7FA3FF; } .panel.green::before { background: #22C55E; }
+.panel .label { font-size: clamp(10px, .95vw, 16px); text-transform: uppercase; letter-spacing: 1.6px; color: #8CA0CB; font-weight: 700; }
+.panel .big { font-size: clamp(40px, 6.2vw, 110px); font-weight: 850; line-height: 1.02; letter-spacing: -2px; }
+.panel.red .big { color: #FF8089; text-shadow: 0 0 34px rgba(255,95,109,.3); }
+.panel.blue .big { color: #B9CDFF; text-shadow: 0 0 34px rgba(127,163,255,.35); }
+.panel .sub2 { color: #5F719B; font-size: clamp(10px, .9vw, 15px); margin-top: .6vh; }
+.gauge-wrap { display: flex; align-items: center; gap: 1vw; height: 100%; }
+.gauge-box { position: relative; height: 78%; aspect-ratio: 1; flex: none; }
+.gauge-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.gauge-center .pct { font-size: clamp(18px, 2.2vw, 38px); font-weight: 850; color: #86efac; }
+.gauge-center .t { font-size: clamp(8px, .65vw, 11px); letter-spacing: 1.2px; color: #5F719B; text-transform: uppercase; }
+.gauge-side .row { font-size: clamp(11px, 1.05vw, 18px); color: #A9B8DB; margin: .6vh 0; white-space: nowrap; }
+.gauge-side .row b { color: #eef2fb; font-weight: 800; }
+.dot { display: inline-block; width: .6em; height: .6em; border-radius: 3px; margin-right: .5em; }
+
+.board { display: grid; grid-template-columns: repeat(5, 1fr); gap: .8vw; flex: 1; min-height: 0; }
+.col { background: #101A30; border: 1px solid #1F3055; border-radius: 12px; padding: 1vh .7vw; display: flex; flex-direction: column; min-height: 0; }
+.col h3 { font-size: clamp(10px, .95vw, 15px); letter-spacing: 1.2px; text-transform: uppercase; font-weight: 800;
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: .8vh; flex: none; }
+.col h3 .cnt { background: rgba(127,163,255,.15); border-radius: 999px; padding: 0 .7em; font-size: .85em; color: #DDE6FA; }
+.col.c1 h3 { color: #FF9AA2; } .col.c2 h3 { color: #FFD166; } .col.c3 h3 { color: #9DB4FF; } .col.c4 h3 { color: #34D97B; } .col.c5 h3 { color: #8CA0CB; }
+.cards { display: flex; flex-direction: column; gap: .7vh; overflow: hidden; flex: 1; min-height: 0; }
+.task { background: #17233F; border: 1px solid #24365E; border-left: 4px solid #46587F; border-radius: 8px; padding: .9vh .7vw; flex: none; }
+.task.urgent { border-left-color: #FF5F6D; } .task.high { border-left-color: #FFD166; } .task.normal { border-left-color: #7FA3FF; }
+.task .nm { font-size: clamp(10px, .95vw, 16px); font-weight: 700; color: #E8EEFB; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.task .mt { font-size: clamp(9px, .8vw, 13px); color: #8CA0CB; margin-top: .4vh; display: flex; gap: .6em; align-items: center; white-space: nowrap; overflow: hidden; }
+.task .mrr { color: #FFD166; font-weight: 800; }
+.task .due-hot { color: #FF8089; font-weight: 700; }
+.more { color: #5F719B; font-size: clamp(9px, .85vw, 13px); text-align: center; padding-top: .4vh; flex: none; }
+.err { background: rgba(120,30,30,.35); border: 1px solid rgba(255,120,120,.4); color: #ffb4b4; padding: 1.2vh; border-radius: 10px; margin-bottom: 1vh; display: none; font-size: 14px; flex: none; }
+</style>
+</head>
+<body>
+<div class="head">
+  <h1>🚨 ADVANCED MARKETERS <span>— Retention Mission Control</span></h1>
+  <div class="stamp"><span class="pulse"></span><span id="stamp">connecting…</span></div>
+</div>
+<div class="err" id="err"></div>
+
+<div class="hero">
+  <div class="panel red">
+    <div class="label">MRR at Risk</div>
+    <div class="big" id="k-mrr">–</div>
+    <div class="sub2" id="k-mrr-sub">open requests + free months</div>
+  </div>
+  <div class="panel blue">
+    <div class="label">Open Requests</div>
+    <div class="big" id="k-open">–</div>
+    <div class="sub2">new + save attempts · call within 48h</div>
+  </div>
+  <div class="panel green">
+    <div class="label">Save Rate</div>
+    <div class="gauge-wrap">
+      <div class="gauge-box">
+        <canvas id="gauge"></canvas>
+        <div class="gauge-center"><div class="pct" id="k-rate">–</div><div class="t">saved</div></div>
+      </div>
+      <div class="gauge-side">
+        <div class="row"><span class="dot" style="background:#22C55E"></span>Saved <b id="k-saved">–</b></div>
+        <div class="row"><span class="dot" style="background:#FF5F6D"></span>Churned <b id="k-churn">–</b></div>
+        <div class="row"><span class="dot" style="background:#FFD166"></span>Free months <b id="k-free">–</b></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="board" id="board"></div>
+
+<script>
+const LISTS = [
+  { id: "901417799940", label: "New", cls: "c1" },
+  { id: "901417799941", label: "Save Attempt", cls: "c2" },
+  { id: "901417799942", label: "Free Month", cls: "c3" },
+  { id: "901417799943", label: "Saved ✓", cls: "c4" },
+  { id: "901417799944", label: "Churned ✗", cls: "c5" },
+];
+const TOOL = "mcp__50ecbcef-f627-401d-9c08-42bf5fdc1854__clickup_filter_tasks";
+const MAXCARDS = 5;
+const fmt$ = v => "$" + Math.round(v).toLocaleString();
+const mrrOf = t => { const m = (t.name || "").match(/\$\s?([\d,]+)/); return m ? parseInt(m[1].replace(/,/g, ""), 10) : 0; };
+const clean = n => n.replace(/^\[[A-Z\s-]+\]\s*/, "").replace(/^[🔧📞]\s*/, "").replace(/\s*[—-]\s*\$[\d,]+.*$/, "").replace(/\s*\(.*\)\s*$/, "");
+let gauge = null;
+
+async function getTasks() {
+  if (window.cowork && window.cowork.callMcpTool) {
+    const r = await window.cowork.callMcpTool(TOOL, { list_ids: LISTS.map(l => l.id), include_closed: true });
+    if (r.isError) throw new Error(r.content?.[0]?.text || "ClickUp call failed");
+    const data = r.structuredContent ?? JSON.parse(r.content[0].text);
+    return data.tasks || [];
+  }
+  const res = await fetch("/api/tasks");
+  if (!res.ok) throw new Error("server " + res.status);
+  return (await res.json()).tasks || [];
+}
+
+async function load() {
+  try {
+    const tasks = (await getTasks()).filter(t => !t.name.startsWith("📋"));
+    const byList = {}; LISTS.forEach(l => byList[l.id] = []);
+    tasks.forEach(t => { if (byList[t.list?.id]) byList[t.list.id].push(t); });
+
+    const open = byList["901417799940"].length + byList["901417799941"].length;
+    const free = byList["901417799942"].length;
+    const saved = byList["901417799943"].length;
+    const churn = byList["901417799944"].length;
+    const atRisk = [...byList["901417799940"], ...byList["901417799941"], ...byList["901417799942"]];
+    const mrrRisk = atRisk.reduce((s, t) => s + mrrOf(t), 0);
+
+    document.getElementById("k-mrr").textContent = fmt$(mrrRisk);
+    document.getElementById("k-mrr-sub").textContent = atRisk.length + " accounts in play — every save keeps this recurring";
+    document.getElementById("k-open").textContent = open;
+    document.getElementById("k-saved").textContent = saved;
+    document.getElementById("k-churn").textContent = churn;
+    document.getElementById("k-free").textContent = free + " / 2";
+    const rate = (saved + churn) ? Math.round(100 * saved / (saved + churn)) : null;
+    document.getElementById("k-rate").textContent = rate === null ? "—" : rate + "%";
+
+    const ctx = document.getElementById("gauge");
+    if (gauge) gauge.destroy();
+    gauge = new Chart(ctx, {
+      type: "doughnut",
+      data: { datasets: [{ data: (saved + churn) ? [saved, churn] : [0, 0, 1], backgroundColor: ["#22C55E", "#FF5F6D", "#24365E"], borderWidth: 0, borderRadius: 5 }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: "72%", plugins: { legend: { display: false }, tooltip: { enabled: false } } }
+    });
+
+    const board = document.getElementById("board");
+    board.innerHTML = "";
+    LISTS.forEach(l => {
+      const col = document.createElement("div");
+      col.className = "col " + l.cls;
+      const items = byList[l.id].sort((a, b) => (a.priority === "urgent" ? 0 : a.priority === "high" ? 1 : 2) - (b.priority === "urgent" ? 0 : b.priority === "high" ? 1 : 2));
+      let html = `<h3>${l.label}<span class="cnt">${items.length}</span></h3><div class="cards">`;
+      items.slice(0, MAXCARDS).forEach(t => {
+        const mrr = mrrOf(t);
+        const asg = (t.assignees || []).map(a => (a.username || "").split(" ")[0]).filter(Boolean).join(", ");
+        let due = "";
+        if (t.due_date) {
+          const dd = new Date(+t.due_date);
+          const hot = (dd - new Date()) < 86400000 * 2;
+          due = `<span class="${hot ? "due-hot" : ""}">${dd.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>`;
+        }
+        html += `<div class="task ${t.priority === "urgent" ? "urgent" : t.priority === "high" ? "high" : "normal"}">
+          <div class="nm">${clean(t.name)}</div>
+          <div class="mt">${mrr ? `<span class="mrr">${fmt$(mrr)}</span>` : ""}${due}${asg ? `<span>· ${asg}</span>` : ""}</div>
+        </div>`;
+      });
+      html += "</div>";
+      if (items.length > MAXCARDS) html += `<div class="more">+${items.length - MAXCARDS} more</div>`;
+      col.innerHTML = html;
+      board.appendChild(col);
+    });
+    document.getElementById("stamp").textContent = "LIVE · " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    document.getElementById("err").style.display = "none";
+  } catch (e) {
+    document.getElementById("err").textContent = "Could not load pipeline: " + e.message;
+    document.getElementById("err").style.display = "block";
+    document.getElementById("stamp").textContent = "load failed";
+  }
+}
+load();
+if (!(window.cowork && window.cowork.callMcpTool)) setInterval(load, 120000);
+</script>
+</body>
+</html>

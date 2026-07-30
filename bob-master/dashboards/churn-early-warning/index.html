@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<script type="application/json" id="cowork-artifact-meta">
+{
+  "name": "Churn Early Warning",
+  "schemaVersion": 1,
+  "description": "Live churn early-warning dashboard for Advanced Marketers: scores every active client ad account (Google Ads + Meta via Supermetrics, incl. call-quality signals) on churn risk, ranked worst-first with week-over-week movement.",
+  "mcpTools": [
+    "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__data_query",
+    "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__get_async_query_results"
+  ],
+  "mcpServerNames": [
+    "Supermetrics Marketing Analytics",
+    "Supermetrics Marketing Analytics"
+  ]
+}
+</script>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Churn Early Warning - Advanced Marketers</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0D0D12; color: #EDEDF2;
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 24px;
+  }
+  .kick { font-size: 10px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #7D7BF7; }
+  .kick.muted { color: #8A8A99; }
+  h1 { font-size: 26px; font-weight: 800; margin: 4px 0 2px; letter-spacing: .5px; }
+  h1 .accent { color: #7D7BF7; }
+  .sub { color: #8A8A99; font-size: 12px; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+  .card {
+    background: #16161D; border: 1px solid #2B2B35; border-radius: 10px; padding: 14px 16px;
+  }
+  .card.risk { border-color: #E4604F; }
+  .card.watch { border-color: #D9A441; }
+  .card .big { font-size: 24px; font-weight: 800; margin-top: 4px; }
+  .card .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: 1.6px; color: #8A8A99; text-transform: uppercase; }
+  #status { padding: 10px 14px; border: 1px solid #2B2B35; border-radius: 8px; background: #16161D; color: #8A8A99; margin-bottom: 16px; font-size: 12px; }
+  #banner { display:none; padding: 12px 14px; border: 1px solid #D9A441; border-radius: 8px; background: #1d1708; color: #D9A441; margin-bottom: 16px; font-size: 12px; }
+  #banner a { color: #7D7BF7; }
+  table { width: 100%; border-collapse: collapse; background: #16161D; border: 1px solid #2B2B35; border-radius: 10px; overflow: hidden; }
+  thead th {
+    font-size: 9px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #8A8A99;
+    text-align: right; padding: 10px 10px; border-bottom: 1px solid #2B2B35; background: #1B1B24; cursor: default;
+  }
+  thead th:first-child, thead th:nth-child(2) { text-align: left; }
+  tbody td { padding: 9px 10px; text-align: right; border-bottom: 1px solid #22222B; font-variant-numeric: tabular-nums; }
+  tbody td:first-child, tbody td:nth-child(2) { text-align: left; }
+  tbody tr:last-child td { border-bottom: none; }
+  .tier { display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: 1.2px; padding: 3px 8px; border-radius: 20px; }
+  .tier.RISK { background: rgba(228,96,79,.15); color: #E4604F; border: 1px solid #E4604F; }
+  .tier.WATCH { background: rgba(217,164,65,.12); color: #D9A441; border: 1px solid #D9A441; }
+  .tier.OK { background: rgba(63,207,149,.1); color: #3FCF95; border: 1px solid #2c5c48; }
+  .plat { display: inline-block; font-size: 9px; font-weight: 800; padding: 2px 6px; border-radius: 4px; margin-right: 6px; background: #1B1B24; border: 1px solid #2B2B35; color: #8A8A99; }
+  .sig { display: inline-block; font-size: 10px; color: #E4604F; margin-right: 8px; }
+  .sig.warn { color: #D9A441; }
+  .up { color: #3FCF95; } .down { color: #E4604F; } .flat { color: #8A8A99; }
+  .name { font-weight: 600; }
+  .wow { font-size: 10px; color: #8A8A99; }
+  .foot { margin-top: 14px; color: #55555f; font-size: 10.5px; font-style: italic; }
+  .controls { display: flex; gap: 8px; margin-bottom: 12px; }
+  .controls button {
+    background: #16161D; color: #8A8A99; border: 1px solid #2B2B35; border-radius: 6px;
+    padding: 5px 12px; font-size: 11px; font-weight: 700; letter-spacing: 1px; cursor: pointer;
+  }
+  .controls button.active { color: #7D7BF7; border-color: #7D7BF7; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="kick">Revenue First, Always</div>
+    <h1>CHURN <span class="accent">EARLY WARNING</span></h1>
+    <div class="sub" id="range-label">Last 14 days vs prior 14 days &middot; Google Ads + Meta + call logs via Supermetrics</div>
+  </div>
+  <div style="text-align:right">
+    <div class="kick muted">Advanced Marketers&reg;</div>
+    <div class="sub" id="last-run"></div>
+  </div>
+</header>
+
+<div id="banner"></div>
+<div id="status">Loading fresh data from Supermetrics&hellip;</div>
+
+<div class="summary" id="summary" style="display:none">
+  <div class="card risk"><div class="lbl">At Risk</div><div class="big" id="n-risk" style="color:#E4604F">-</div></div>
+  <div class="card watch"><div class="lbl">Watch</div><div class="big" id="n-watch" style="color:#D9A441">-</div></div>
+  <div class="card"><div class="lbl">Healthy</div><div class="big" id="n-ok" style="color:#3FCF95">-</div></div>
+  <div class="card"><div class="lbl">Tracked Spend (14d)</div><div class="big" id="t-spend">-</div></div>
+</div>
+
+<div class="controls" id="controls" style="display:none">
+  <button data-f="all" class="active">ALL</button>
+  <button data-f="RISK">AT RISK</button>
+  <button data-f="WATCH">WATCH</button>
+  <button data-f="google">GOOGLE</button>
+  <button data-f="meta">META</button>
+</div>
+
+<div id="tablewrap"></div>
+
+<div class="card" style="margin-top:16px">
+  <div class="lbl" style="margin-bottom:8px">Not covered — no ad account connected (cannot be scored from ad data)</div>
+  <div id="blindspots" style="color:#8A8A99; font-size:11.5px; line-height:1.8"></div>
+</div>
+
+<div class="foot" id="foot"></div>
+
+<script>
+const DQ = "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__data_query";
+const GR = "mcp__cc1773d2-db97-4896-a299-ffb2b5ef9500__get_async_query_results";
+const HUB = "https://hub.supermetrics.com/subscriptions/1816146";
+
+// Roster-matched accounts (client roster provided 2026-07-02, hand-audited; see client_coverage_map.csv)
+const AW_ACCOUNTS=["1031051775","1257416364","1282833637","1297430835","1312101984","1313981988","1358688007","1651214601","1676606148","1925489395","2271397182","2405047429","2439100413","2537755600","2840818097","2993364907","3211501986","3217451984","3362882249","3606379421","3732695598","4068957505","4363689052","4777558591","4781538868","5773415499","6014031582","6149092715","6295796429","6361937793","6535500805","7000074284","7145681413","7196209317","7240141945","7266435044","7314021821","7600055319","7768476970","8118243442","8144144464","8405520158","8617008899","8633821943","8784005764","8990563468","9152156731","9236832650","9336346574","9353838254","9368379590","9466593544","9475349656","9510063547","9581576521","9731233729","9736283774","9766370401","9824944905","9848833215","9862134305","9950847531"];
+const AW_FALLBACK = ["9475349656"];
+const FA_ACCOUNTS=["act_1012388419936404","act_1062395335238827","act_1174830948187234","act_1190494109254907","act_1196693142000570","act_1210908176591694","act_1228410016165077","act_1239007188098378","act_1243630927237087","act_1266677795465665","act_1323695252832013","act_1349325277247354","act_1383764449294315","act_1393920718474059","act_1513942253501297","act_1640507733934930","act_1651044332144556","act_1663533661278319","act_1687621139661956","act_1687795268933772","act_1721016555979048","act_1952179088836493","act_2106855623455786","act_2231151677406389","act_2343610222790741","act_2374000689369411","act_26782908084669543","act_3036508903312321","act_399472862149970","act_758278763704880","act_758742387270645","act_769173841758686","act_778012001879509","act_829697866612924"];
+const FA_FALLBACK = ["act_1228410016165077"];
+const AW_CLIENT={"Pinpon Junk Removal":"Pinpons junk removal","Premium Floor and Design":"Premium Floor & Design","On Stage Cuts and Styles":"on stage cuts and styles","(LSA) At Your Service Heating and Cooling (HVAC) / Sheila Simon":"At Your Service Heating and AIr","Major League Plumbing":"Major League Plumbing","Rosewood":"Rosewood Landscape","Lopez Brothers Drywall":"Lopez Brothers Drywall","Prestige Heating & Air LLC":"Prestige Heating & Air LLC","JLG Tree Service - Tree Removal OC":"Jlg Tree Service","Paver Rescue LLC":"Paver Rescue LLC - Tampa","M14826 - Roof Solutions & Construction - GLS":"Roof Solutions","WestCoast Fence Pro":"WestCoast Fence Pros","JG Concrete":"JG Concrete LLC","*Central Roofing":"Central Roofing","Vera Plumbing and Drain":"Vera Plumbing and Drain","All City Janitorial":"All City Janitorial","Prestige Builders & Design":"Prestige builders & Design","OC Professional Rain Gutters":"OC Professional Rain Gutters","Haro HVAC Services":"HARO HVAC SERVICES","Reel Electric*":"The Reel Electric Company","His Hands Plumbing Services":"His Hands Plumbing Services","Andy's Pools Inc":"Andy's pools Inc","Morfin plumbing inc":"morfin plumbing services","Forbes Fencing CO":"Forbes Fencing CO","BluePoint Pools":"Bluepoint Pools","One Nation Energy":"One Nation Energy","Legendz Construction & Remodeling":"Legendz construction & Remodeling","Mad Differentials":"Mad Differential","Green Ladder Roofing":"Green Ladder Roofing Company","Moreno Building & Development L L C":"Moreno building & Development LLC","Heavy Duty Metal Buildings":"Heavy Duty Metal Buildings","Contreras Welding Shop":"Contreras Welding Shop","GG&N Plumbing Solutions Inc":"GG&N Plumbing Solutions Inc","Sky View Maintenance, Inc":"Sky view maintenance, inc","Total Door Service":"Total Door Service","J&C Concrete Restoration Inc":"J&C Concrete Restoration, Inc","Bay Area Roofing Master":"Bay Area Roofing Master Inc","Precision Drywall and Paint":"Precision Drywall & Paint llc","Pro Integrity Plumbing":"Pro Integrity Plumbing","Platinum Paving and Landscaping":"Platinum Paving & Landscaping","LG Electric Inc":"LG ELECTRIC","Roofing Pro":"Roofing Pro","Palm Valley Insurance":"Palm Valley Insurance","Leos Landscaping Inc":"Leo's landscaping inc","QuickFix Home Solutions Inc":"Quickfix Home Solutions Inc","Javiers Landscape(Progress Landscape)":"Javiers Landscape","Prime Lux Floors":"Prime Lux Floors","Caliber K9 Training LLC":"Caliber K9 Training","JH Disposal":"JH Disposal","Ram dumpsters":"Ram Dump Truck","Aquacare Pools LLC":"Aquacare Pools LLC","Down The Line Plumbing Inc.":"Down The Line Plumbing Inc","Piggies Air Conditioning":"piggies air conditioning","Abs Plumbing":"Absolute Best Service Plumbing Inc","East Valley Feed And Tack":"East Valley Feed & Tack, Inc.","Hidden Gem Landscaping Inc.":"Hidden Gem Landscaping","Roof City Inc - CC":"Roof City Inc","LA Mini Splits":"La Mini Splits","Lorenzo's Painting Services":"Lorenzo's Painting Services","LV Heating & Cooling LLC":"LV Heating & Cooling LLC","JQGlassworks":"JQGlassworks Inc","Longhorn Landscapes":"Longhorn Landscapes INC"};
+const FA_CLIENT={"AM - Pin Pon Junk Removal":"Pinpons junk removal","Prestige Heating & Air LLC":"Prestige Heating & Air LLC","WestCoast Fence Pros":"WestCoast Fence Pros","Prestige Builders & Design":"Prestige builders & Design","Apollo Home Solutions":"Apollo Home Solutions","OC Professional Rain Gutters":"OC Professional Rain Gutters","Haro HVAC Services":"HARO HVAC SERVICES","Andy's Pools, Inc.":"Andy's pools Inc","Morfin Plumbing Inc":"morfin plumbing services","forbes fence ad1":"Forbes Fencing CO","Bluepoint Pools":"Bluepoint Pools","One Nation Energy Ads":"One Nation Energy","Allegiance 76 Heating and Air Conditioning LLC":"Allegiance 76 Heating And Air Conditioning LLC","Green Ladder Roofing Inc.":"Green Ladder Roofing Company","Heavy Duty Metal Buildings":"Heavy Duty Metal Buildings","contreras welding shop":"Contreras Welding Shop","GG&N Plumbing Solutions Inc":"GG&N Plumbing Solutions Inc","J&C Concrete Restoration, Inc":"J&C Concrete Restoration, Inc","Bay Area Roofing Master":"Bay Area Roofing Master Inc","Precision Drywall & Paint":"Precision Drywall & Paint llc","Pro Integrity Plumbing":"Pro Integrity Plumbing","Platinum Paving & Landscaping":"Platinum Paving & Landscaping","Roofing Pro":"Roofing Pro","Leo's Landscaping Inc":"Leo's landscaping inc","QuickFix Home Solutions Inc":"Quickfix Home Solutions Inc","Downtheline Plumbing":"Down The Line Plumbing Inc","Piggies Air Conditioning":"piggies air conditioning","Absolute Best Service plumbing":"Absolute Best Service Plumbing Inc","Hidden Gems Landscaping-ADS-1":"Hidden Gem Landscaping","LA Mini Splits":"La Mini Splits","Sierra Trimlight":"Sierra Trimlight","LV Heating & Cooling":"LV Heating & Cooling LLC","Jq Glasswork Ads":"JQGlassworks Inc","Longhornscapes":"Longhorn Landscapes INC"};
+const BLIND_SPOTS=["OG Plumbing","Lincoln Plumbing & Rooter","Apex Landscape & Construction","Pro Made Roofing","Golden Rule Construction and Remodeling","Leo's Cleaning Service LLC","Build By JM LLC","Drain Force Plumbing","Mariachi Corazon de Maria","alexandro hernandez","LaFara Luxury Properties","Cortex Plastering","NLN Consulting","Moreno Construction & Renovation","Crown Detail AZ","5 Blox","Nations Instant Insurance Services","Amaral's Construction Corp","Saucedo plumbing","M&M Cellars","Axxel Plumbing","Next Era Heating & Air Conditioning","Ground Up Plumbing 24-7 Inc","Forbes landscape services","Next Level Sheet Metal","Van's Carpet and Flooring","Bella banana Pet Spa","Rising Green Inc","WESTERN LINQ","Primal Windows","Shelby Plumbing","REDWOOD COAST CLEANING","vizeon construction","Unleashed Electric","Clog Monkey Corp","Bodied by Jace"];
+const QUAL_SEC = 60;
+
+function fmtDate(d){ return d.toISOString().slice(0,10); }
+function ranges(){
+  const t = new Date(); // ends yesterday for complete days
+  const end = new Date(t); end.setDate(end.getDate()-1);
+  const curStart = new Date(end); curStart.setDate(curStart.getDate()-13);
+  const prevEnd = new Date(curStart); prevEnd.setDate(prevEnd.getDate()-1);
+  const prevStart = new Date(prevEnd); prevStart.setDate(prevStart.getDate()-13);
+  return {curStart:fmtDate(curStart), curEnd:fmtDate(end), prevStart:fmtDate(prevStart), prevEnd:fmtDate(prevEnd)};
+}
+
+async function call(name, args){
+  const r = await window.cowork.callMcpTool(name, args);
+  let obj = r.structuredContent;
+  if (!obj && r.content && r.content[0] && r.content[0].text) {
+    try { obj = JSON.parse(r.content[0].text); } catch(e) { obj = {success:false, error:r.content[0].text}; }
+  }
+  if (r.isError) throw new Error(typeof obj === "string" ? obj : (obj && obj.error) || "tool error");
+  return obj;
+}
+
+function csvLine(line){
+  const out = []; let cur = ""; let q = false;
+  for (let i=0;i<line.length;i++){
+    const ch = line[i];
+    if (q){
+      if (ch === '"' && line[i+1] === '"'){ cur+='"'; i++; }
+      else if (ch === '"'){ q = false; }
+      else cur += ch;
+    } else {
+      if (ch === '"') q = true;
+      else if (ch === ','){ out.push(cur); cur=""; }
+      else cur += ch;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+
+function parseCompact(str){
+  if (Array.isArray(str)) return str;
+  const rows = [];
+  for (const line of String(str).split("\n")){
+    const m = line.match(/^\s*-\s*\[\d*,?\]:\s*(.*)$/);
+    if (m) rows.push(csvLine(m[1]));
+  }
+  return rows;
+}
+
+async function runQuery(input, label){
+  const sub = await call(DQ, input);
+  if (!sub.success) throw new Error(label+": "+(sub.error||"submit failed"));
+  const sid = sub.data.schedule_id;
+  for (let i=0;i<40;i++){
+    await new Promise(r=>setTimeout(r, 1500));
+    let res;
+    try { res = await call(GR, {schedule_id: sid, compress: true}); }
+    catch(e){ throw new Error(label+": "+e.message); }
+    if (!res.success) throw new Error(label+": "+(res.error||"query failed"));
+    if (res.data && res.data.status === "completed") return parseCompact(res.data.data);
+    if (res.data && res.data.status === "error") throw new Error(label+": query errored");
+  }
+  throw new Error(label+": timed out");
+}
+
+function idx(header, name){ return header.findIndex(h => h.toLowerCase().includes(name)); }
+function toNum(v){ const n = parseFloat(String(v).replace(/[$,]/g,"")); return isNaN(n)?0:n; }
+
+async function platformData(ds, accounts, fallback, fields, nameKey, label){
+  const R = ranges();
+  const base = {ds_id: ds, fields: fields, timezone: "America/Los_Angeles", max_rows: 200};
+  if (ds === "AW") base.settings = {exclude_invalid_accounts: true};
+  async function two(accts){
+    const cur = await runQuery({...base, ds_accounts: accts, date_range_type:"custom", start_date:R.curStart, end_date:R.curEnd}, label+" current");
+    const prev = await runQuery({...base, ds_accounts: accts, date_range_type:"custom", start_date:R.prevStart, end_date:R.prevEnd}, label+" prior");
+    return {cur, prev, partial:false};
+  }
+  try { return await two(accounts); }
+  catch(e){
+    if (String(e.message).toLowerCase().includes("prioritis")){
+      const r = await two(fallback);
+      r.partial = true;
+      return r;
+    }
+    throw e;
+  }
+}
+
+function mapRows(rows, nameKey){
+  if (!rows.length) return {};
+  const h = rows[0];
+  const iN = idx(h,"account name"), iC = idx(h,"cost")>=0?idx(h,"cost"):idx(h,"amount spent");
+  const iL = idx(h,"conversions")>=0?idx(h,"conversions"):-1;
+  const iFb = idx(h,"on-facebook leads"), iWeb = idx(h,"website leads");
+  const out = {};
+  for (const r of rows.slice(1)){
+    const name = r[iN]; if (!name) continue;
+    let leads = 0;
+    if (iL>=0) leads = toNum(r[iL]);
+    if (iFb>=0) leads += toNum(r[iFb]);
+    if (iWeb>=0) leads += toNum(r[iWeb]);
+    out[name] = {cost: toNum(r[iC]), leads: leads};
+  }
+  return out;
+}
+
+function score(cur, prev, calls){
+  const sigs = [];
+  let s = 0;
+  const pc = prev ? prev.cost : 0, cc = cur ? cur.cost : 0;
+  const pl = prev ? prev.leads : 0, cl = cur ? cur.leads : 0;
+  if (pc > 100 && cc < 10){ s += 45; sigs.push(["PAUSED / STOPPED", false]); }
+  else if (pc > 0){
+    const dSpend = (cc-pc)/pc;
+    if (dSpend < -0.4){ s += 30; sigs.push(["SPEND "+Math.round(dSpend*100)+"%", false]); }
+    else if (dSpend < -0.2){ s += 20; sigs.push(["SPEND "+Math.round(dSpend*100)+"%", true]); }
+  }
+  if (pl >= 5){
+    const dL = (cl-pl)/pl;
+    if (dL < -0.5){ s += 30; sigs.push(["LEADS "+Math.round(dL*100)+"%", false]); }
+    else if (dL < -0.25){ s += 20; sigs.push(["LEADS "+Math.round(dL*100)+"%", true]); }
+    const pCPL = pc/pl, cCPL = cl>0 ? cc/cl : Infinity;
+    if (cCPL > pCPL*1.3){ s += 15; sigs.push(["CPL +"+(cCPL===Infinity?"∞":Math.round((cCPL/pCPL-1)*100)+"%"), true]); }
+  }
+  if (calls && calls.total >= 5){
+    const mr = calls.missed/calls.total;
+    if (mr > 0.15){ s += 10; sigs.push(["MISSED CALLS "+Math.round(mr*100)+"%", true]); }
+    const ss = calls.short/calls.total;
+    if (ss > 0.5){ s += 10; sigs.push(["SHORT CALLS "+Math.round(ss*100)+"%", true]); }
+  }
+  s = Math.min(100, s);
+  const tier = s >= 50 ? "RISK" : s >= 25 ? "WATCH" : "OK";
+  return {score: s, tier, sigs};
+}
+
+let ALL_ROWS = [];
+function render(filter){
+  const rows = ALL_ROWS.filter(r => {
+    if (filter === "all") return true;
+    if (filter === "google") return r.plat === "G";
+    if (filter === "meta") return r.plat === "M";
+    return r.tier === filter;
+  });
+  let html = '<table><thead><tr><th>Client / Account</th><th>Signals</th><th>Spend 14d</th><th>vs Prior</th><th>Leads 14d</th><th>vs Prior</th><th>Score</th><th>WoW</th><th>Tier</th></tr></thead><tbody>';
+  for (const r of rows){
+    const dS = r.prev.cost>0 ? (r.cur.cost-r.prev.cost)/r.prev.cost*100 : null;
+    const dL = r.prev.leads>0 ? (r.cur.leads-r.prev.leads)/r.prev.leads*100 : null;
+    const cls = v => v===null?"flat":(v>=0?"up":"down");
+    const fmt = v => v===null?"—":(v>=0?"+":"")+v.toFixed(0)+"%";
+    const clientName = (r.plat === "G" ? AW_CLIENT[r.name] : FA_CLIENT[r.name]) || r.name;
+    const acctNote = clientName.toLowerCase() !== r.name.toLowerCase() ? ` <span class="wow">(${r.name})</span>` : "";
+    html += `<tr>
+      <td><span class="plat">${r.plat === "G" ? "GOOGLE" : "META"}</span><span class="name">${clientName}</span>${acctNote}</td>
+      <td style="text-align:left">${r.sigs.map(s=>`<span class="sig${s[1]?" warn":""}">${s[0]}</span>`).join("")||'<span class="flat">—</span>'}</td>
+      <td>$${r.cur.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+      <td class="${cls(dS)}">${fmt(dS)}</td>
+      <td>${r.cur.leads.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+      <td class="${cls(dL)}">${fmt(dL)}</td>
+      <td style="font-weight:700">${r.score}</td>
+      <td class="wow">${r.wow}</td>
+      <td><span class="tier ${r.tier}">${r.tier==="OK"?"HEALTHY":r.tier==="RISK"?"AT RISK":"WATCH"}</span></td>
+    </tr>`;
+  }
+  html += "</tbody></table>";
+  document.getElementById("tablewrap").innerHTML = html;
+}
+
+document.getElementById("controls").addEventListener("click", e => {
+  if (e.target.tagName !== "BUTTON") return;
+  document.querySelectorAll(".controls button").forEach(b=>b.classList.remove("active"));
+  e.target.classList.add("active");
+  const saved = localStorage.getItem("am-churn-filter-pref");
+  localStorage.setItem("am-churn-filter-pref", e.target.dataset.f);
+  render(e.target.dataset.f);
+});
+
+async function main(){
+  document.getElementById("blindspots").textContent = BLIND_SPOTS.join("  ·  ");
+  const status = document.getElementById("status");
+  const R = ranges();
+  document.getElementById("range-label").textContent =
+    `${R.curStart} → ${R.curEnd} vs ${R.prevStart} → ${R.prevEnd} · Google Ads + Meta + call logs via Supermetrics`;
+  let partial = false;
+  try {
+    status.textContent = "Pulling Google Ads (current + prior period)…";
+    const aw = await platformData("AW", AW_ACCOUNTS, AW_FALLBACK,
+      "Accountname_fromAW,Impressions,Clicks,Cost,Conversions", "account name", "Google Ads");
+    partial = partial || aw.partial;
+
+    status.textContent = "Pulling Meta Ads…";
+    let fa = {cur:[], prev:[], partial:false};
+    try {
+      fa = await platformData("FA", FA_ACCOUNTS, FA_FALLBACK,
+        "profile,impressions,cost,onsite_conversion.lead_grouped,offsite_conversions_fb_pixel_lead", "account name", "Meta");
+      partial = partial || fa.partial;
+    } catch(e){ console.warn("Meta unavailable:", e.message); }
+
+    status.textContent = "Pulling call logs…";
+    let callsByAcct = {};
+    try {
+      const awAccts = partial ? AW_FALLBACK : AW_ACCOUNTS;
+      const cl = await runQuery({ds_id:"AW", ds_accounts: awAccts,
+        fields:"Accountname_fromAW,CallStatus,CallDuration",
+        date_range_type:"custom", start_date:R.curStart, end_date:R.curEnd,
+        timezone:"America/Los_Angeles", max_rows: 5000, settings:{exclude_invalid_accounts:true}}, "Call log");
+      if (cl.length > 1){
+        for (const r of cl.slice(1)){
+          const [name, st, dur] = r;
+          if (!callsByAcct[name]) callsByAcct[name] = {total:0, missed:0, short:0};
+          const a = callsByAcct[name];
+          a.total++;
+          if (String(st).toLowerCase() === "missed") a.missed++;
+          else if (toNum(dur) < QUAL_SEC) a.short++;
+        }
+      }
+    } catch(e){ console.warn("Call log unavailable:", e.message); }
+
+    const awCur = mapRows(aw.cur), awPrev = mapRows(aw.prev);
+    const faCur = mapRows(fa.cur), faPrev = mapRows(fa.prev);
+
+    // week-over-week from stored history
+    let hist = [];
+    try { hist = JSON.parse(localStorage.getItem("am-churn-history")||"[]"); } catch(e){}
+    const lastSnap = hist.length ? hist[hist.length-1].scores : {};
+
+    ALL_ROWS = [];
+    const build = (curMap, prevMap, plat) => {
+      const names = new Set([...Object.keys(curMap), ...Object.keys(prevMap)]);
+      for (const name of names){
+        const cur = curMap[name] || {cost:0, leads:0};
+        const prev = prevMap[name] || {cost:0, leads:0};
+        if (cur.cost < 5 && prev.cost < 5) continue; // dormant, not churn
+        const sc = score(cur, prev, plat==="G" ? callsByAcct[name] : null);
+        const key = plat+":"+name;
+        const old = lastSnap[key];
+        const wow = old === undefined ? "new" : (sc.score === old ? "=" : (sc.score > old ? "▲ +"+(sc.score-old) : "▼ "+(sc.score-old)));
+        ALL_ROWS.push({name, plat, cur, prev, ...sc, wow});
+      }
+    };
+    build(awCur, awPrev, "G");
+    build(faCur, faPrev, "M");
+    ALL_ROWS.sort((a,b)=>b.score-a.score || b.cur.cost-a.cur.cost);
+
+    // save snapshot (max 1/day)
+    const today = new Date().toISOString().slice(0,10);
+    if (!hist.length || hist[hist.length-1].date !== today){
+      const scores = {};
+      for (const r of ALL_ROWS) scores[r.plat+":"+r.name] = r.score;
+      hist.push({date: today, scores});
+      if (hist.length > 12) hist = hist.slice(-12);
+      localStorage.setItem("am-churn-history", JSON.stringify(hist));
+    }
+
+    const nR = ALL_ROWS.filter(r=>r.tier==="RISK").length;
+    const nW = ALL_ROWS.filter(r=>r.tier==="WATCH").length;
+    const nO = ALL_ROWS.filter(r=>r.tier==="OK").length;
+    const tS = ALL_ROWS.reduce((a,r)=>a+r.cur.cost,0);
+    document.getElementById("n-risk").textContent = nR;
+    document.getElementById("n-watch").textContent = nW;
+    document.getElementById("n-ok").textContent = nO;
+    document.getElementById("t-spend").textContent = "$"+tS.toLocaleString(undefined,{maximumFractionDigits:0});
+    document.getElementById("summary").style.display = "";
+    document.getElementById("controls").style.display = "";
+    document.getElementById("last-run").textContent = "Refreshed "+new Date().toLocaleString();
+    status.style.display = "none";
+
+    if (partial){
+      const b = document.getElementById("banner");
+      b.style.display = "";
+      b.innerHTML = "⚠ Supermetrics is limiting queries to prioritised accounts (trial restriction) - showing partial data. Fix at <a href='"+HUB+"' target='_blank'>hub.supermetrics.com</a> or upgrade the subscription.";
+    }
+
+    document.getElementById("foot").textContent =
+      "Scoring: paused +45, spend drop 20/40% +20/30, lead drop 25/50% +20/30, CPL +30% +15, missed-call rate >15% +10, short-call share >50% +10. "+
+      "Tiers: 50+ At Risk, 25+ Watch. Call signals from Google forwarding numbers only. Accounts with <$5 spend in both periods are hidden.";
+
+    const pref = localStorage.getItem("am-churn-filter-pref") || "all";
+    document.querySelectorAll(".controls button").forEach(b=>b.classList.toggle("active", b.dataset.f===pref));
+    render(pref);
+  } catch(e){
+    status.textContent = "Failed to load: "+e.message;
+  }
+}
+main();
+</script>
+</body>
+</html>
