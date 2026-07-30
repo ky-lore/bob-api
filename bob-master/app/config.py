@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     slack_jaime_user_id: str = "U0B0XG32YLV"
 
     # --- Google Drive (service account) ---
-    google_service_account_json: str  # path to the service account key file, or raw JSON
+    google_service_account_json: str  # raw JSON key content (not a file path — see google_drive.py)
     drive_google_ads_heartbeat_file_id: str = "1PjcXsvoFmSP8nVM_C_Qa7MeEVF6yUEAv6xH_LLKV-KQ"
     drive_google_ads_heartbeat_tab: str = "Heartbeat"
     drive_meta_heartbeat_file_id: str = "1rOsGhG4_vyTRBhR62LD2f6Xhqmg636WqYdvGLx5ZamA"

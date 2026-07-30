@@ -7,9 +7,14 @@ empty. Only report a sheet unreadable if both methods fail.
 Setup requirement, not yet done anywhere: the service account (GOOGLE_SERVICE_ACCOUNT_JSON)
 must be individually shared (as Viewer) on each of the heartbeat/TV-feed sheets —
 service accounts don't inherit the human bob@advancedmarketers.co's existing access.
+
+GOOGLE_SERVICE_ACCOUNT_JSON holds the *raw JSON key content*, not a file path — a
+Railway deploy has no pre-populated local file to point at, only env vars. Paste
+the whole downloaded service-account JSON in as one env var value.
 """
 import csv
 import io
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -27,8 +32,9 @@ _SCOPES = [
 class GoogleDriveClient:
     def __init__(self) -> None:
         settings = get_settings()
-        credentials = service_account.Credentials.from_service_account_file(
-            settings.google_service_account_json, scopes=_SCOPES
+        info = json.loads(settings.google_service_account_json)
+        credentials = service_account.Credentials.from_service_account_info(
+            info, scopes=_SCOPES
         )
         self._sheets = build("sheets", "v4", credentials=credentials)
         self._drive = build("drive", "v3", credentials=credentials)
