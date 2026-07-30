@@ -51,3 +51,23 @@ class SlackClient:
     def channel_history(self, channel_id: str, *, oldest_ts: str | None = None) -> list[dict[str, Any]]:
         resp = self._client.conversations_history(channel=channel_id, oldest=oldest_ts)
         return resp["messages"]
+
+    def join_channel(self, channel_id: str) -> dict[str, Any]:
+        """Requires the channels:join bot scope. Public channels only — Slack has
+        no API for a bot to self-join a private channel, see module docstring."""
+        return self._client.conversations_join(channel=channel_id)
+
+    def join_all_public_channels(self) -> dict[str, list[str]]:
+        """Idempotent — channels the bot is already in are just skipped. Safe to
+        re-run any time (e.g. after a new public channel is created)."""
+        joined, already_in, failed = [], [], []
+        for channel in self.list_channels(types="public_channel"):
+            if channel.get("is_member"):
+                already_in.append(channel["name"])
+                continue
+            try:
+                self.join_channel(channel["id"])
+                joined.append(channel["name"])
+            except Exception as exc:
+                failed.append(f"{channel['name']}: {exc}")
+        return {"joined": joined, "already_in": already_in, "failed": failed}

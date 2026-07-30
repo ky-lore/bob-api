@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.integrations.slack import SlackClient
 from app.models import ManagedClientEntry, ManagedListType
 
 router = APIRouter(prefix="/admin")
@@ -55,3 +56,11 @@ def deactivate_entry(entry_id: int, db: Session = Depends(get_db)) -> RedirectRe
         entry.updated_at = datetime.utcnow()
         db.commit()
     return RedirectResponse(url="/admin/watchlist", status_code=303)
+
+
+@router.post("/slack/join-public-channels")
+def join_public_channels() -> dict:
+    """One-off/rerunnable: has the bot self-join every public channel it's not
+    already in. Requires the channels:join bot scope. Public channels only —
+    private channels still need a human invite, see app/integrations/slack.py."""
+    return SlackClient().join_all_public_channels()
