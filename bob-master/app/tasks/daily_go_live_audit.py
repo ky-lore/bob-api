@@ -202,7 +202,19 @@ def build_digest(flags: list[Flag]) -> str:
 
 def run_daily_go_live_audit(db: Session) -> AuditRun:
     settings = get_settings()
-    run = AuditRun(run_date=datetime.utcnow().date(), started_at=datetime.utcnow(), status=RunStatus.partial)
+    run_date = datetime.utcnow().date()
+
+    # Re-running the same day (manual trigger during testing, or a legitimate
+    # same-day re-run in prod after fixing something) replaces that day's row
+    # rather than erroring on the unique constraint — one row per day is a
+    # deliberate design choice for the dashboard's history view, but that
+    # shouldn't mean a day is stuck with a bad first run forever.
+    existing = db.query(AuditRun).filter_by(run_date=run_date).first()
+    if existing:
+        db.delete(existing)
+        db.flush()
+
+    run = AuditRun(run_date=run_date, started_at=datetime.utcnow(), status=RunStatus.partial)
     db.add(run)
     db.flush()  # get run.id before attaching flags
 
