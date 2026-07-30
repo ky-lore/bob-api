@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+sqlalchemy
+psycopg2-binary
+apscheduler
+httpx
+slack_sdk
+google-api-python-client
+google-auth
+jinja2
+python-multipart

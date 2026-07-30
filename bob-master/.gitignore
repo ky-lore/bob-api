@@ -14,3 +14,10 @@ day_*/
 week_*/
 
 .DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+

@@ -1,0 +1,53 @@
+"""
+Slack client using slack_sdk against a bot token (xoxb).
+
+IMPORTANT GOTCHA — flagged rather than silently worked around: SKILL.md relies on
+org-wide Slack search (`slack_search_channels`, `slack search "<client> cancel"`)
+via Cowork's MCP connector, which was authenticated as a real user
+(bob@advancedmarketers.co). Slack's `search.messages` / `search.channels` API
+endpoints only work with a *user* token (xoxp) — a bot token cannot call them at
+all, regardless of scopes granted. Two real options, needs a decision before the
+cancel-intent and new-channel-detection logic can be ported faithfully:
+
+  1. Provision a user token for Bob (via a Slack app with user-token scopes, or
+     an internal integration) instead of / in addition to the bot token.
+  2. Restrict this task to channels the bot is a member of and enumerate with
+     conversations_list + conversations_history instead of search — misses
+     anything outside those channels, which defeats the "search cancel intent
+     org-wide" requirement in ACCURACY RULES §2.
+
+Shipping with option 2 silently would quietly break the cancellation safety net
+this task exists partly to provide — surface this to Chris/Jaime, don't guess.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from slack_sdk import WebClient
+
+from app.config import get_settings
+
+
+class SlackClient:
+    def __init__(self) -> None:
+        self._client = WebClient(token=get_settings().slack_bot_token)
+
+    def send_dm(self, user_id: str, text: str) -> dict[str, Any]:
+        dm = self._client.conversations_open(users=[user_id])
+        channel_id = dm["channel"]["id"]
+        return self._client.chat_postMessage(channel=channel_id, text=text)
+
+    def list_channels(self, *, types: str = "public_channel,private_channel") -> list[dict[str, Any]]:
+        channels: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            resp = self._client.conversations_list(types=types, cursor=cursor, limit=200)
+            channels.extend(resp["channels"])
+            cursor = resp.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+        return channels
+
+    def channel_history(self, channel_id: str, *, oldest_ts: str | None = None) -> list[dict[str, Any]]:
+        resp = self._client.conversations_history(channel=channel_id, oldest=oldest_ts)
+        return resp["messages"]

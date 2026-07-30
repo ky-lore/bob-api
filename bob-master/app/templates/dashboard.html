@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Go-Live Priority List</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 2rem auto; color: #1a1a1a; }
+    nav a { margin-right: 0.75rem; text-decoration: none; color: #555; }
+    nav a.current { font-weight: 600; color: #1a1a1a; }
+    section { margin-bottom: 1.5rem; }
+    h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: 0.03em; color: #555; }
+    ul { padding-left: 1.1rem; }
+    li { margin-bottom: 0.25rem; }
+    .unverified { color: #a15c00; }
+    .empty { color: #777; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>Go-Live Priority List</h1>
+  <nav>
+    {% for h in history %}
+      <a href="/dashboard/{{ h.run_date }}" class="{{ 'current' if run and h.run_date == run.run_date else '' }}">{{ h.run_date }}</a>
+    {% endfor %}
+  </nav>
+
+  {% if not run %}
+    <p class="empty">No audit run recorded yet.</p>
+  {% else %}
+    <p>Run: {{ run.run_date }} — status: {{ run.status.value }}{% if run.notes %} — {{ run.notes }}{% endif %}</p>
+
+    {% for category, items in run.flags | groupby("category") %}
+      <section>
+        <h2>{{ category.value.replace('_', ' ') }}</h2>
+        <ul>
+          {% for f in items %}
+            <li class="{{ 'unverified' if f.unverified else '' }}">
+              <strong>{{ f.client_name }}</strong> — {{ f.message }}
+              {% if f.unverified %}(unverified){% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </section>
+    {% else %}
+      <p class="empty">All clear.</p>
+    {% endfor %}
+  {% endif %}
+</body>
+</html>

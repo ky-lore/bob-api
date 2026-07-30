@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Watchlist Admin</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 700px; margin: 2rem auto; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+    th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid #ddd; }
+    form.inline { display: inline; }
+    fieldset { margin-top: 1.5rem; }
+    label { display: block; margin-top: 0.5rem; font-size: 0.85rem; color: #555; }
+    input, select, textarea { width: 100%; padding: 0.4rem; margin-top: 0.15rem; }
+    button { margin-top: 0.75rem; padding: 0.5rem 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Watchlist / Ex-Client Admin</h1>
+  <p>Replaces the hardcoded named-client lists from the original prompt. Edits here apply to the next audit run.</p>
+
+  <table>
+    <tr><th>Type</th><th>Client</th><th>Note</th><th>Added by</th><th></th></tr>
+    {% for e in entries %}
+      <tr>
+        <td>{{ e.list_type.value }}</td>
+        <td>{{ e.client_name }}</td>
+        <td>{{ e.note or "" }}</td>
+        <td>{{ e.created_by or "" }}</td>
+        <td>
+          <form class="inline" method="post" action="/admin/watchlist/{{ e.id }}/deactivate">
+            <button type="submit">Remove</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">No entries yet.</td></tr>
+    {% endfor %}
+  </table>
+
+  <fieldset>
+    <legend>Add entry</legend>
+    <form method="post" action="/admin/watchlist">
+      <label>Type
+        <select name="list_type">
+          <option value="watchlist">watchlist</option>
+          <option value="ex_client">ex_client</option>
+        </select>
+      </label>
+      <label>Client name <input name="client_name" required></label>
+      <label>Note <textarea name="note" rows="2"></textarea></label>
+      <label>Added by <input name="created_by" placeholder="your name"></label>
+      <button type="submit">Add</button>
+    </form>
+  </fieldset>
+</body>
+</html>
