@@ -9,8 +9,10 @@ that implies — no truncation/summarization here, full dumps, see how it goes.
 Two sources, both keyed off the account's already-matched go-live card:
   - ClickUp: every comment on the card AND on every one of its subtasks
     ([CLIENT]/[AM] blockers), via get_task_with_subtasks + get_task_comments.
-  - Slack: every message in the account's "internal-<client>" channel, found
-    by fuzzy-matching the account name against the channel list (same
+  - Slack: every real message in the account's "internal-<client>" channel
+    (system events like channel-join are filtered — see
+    _SLACK_NOISE_SUBTYPES, not content for the LLM to interpret), found by
+    fuzzy-matching the account name against the channel list (same
     matching.find_best_match machinery already used for ClickUp cards) —
     liberal here on purpose: "ambiguous" confidence still counts (see
     _add_slack_context), unlike the ClickUp/retention board matching, which
@@ -38,6 +40,17 @@ from app.integrations.slack import SlackClient
 from app.tasks.matching import find_best_match
 
 _INTERNAL_CHANNEL_PREFIX_RE = re.compile(r"^internal-", re.IGNORECASE)
+
+# Slack system-event subtypes -- "<@U0BLXKX8LS1> has joined the channel" and
+# friends. Real messages have no "subtype" key at all; these are noise that
+# bloats the LLM input without adding anything for it to interpret, and on a
+# busy/old channel (real example: a "contreras_welding_shop" channel producing
+# 100+ raw lines) can be the difference between a batch fitting its token
+# budget or not.
+_SLACK_NOISE_SUBTYPES = {
+    "channel_join", "channel_leave", "channel_topic", "channel_purpose",
+    "channel_name", "channel_archive", "channel_unarchive", "bot_add", "bot_remove",
+}
 
 
 def extract_channel_client_name(channel_name: str) -> str:
@@ -111,6 +124,8 @@ def _add_slack_context(
         return
 
     for m in messages:
+        if m.get("subtype") in _SLACK_NOISE_SUBTYPES:
+            continue
         text = (m.get("text") or "").strip()
         if text:
             result.context.append(f"[Slack #{match.card_name}] {text}")

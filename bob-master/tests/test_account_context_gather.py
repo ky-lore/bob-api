@@ -72,6 +72,26 @@ def test_gather_rich_context_pulls_full_slack_channel_history_when_matched():
     assert result.slack_error is None
 
 
+def test_gather_rich_context_filters_out_slack_system_message_noise():
+    # Real bug (2026-07-31): a busy channel's "has joined the channel" system
+    # messages bloated the LLM input enough to blow a batch's token budget,
+    # contributing to raw transcripts leaking into the dashboard.
+    clickup = _FakeClickUp()
+    slack = _FakeSlack(
+        messages=[
+            {"text": "<@U0BLXKX8LS1> has joined the channel", "subtype": "channel_join"},
+            {"text": "set the channel topic", "subtype": "channel_topic"},
+            {"text": "hey team, real update here"},
+        ]
+    )
+    channels = [{"id": "C123", "name": "internal-acme-co"}]
+
+    result = gather_rich_context("Acme Co", None, clickup, slack, channels)
+
+    assert result.context == ["[Slack #internal-acme-co] hey team, real update here"]
+    assert result.slack_message_count == 1
+
+
 def test_gather_rich_context_accepts_ambiguous_confidence_slack_matches():
     # Liberal on purpose (Bob, 2026-07-31): a wrong Slack channel just means
     # extra context, not a wrong account correlation, so "ambiguous" is good

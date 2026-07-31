@@ -193,11 +193,44 @@ def test_narrative_batches_are_surfaced_in_the_result(monkeypatch):
     assert result["narrative_batches"] == fake_batches
 
 
+def test_account_skipped_by_a_successful_batch_gets_clean_placeholder_not_raw_dump(monkeypatch):
+    # Real production bug (2026-07-31): the batch call succeeds overall (no
+    # exception, narrative_error stays None -- no warning banner) but the
+    # model just doesn't produce an entry for one account, likely because its
+    # busy Slack channel bloated that batch's input. The account still needs
+    # SOMETHING in "Where they stand" -- it must never be the raw joined
+    # ClickUp/Slack context (real example: 100+ lines including Slack
+    # "has joined the channel" system messages pasted verbatim).
+    monkeypatch.setattr(
+        "app.tasks.dashboard_summary.synthesize_account_narratives",
+        lambda accounts: ({}, [{"batch_index": 0, "accounts": [a["account"] for a in accounts], "narrated_count": 0, "ok": True, "error": None}]),
+    )
+
+    account_context = {"Roof City Professionals": {"day": 5, "stage": "onboarding", "card_id": "card1"}}
+    rich_context = {
+        "Roof City Professionals": [
+            "[Slack #internal-roof_city_professionals] <@U0BLXKX8LS1> has joined the channel",
+            "[Slack #internal-roof_city_professionals] hey team quick update",
+        ]
+    }
+    result = json.loads(
+        build_dashboard_json([], account_context, {"Roof City Professionals"}, set(), set(), rich_context)
+    )
+
+    status = result["accounts_overview"][0]["status"]
+    assert "[Slack #" not in status
+    assert "has joined the channel" not in status
+    assert result["narrative_error"] is None  # this is the "no banner shown" part of the bug
+    assert status == "Day 5, not live yet. Narrative unavailable this run (2 context item(s) gathered, not synthesized)."
+
+
 def test_build_dashboard_json_surfaces_llm_failure_instead_of_swallowing_it(monkeypatch):
     # Real bug: the first version of the narrative synthesizer caught its own
     # exception and returned a silent fallback, so a real API failure was
     # completely invisible anywhere. narrative_error must be populated whenever
-    # the LLM call fails, and rows must still fall back to raw context.
+    # the LLM call fails, and rows must still get a clean placeholder -- never
+    # the raw ClickUp/Slack context (a later, separate real bug: an account
+    # with a busy Slack channel got 100+ raw lines pasted into its status).
     def _raise(accounts):
         raise RuntimeError("Claude response had no submit_narratives tool call (stop_reason=max_tokens)")
 
@@ -209,4 +242,6 @@ def test_build_dashboard_json_surfaces_llm_failure_instead_of_swallowing_it(monk
 
     assert result["narrative_error"] is not None
     assert "max_tokens" in result["narrative_error"]
-    assert result["accounts_overview"][0]["status"] == "Meta: campaigns enabled, $0 spend"
+    status = result["accounts_overview"][0]["status"]
+    assert "Meta: campaigns enabled, $0 spend" not in status  # never the raw context, even in the message
+    assert status == "Day 14, not live yet. Narrative unavailable this run (1 context item(s) gathered, not synthesized)."

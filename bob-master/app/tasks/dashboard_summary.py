@@ -40,6 +40,21 @@ def _group_flags_by_account(flags: list[Flag]) -> dict[str, list[Flag]]:
     return by_account
 
 
+def _fallback_status(a: dict) -> str:
+    """Never dump raw ClickUp/Slack text into the polished table (real bug,
+    2026-07-31: a couple of accounts with unusually busy Slack channels
+    apparently blew past their batch's token budget, the model skipped
+    writing a status for them, and the old fallback pasted 50-100+ raw Slack
+    lines straight into "Where they stand" -- exactly the "just posting
+    transcripts instead of interpreting them" complaint the LLM step exists
+    to prevent. A short, honest placeholder beats a wall of chat log."""
+    live_word = "live" if a["is_live"] else "not live yet"
+    base = f"Day {a['day']}, {live_word}."
+    if a["context"]:
+        return f"{base} Narrative unavailable this run ({len(a['context'])} context item(s) gathered, not synthesized)."
+    return f"{base} No additional context gathered."
+
+
 def all_matched_accounts(account_context: dict[str, dict]) -> list[str]:
     """Every account with a matched go-live-list card — live or not, whatever
     package (package is no longer tracked at all — see module docstring).
@@ -92,8 +107,9 @@ def build_dashboard_json(
     try:
         narratives, narrative_batches = synthesize_account_narratives(accounts_for_llm)
     except Exception as exc:
-        # Degrade to the raw context join per account (never blank the
-        # dashboard over this), but surface *why* — silently swallowing this
+        # Degrade to a clean per-account placeholder (never blank the
+        # dashboard over this, and never the raw context -- see
+        # _fallback_status), but surface *why* — silently swallowing this
         # is exactly what made the first real failure undiagnosable.
         narratives = {}
         narrative_error = f"{type(exc).__name__}: {exc}"
@@ -105,7 +121,7 @@ def build_dashboard_json(
             "stage": a["stage"],
             "is_live": a["is_live"],
             "ad_spend": a["ad_spend"],
-            "status": narratives.get(a["account"]) or "; ".join(a["context"]) or "No additional context gathered.",
+            "status": narratives.get(a["account"]) or _fallback_status(a),
         }
         for a in accounts_for_llm
     ]
