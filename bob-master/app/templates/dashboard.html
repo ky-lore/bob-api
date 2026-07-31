@@ -148,6 +148,22 @@
       </div>
     {% endif %}
 
+    {% if web_builds %}
+      <div class="card">
+        <h2>Web builds — {{ web_builds|length }} (oldest first)</h2>
+        <table>
+          <tr><th>Card</th><th>Day</th><th>Status</th></tr>
+          {% for b in web_builds %}
+            <tr>
+              <td>{{ b.name }}</td>
+              <td class="day">{{ b.day }}</td>
+              <td>{{ b.status }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    {% endif %}
+
     {% for title, items in sections %}
       <section class="detail">
         <h2>{{ title }}</h2>

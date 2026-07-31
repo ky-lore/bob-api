@@ -471,6 +471,29 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 )
             )
 
+    # --- Web Build Pipeline sweep (Bob, 2026-07-31): a separate ClickUp list
+    # tracking website builds, not client accounts -- outside the 90-day
+    # go-live board window entirely (real example the original dashboard
+    # named: ColdRiite Walk-Ins sitting 374 days). Still macro, no >30-day
+    # threshold/flag rule yet -- just card name/status/day count, oldest
+    # first, same "see the whole board before adding rules" approach as the
+    # rest of this pass. No heartbeat/live-status join needed here since
+    # these aren't ad accounts. ---
+    try:
+        web_build_data = clickup.get_list_tasks(settings.clickup_web_build_list_id, include_closed=True)
+        web_builds = [
+            {
+                "card_id": t.get("id"),
+                "name": t.get("name"),
+                "status": ((t.get("status") or {}).get("status") or "").lower(),
+                "day": resolve_day_count(t.get("name") or "", t["date_created"]) if t.get("date_created") else 0,
+            }
+            for t in web_build_data.get("tasks", [])
+        ]
+    except Exception as exc:
+        web_builds = []
+        notes.append(f"Web Build Pipeline pull failed: {exc}")
+
     # --- "Ads off — who's dark and why" classification, per the reference
     # dashboard (golive-pipeline-dashboard.pdf). Iterates heartbeat-known
     # accounts — does NOT catch an account fully unmapped on BOTH platforms
@@ -640,6 +663,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             previous_live_accounts,
             rich_context,
             spend_by_account,
+            web_builds,
         )
         narrative_error = json.loads(run.dashboard_json).get("narrative_error")
         if narrative_error:

@@ -475,3 +475,101 @@ def test_full_context_gather_reaches_the_narrative_llm_input(monkeypatch, tmp_pa
         get_settings.cache_clear()
         get_engine.cache_clear()
         get_session_factory.cache_clear()
+
+
+class _FakeClickUpWithWebBuilds:
+    """Branches on list_id: go-live board is empty (isolates the web-build
+    sweep from account matching), web-build list returns two real-shaped
+    cards -- one very stale (the ColdRiite-style case), one fresh."""
+
+    def get_list_tasks(self, list_id, include_closed=True, page=0):
+        if list_id == "web-build-list":
+            long_ago_ms = str(int((datetime.now(timezone.utc) - timedelta(days=374)).timestamp() * 1000))
+            recent_ms = str(int((datetime.now(timezone.utc) - timedelta(days=3)).timestamp() * 1000))
+            return {
+                "tasks": [
+                    {"id": "wb1", "name": "ColdRiite Walk-Ins", "status": {"status": "development"}, "date_created": long_ago_ms},
+                    {"id": "wb2", "name": "Fresh Site Co", "status": {"status": "in progress"}, "date_created": recent_ms},
+                ],
+                "last_page": True,
+            }
+        return {"tasks": [], "last_page": True}  # no go-live match -- isolates the web-build sweep
+
+
+def test_web_build_pipeline_sweep_pulls_stale_builds_into_the_dashboard(monkeypatch, tmp_path):
+    db_path = tmp_path / "webbuild.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("CLICKUP_WEB_BUILD_LIST_ID", "web-build-list")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUpWithWebBuilds)
+    monkeypatch.setattr(mod, "GHLClient", lambda: type("_G", (), {"recent_closed_won": lambda self, *a, **k: []})())
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        # oldest first, no >30-day threshold filtering -- both show up, macro/visibility only
+        assert [b["name"] for b in dashboard_data["web_builds"]] == ["ColdRiite Walk-Ins", "Fresh Site Co"]
+        coldriite = dashboard_data["web_builds"][0]
+        assert coldriite["day"] == 374
+        assert coldriite["status"] == "development"
+        assert coldriite["card_id"] == "wb1"
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+class _FakeClickUpWebBuildPullFails:
+    def get_list_tasks(self, list_id, include_closed=True, page=0):
+        if list_id == "web-build-list":
+            raise RuntimeError("ClickUp API 503")
+        return {"tasks": [], "last_page": True}
+
+
+def test_web_build_pipeline_pull_failure_does_not_crash_the_run(monkeypatch, tmp_path):
+    db_path = tmp_path / "webbuild_fail.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("CLICKUP_WEB_BUILD_LIST_ID", "web-build-list")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUpWebBuildPullFails)
+    monkeypatch.setattr(mod, "GHLClient", lambda: type("_G", (), {"recent_closed_won": lambda self, *a, **k: []})())
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        assert run.status in (RunStatus.success, RunStatus.partial)
+        assert "Web Build Pipeline pull failed" in run.notes
+        dashboard_data = json.loads(run.dashboard_json)
+        assert dashboard_data["web_builds"] == []
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()

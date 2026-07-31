@@ -159,10 +159,25 @@ def test_rich_context_defaults_to_empty_without_breaking_existing_callers(monkey
     monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
     account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "card_id": "card1"}}
 
-    # No rich_context/spend_by_account args at all -- must not raise.
+    # No rich_context/spend_by_account/web_builds args at all -- must not raise.
     result = json.loads(build_dashboard_json([], account_context, {"Acme Co"}, set(), set()))
     assert result["accounts_overview"][0]["account"] == "Acme Co"
     assert result["accounts_overview"][0]["ad_spend"] == {}
+    assert result["web_builds"] == []
+
+
+def test_web_builds_are_sorted_oldest_first_no_threshold_filtering(monkeypatch):
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
+    web_builds = [
+        {"card_id": "b1", "name": "Fresh Site Co", "status": "development", "day": 3},
+        {"card_id": "b2", "name": "ColdRiite Walk-Ins", "status": "development", "day": 374},
+        {"card_id": "b3", "name": "Big Reds Tile", "status": "ready to launch", "day": 90},
+    ]
+    result = json.loads(build_dashboard_json([], {}, set(), set(), set(), None, None, web_builds))
+
+    # oldest first, and nothing dropped -- no >30-day filter, this is macro/visibility only
+    assert [b["name"] for b in result["web_builds"]] == ["ColdRiite Walk-Ins", "Big Reds Tile", "Fresh Site Co"]
+    assert len(result["web_builds"]) == 3
 
 
 def test_narrative_batches_are_surfaced_in_the_result(monkeypatch):

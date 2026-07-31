@@ -19,6 +19,9 @@ the full-account macro picture first, drilling down into specifics later.
   - ads_off: the 4 sub-buckets from ads_off_classification.py (unchanged —
     already package-agnostic)
   - new_deals / went_live: plain factual lists (unchanged)
+  - web_builds: the separate Web Build Pipeline list (website builds, not
+    client accounts, outside the 90-day go-live board window), oldest first —
+    added 2026-07-31, no threshold/flag logic yet, just visibility
   - live_accounts: stored so the NEXT run can diff against it for went_live
 """
 from __future__ import annotations
@@ -54,16 +57,22 @@ def build_dashboard_json(
     previous_live_accounts: set[str],
     rich_context: dict[str, list[str]] | None = None,
     spend_by_account: dict[str, dict] | None = None,
+    web_builds: list[dict] | None = None,
 ) -> str:
     """rich_context: optional {account_name: [context strings, ...]} — full
     ClickUp/Slack material (see account_context_gather.py) for that account's
     LLM narrative input. spend_by_account: optional {account_name: {"Google
     Ads": {"spend": float, "enabled_campaigns": int} | None, "Meta": ... |
-    None}} — ad spend summary, also fed to the narrative. Pure merge only;
-    this function does no I/O of its own, per the module docstring."""
+    None}} — ad spend summary, also fed to the narrative. web_builds: optional
+    [{"card_id", "name", "status", "day"}, ...] from the separate Web Build
+    Pipeline list (website builds, not client accounts — outside the 90-day
+    go-live board window; see daily_go_live_audit.py). Sorted here, oldest
+    first, no threshold/flag logic — still macro, visibility only. Pure merge
+    only; this function does no I/O of its own, per the module docstring."""
     by_account = _group_flags_by_account(flags)
     rich_context = rich_context or {}
     spend_by_account = spend_by_account or {}
+    web_builds = sorted(web_builds or [], key=lambda r: r.get("day", 0), reverse=True)
 
     matched_accounts = all_matched_accounts(account_context)
     accounts_for_llm = [
@@ -168,6 +177,7 @@ def build_dashboard_json(
             },
             "new_deals": new_deals,
             "went_live": went_live,
+            "web_builds": web_builds,
             "live_accounts": sorted(live_accounts),
             "narrative_error": narrative_error,
             "narrative_batches": narrative_batches,

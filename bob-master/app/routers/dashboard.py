@@ -29,6 +29,7 @@ _EMPTY_DASHBOARD_DATA = {
     "ads_off": {"should_be_on_but_dark": [], "campaigns_on_zero_spend": [], "unsettled": [], "verified_off": []},
     "new_deals": [],
     "went_live": [],
+    "web_builds": [],
     "narrative_error": None,
 }
 
@@ -52,6 +53,7 @@ def _parse_dashboard_json(run: AuditRun | None) -> dict:
         },
         "new_deals": parsed.get("new_deals", []),
         "went_live": parsed.get("went_live", []),
+        "web_builds": parsed.get("web_builds", []),
         "narrative_error": parsed.get("narrative_error"),
     }
 
