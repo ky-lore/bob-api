@@ -37,7 +37,15 @@ def build_dashboard_json(
         for account_name, account_flags in by_account.items()
     ]
 
-    narratives = synthesize_blocking_narratives(accounts_for_llm)
+    narrative_error: str | None = None
+    try:
+        narratives = synthesize_blocking_narratives(accounts_for_llm)
+    except Exception as exc:
+        # Degrade to the raw flag-message join per account (never blank the
+        # dashboard over this), but surface *why* — silently swallowing this
+        # is exactly what made the first real failure undiagnosable.
+        narratives = {}
+        narrative_error = f"{type(exc).__name__}: {exc}"
 
     rows = [
         {
@@ -61,4 +69,4 @@ def build_dashboard_json(
         "total_accounts_tracked": len(all_account_names),
     }
 
-    return json.dumps({"stat_tiles": stat_tiles, "rows": rows})
+    return json.dumps({"stat_tiles": stat_tiles, "rows": rows, "narrative_error": narrative_error})

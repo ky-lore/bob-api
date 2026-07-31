@@ -21,13 +21,20 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 def _parse_dashboard_json(run: AuditRun | None) -> dict:
-    empty = {"stat_tiles": {}, "rows": []}
+    empty = {"stat_tiles": {}, "rows": [], "narrative_error": None}
     if not run or not run.dashboard_json:
         return empty
     try:
-        return json.loads(run.dashboard_json)
+        parsed = json.loads(run.dashboard_json)
     except (ValueError, TypeError):
         return empty
+    # .get() with fallback, not direct indexing — older stored runs predate
+    # the narrative_error key and shouldn't 500 the whole page over it.
+    return {
+        "stat_tiles": parsed.get("stat_tiles", {}),
+        "rows": parsed.get("rows", []),
+        "narrative_error": parsed.get("narrative_error"),
+    }
 
 # Same order as build_digest()'s SECTIONS in daily_go_live_audit.py — Jinja's
 # groupby filter sorts alphabetically, which doesn't match the intended report
@@ -68,6 +75,7 @@ def latest_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLRes
             "sections": _grouped_sections(latest),
             "stat_tiles": dashboard_data["stat_tiles"],
             "rows": dashboard_data["rows"],
+            "narrative_error": dashboard_data["narrative_error"],
         },
     )
 
@@ -86,5 +94,6 @@ def dashboard_for_date(run_date: date, request: Request, db: Session = Depends(g
             "sections": _grouped_sections(run),
             "stat_tiles": dashboard_data["stat_tiles"],
             "rows": dashboard_data["rows"],
+            "narrative_error": dashboard_data["narrative_error"],
         },
     )

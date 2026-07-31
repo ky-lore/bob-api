@@ -43,6 +43,11 @@
     section.detail ul { padding-left: 1.1rem; }
     section.detail li { margin-bottom: 0.25rem; }
     .unverified { color: var(--amber); }
+    .warning-banner { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; border-radius: 8px;
+                       padding: 0.6rem 0.9rem; font-size: 0.85rem; margin-bottom: 1rem; }
+    @media (prefers-color-scheme: dark) {
+      .warning-banner { background: #3f2d0a; color: #fbbf24; border-color: #78350f; }
+    }
   </style>
 </head>
 <body>
@@ -69,6 +74,10 @@
         <div class="tile"><div class="n">{{ stat_tiles.new_deals }}</div><div class="label">New deals</div></div>
         <div class="tile"><div class="n">{{ stat_tiles.total_accounts_tracked }}</div><div class="label">Accounts tracked</div></div>
       </div>
+    {% endif %}
+
+    {% if narrative_error %}
+      <div class="warning-banner">⚠️ Narrative synthesis failed this run — showing raw flag messages instead: {{ narrative_error }}</div>
     {% endif %}
 
     {% if rows %}

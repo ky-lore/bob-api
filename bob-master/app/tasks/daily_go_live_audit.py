@@ -29,6 +29,7 @@ built from for why):
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -509,8 +510,11 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     run.digest_text = digest_text
     try:
         run.dashboard_json = build_dashboard_json(flags, account_context, all_account_names)
+        narrative_error = json.loads(run.dashboard_json).get("narrative_error")
+        if narrative_error:
+            notes.append(f"Dashboard narrative synthesis failed, showing raw flags instead: {narrative_error}")
     except Exception as exc:
-        notes.append(f"Dashboard narrative synthesis failed: {exc}")
+        notes.append(f"Dashboard JSON build failed entirely: {exc}")
     run.status = RunStatus.success if not notes else RunStatus.partial
     run.notes = "\n".join(notes) if notes else None
     run.finished_at = datetime.utcnow()

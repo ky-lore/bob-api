@@ -58,28 +58,32 @@ def synthesize_blocking_narratives(accounts: list[dict[str, Any]]) -> dict[str, 
     where context is the already-gathered flag messages/facts for that account.
     Returns {account_name: narrative_sentence}.
 
-    Falls back to a deterministic join of the context strings if the API call
-    fails for any reason — the dashboard must never go blank because of this
-    optional synthesis step."""
+    Raises on any failure — deliberately, so the caller (build_dashboard_json)
+    can decide how to degrade AND surface why, instead of this silently
+    swallowing the error with no visibility anywhere (the first version of
+    this did exactly that, and it made a real failure undiagnosable from the
+    dashboard alone)."""
     if not accounts:
         return {}
 
-    try:
-        settings = get_settings()
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        response = client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=4096,
-            system=_SYSTEM_PROMPT,
-            tools=[_TOOL_SCHEMA],
-            tool_choice={"type": "tool", "name": _TOOL_NAME},
-            messages=[{"role": "user", "content": json.dumps(accounts, indent=2)}],
-        )
-        for block in response.content:
-            if block.type == "tool_use" and block.name == _TOOL_NAME:
-                narratives = block.input.get("narratives", [])
-                return {n["account"]: n["blocking"] for n in narratives if n.get("account")}
-    except Exception:
-        pass
+    settings = get_settings()
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    # max_tokens scales with account count — a fixed budget silently truncates
+    # the JSON output (and therefore the tool call) once there are enough
+    # accounts; 81 real accounts in the first live run would have been tight
+    # against a flat 4096.
+    max_tokens = min(8192, 300 + 60 * len(accounts))
+    response = client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=max_tokens,
+        system=_SYSTEM_PROMPT,
+        tools=[_TOOL_SCHEMA],
+        tool_choice={"type": "tool", "name": _TOOL_NAME},
+        messages=[{"role": "user", "content": json.dumps(accounts, indent=2)}],
+    )
+    for block in response.content:
+        if block.type == "tool_use" and block.name == _TOOL_NAME:
+            narratives = block.input.get("narratives", [])
+            return {n["account"]: n["blocking"] for n in narratives if n.get("account")}
 
-    return {a["account"]: "; ".join(a.get("context", [])) or "No details available" for a in accounts}
+    raise RuntimeError(f"Claude response had no {_TOOL_NAME} tool call (stop_reason={response.stop_reason})")

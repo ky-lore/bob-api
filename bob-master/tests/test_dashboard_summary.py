@@ -56,6 +56,25 @@ def test_build_dashboard_json_uses_llm_narrative_when_available(monkeypatch):
     assert result["rows"][0]["blocking"] == "Synthesized: stuck in onboarding, 14 days with no live spend."
 
 
+def test_build_dashboard_json_surfaces_llm_failure_instead_of_swallowing_it(monkeypatch):
+    # Real bug: the first version of synthesize_blocking_narratives caught its
+    # own exception and returned a silent fallback, so a real API failure was
+    # completely invisible anywhere — not in notes, not in the dashboard, not
+    # in logs. narrative_error must be populated whenever the LLM call fails,
+    # and rows must still fall back to the raw flag messages, not go blank.
+    def _raise(accounts):
+        raise RuntimeError("Claude response had no submit_narratives tool call (stop_reason=max_tokens)")
+
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", _raise)
+
+    flags = [_flag(client_name="Acme Co", message="Marketing package: 14d, not live")]
+    result = json.loads(build_dashboard_json(flags, {"Acme Co": {"day": 14, "stage": "onboarding"}}, {"Acme Co"}))
+
+    assert result["narrative_error"] is not None
+    assert "max_tokens" in result["narrative_error"]
+    assert result["rows"][0]["blocking"] == "Marketing package: 14d, not live"
+
+
 def test_build_dashboard_json_rows_sorted_oldest_first():
     flags = [
         _flag(client_name="Newer", message="msg"),
