@@ -88,12 +88,18 @@ def find_best_match(
     aliases: dict[str, str] | None = None,
     high_confidence_threshold: float = HIGH_CONFIDENCE_THRESHOLD,
     ambiguous_threshold: float = AMBIGUOUS_THRESHOLD,
+    name_extractor=extract_candidate_name,
 ) -> MatchResult:
     """aliases maps a normalized alias -> normalized canonical name (either
     direction can be the target; checked both ways). Exact/alias/high-confidence
     matches are trusted and used directly; the ambiguous band is flagged for a
     human to confirm or alias rather than guessed at, per SKILL.md's own "flag
-    ambiguous mappings" instruction."""
+    ambiguous mappings" instruction.
+
+    name_extractor defaults to this module's Go-Live-board title parsing;
+    pass a different one for boards with a different naming convention (e.g.
+    app.tasks.retention_check's extractor for the Retention pipeline's very
+    different bracket vocabulary and dollar-amount-in-title style)."""
     from difflib import SequenceMatcher
 
     aliases = aliases or {}
@@ -104,7 +110,7 @@ def find_best_match(
     best_score = 0.0
 
     for card in cards:
-        candidate_norm = normalize(extract_candidate_name(card["name"]))
+        candidate_norm = normalize(name_extractor(card["name"]))
         if not candidate_norm:
             continue
 

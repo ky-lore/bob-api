@@ -175,6 +175,81 @@ def test_numeric_only_account_name_flagged_not_matched(monkeypatch, tmp_path):
         get_session_factory.cache_clear()
 
 
+class _FakeGoogleDriveChurnedClient:
+    """A client showing real AM-BUILD spend on the heartbeat — the exact
+    scenario ACCURACY RULES §2 exists for: board/heartbeat says active, but
+    the Retention pipeline says otherwise."""
+
+    is_stale = staticmethod(RealGoogleDriveClient.is_stale)
+
+    def read_sheet_values(self, file_id, tab):
+        fresh = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        if tab == "Heartbeat":
+            return [_HEADER, [fresh, "LG Electric", "1", "2", "FALSE", "0", "0", "0", "0", "500", "0", "", ""]]
+        return [_HEADER]
+
+
+class _FakeClickUpByList:
+    """Branches on list_id so Go-Live and Retention can return different
+    cards within the same test run, like the real board pull does."""
+
+    def get_list_tasks(self, list_id, include_closed=True, page=0):
+        if list_id == "retention-list":
+            return {
+                "tasks": [
+                    {"id": "r1", "name": "[CHURNED] LG Electric", "status": {"status": "churned x"}, "tags": []},
+                    {
+                        "id": "r2",
+                        "name": "📋 TEMPLATE — copy this for every request (do not close)",
+                        "status": {"status": "new requests"},
+                        "tags": [],
+                    },
+                ],
+                "last_page": True,
+            }
+        return {"tasks": [], "last_page": True}  # no Go-Live match — isolates the retention check
+
+
+def test_retention_churned_status_flags_despite_active_heartbeat_spend(monkeypatch, tmp_path):
+    db_path = tmp_path / "retention.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("CLICKUP_RETENTION_LIST_ID", "retention-list")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDriveChurnedClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUpByList)
+    monkeypatch.setattr(mod, "GHLClient", lambda: type("_G", (), {"recent_closed_won": lambda self, *a, **k: []})())
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
+
+        churn_flags = [f for f in flags if "CHURNED" in f.message]
+        assert len(churn_flags) == 1
+        assert churn_flags[0].client_name == "LG Electric"
+        assert churn_flags[0].severity.value == "urgent"
+        assert churn_flags[0].evidence_url == "https://app.clickup.com/t/r1"
+
+        # The template card must never surface as if it were a real client
+        assert all("TEMPLATE" not in f.message for f in flags)
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
 def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
     db_path = tmp_path / "e2e.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")

@@ -43,6 +43,12 @@ from app.integrations.slack import SlackClient
 from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, ManagedClientEntry, ManagedListType, RunStatus
 from app.tasks.clickup_correlation import identify_package, resolve_day_count
 from app.tasks.matching import find_best_match
+from app.tasks.retention_check import (
+    ACTIVE_RISK_STATUSES,
+    CHURNED_STATUSES,
+    extract_retention_candidate_name,
+    is_administrative_card,
+)
 
 # Real examples from the Meta sheet: "106231623122110", "129853217452321" —
 # accounts never assigned a name in Meta Business Manager, per
@@ -398,6 +404,72 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                     client_name=account_name,
                     message=clock_message,
                     evidence_url=f"https://app.clickup.com/t/{card['id']}",
+                    created_at=datetime.utcnow(),
+                )
+            )
+
+    # --- Retention pipeline cancel-intent cross-check (ACCURACY RULES §2:
+    # "board LIVE is not proof of active... check the Retention pipeline
+    # before reporting anyone live"). Administrative/template/demo cards
+    # (confirmed present on the real board — see retention_check.py) are
+    # filtered before matching is even attempted. ---
+    try:
+        retention_clickup = ClickUpClient()
+        retention_data = retention_clickup.get_list_tasks(settings.clickup_retention_list_id, include_closed=True)
+        retention_cards = [
+            {
+                "id": t.get("id"),
+                "name": t.get("name"),
+                "status": ((t.get("status") or {}).get("status") or "").lower(),
+            }
+            for t in retention_data.get("tasks", [])
+            if not is_administrative_card(t.get("name", ""))
+        ]
+    except Exception as exc:
+        retention_cards = []
+        notes.append(f"Retention pipeline pull failed: {exc}")
+
+    for account_name in sorted(all_account_names):
+        retention_match = find_best_match(
+            account_name, retention_cards, name_extractor=extract_retention_candidate_name
+        )
+        if retention_match.confidence not in ("exact", "alias", "high"):
+            continue
+
+        retention_card = next((c for c in retention_cards if c["id"] == retention_match.card_id), None)
+        if not retention_card:
+            continue
+
+        status = retention_card["status"]
+        if status in CHURNED_STATUSES:
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.action_needed,
+                    severity=FlagSeverity.urgent,
+                    client_name=account_name,
+                    message=(
+                        f'Retention pipeline shows CHURNED ("{retention_card["name"]}") — '
+                        "do not report as live/went-live regardless of heartbeat data, per ACCURACY RULES §2"
+                    ),
+                    evidence_url=f"https://app.clickup.com/t/{retention_card['id']}",
+                    unverified=True,
+                    created_at=datetime.utcnow(),
+                )
+            )
+        elif status in ACTIVE_RISK_STATUSES:
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.action_needed,
+                    severity=FlagSeverity.warning,
+                    client_name=account_name,
+                    message=(
+                        f'Active cancel/save request in Retention pipeline (status: "{status}", '
+                        f'card: "{retention_card["name"]}") — confirm before reporting as live'
+                    ),
+                    evidence_url=f"https://app.clickup.com/t/{retention_card['id']}",
+                    unverified=True,
                     created_at=datetime.utcnow(),
                 )
             )
