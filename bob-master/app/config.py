@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # Original cadence per docs/SCHEDULED_TASKS_REGISTRY_SNAPSHOT.md: "0 7 * * 1-5" (weekdays 7:01 AM).
     daily_go_live_audit_cron: str = "0 7 * * 1-5"
 
+    # --- Anthropic (narrative synthesis for the dashboard's "what's blocking"
+    # column — the original system's dashboard was itself LLM-narrated; stat
+    # tiles/day-counts stay deterministic Python, only the prose is delegated) ---
+    anthropic_api_key: str
+    anthropic_model: str = "claude-sonnet-5"
+
 
 @lru_cache
 def get_settings() -> Settings:

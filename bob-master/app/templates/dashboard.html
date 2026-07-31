@@ -4,19 +4,53 @@
   <meta charset="utf-8">
   <title>Go-Live Priority List</title>
   <style>
-    body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 2rem auto; color: #1a1a1a; }
-    nav a { margin-right: 0.75rem; text-decoration: none; color: #555; }
-    nav a.current { font-weight: 600; color: #1a1a1a; }
-    section { margin-bottom: 1.5rem; }
-    h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: 0.03em; color: #555; }
-    ul { padding-left: 1.1rem; }
-    li { margin-bottom: 0.25rem; }
-    .unverified { color: #a15c00; }
-    .empty { color: #777; font-style: italic; }
+    :root {
+      --bg: #f5f6f8; --card-bg: #ffffff; --text: #1a1a1a; --muted: #666;
+      --border: #e5e7eb; --red: #dc2626; --amber: #b45309; --green: #16a34a;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #16171a; --card-bg: #202227; --text: #e8e8e8; --muted: #9a9a9a; --border: #34363b; }
+    }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1000px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
+           background: var(--bg); color: var(--text); }
+    h1 { margin: 0 0 0.15rem; font-size: 1.5rem; }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem; }
+    nav { margin-bottom: 1.5rem; overflow-x: auto; white-space: nowrap; }
+    nav a { margin-right: 0.75rem; text-decoration: none; color: var(--muted); font-size: 0.85rem; }
+    nav a.current { font-weight: 600; color: var(--text); }
+    .empty { color: var(--muted); font-style: italic; }
+
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
+    .tile { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; }
+    .tile .n { font-size: 1.6rem; font-weight: 700; }
+    .tile .label { color: var(--muted); font-size: 0.8rem; margin-top: 0.15rem; }
+
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1.5rem; }
+    .card h2 { font-size: 0.95rem; margin: 0 0 0.75rem; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    th { text-align: left; color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase;
+         letter-spacing: 0.03em; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); }
+    td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    .day { font-weight: 700; }
+    .day.high { color: var(--red); }
+    .day.mid { color: var(--amber); }
+
+    section.detail { margin-bottom: 1.5rem; }
+    section.detail h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
+    section.detail ul { padding-left: 1.1rem; }
+    section.detail li { margin-bottom: 0.25rem; }
+    .unverified { color: var(--amber); }
   </style>
 </head>
 <body>
   <h1>Go-Live Priority List</h1>
+  <div class="subtitle">
+    {% if run %}Advanced Marketers — data as of {{ run.run_date }} · status: {{ run.status.value }}{% if run.notes %} · {{ run.notes }}{% endif %}{% else %}No audit run recorded yet{% endif %}
+  </div>
+
   <nav>
     {% for h in history %}
       <a href="/dashboard/{{ h.run_date }}" class="{{ 'current' if run and h.run_date == run.run_date else '' }}">{{ h.run_date }}</a>
@@ -26,10 +60,38 @@
   {% if not run %}
     <p class="empty">No audit run recorded yet.</p>
   {% else %}
-    <p>Run: {{ run.run_date }} — status: {{ run.status.value }}{% if run.notes %} — {{ run.notes }}{% endif %}</p>
+    {% if stat_tiles %}
+      <div class="tiles">
+        <div class="tile"><div class="n">{{ stat_tiles.flagged_accounts }}</div><div class="label">Accounts flagged</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.clock_violations }}</div><div class="label">Clock violations</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.heartbeat_mismatches }}</div><div class="label">Heartbeat mismatches</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.retention_risks }}</div><div class="label">Retention risks</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.new_deals }}</div><div class="label">New deals</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.total_accounts_tracked }}</div><div class="label">Accounts tracked</div></div>
+      </div>
+    {% endif %}
+
+    {% if rows %}
+      <div class="card">
+        <h2>🚀 Needs attention — {{ rows|length }} accounts (oldest first)</h2>
+        <table>
+          <tr><th>Account</th><th>Day</th><th>Board Stage</th><th>What's Blocking</th></tr>
+          {% for r in rows %}
+            <tr>
+              <td>{{ r.account }}</td>
+              <td class="day {{ 'high' if r.day >= 14 else ('mid' if r.day >= 7 else '') }}">{{ r.day }}</td>
+              <td>{{ r.stage }}</td>
+              <td>{{ r.blocking }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    {% else %}
+      <p class="empty">Nothing needs attention today.</p>
+    {% endif %}
 
     {% for title, items in sections %}
-      <section>
+      <section class="detail">
         <h2>{{ title }}</h2>
         <ul>
           {% for f in items %}
@@ -40,8 +102,6 @@
           {% endfor %}
         </ul>
       </section>
-    {% else %}
-      <p class="empty">All clear.</p>
     {% endfor %}
   {% endif %}
 </body>

@@ -3,9 +3,10 @@ from collections.abc import Iterator
 from functools import lru_cache
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.schema import CreateColumn
 
 from app.config import get_settings
 
@@ -38,6 +39,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=get_engine())
     _sync_postgres_enum_values()
+    _sync_postgres_missing_columns()
 
 
 def _sync_postgres_enum_values() -> None:
@@ -64,6 +66,30 @@ def _sync_postgres_enum_values() -> None:
                     if not _SAFE_IDENTIFIER_RE.match(value):
                         continue
                     conn.execute(text(f"ALTER TYPE {type_name} ADD VALUE IF NOT EXISTS '{value}'"))
+
+
+def _sync_postgres_missing_columns() -> None:
+    """create_all only creates TABLES that don't exist — it never adds new
+    columns to a table that's already there. Same class of gap as the enum
+    sync above, extended to columns since the schema keeps evolving ahead of
+    Alembic. Any new column added this way must be nullable (or have a
+    server default) — ADD COLUMN on a non-empty Postgres table fails
+    otherwise, since existing rows have no value for it."""
+    engine = get_engine()
+    if engine.dialect.name != "postgresql":
+        return
+
+    inspector = inspect(engine)
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        for table in Base.metadata.tables.values():
+            if not inspector.has_table(table.name):
+                continue  # brand new table — create_all already handled it
+            existing_columns = {col["name"] for col in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in existing_columns:
+                    continue
+                ddl = CreateColumn(column).compile(dialect=engine.dialect)
+                conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN IF NOT EXISTS {ddl}"))
 
 
 def get_db() -> Iterator[Session]:

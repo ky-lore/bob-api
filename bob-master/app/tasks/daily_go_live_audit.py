@@ -42,6 +42,7 @@ from app.integrations.google_drive import GoogleDriveClient
 from app.integrations.slack import SlackClient
 from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, ManagedClientEntry, ManagedListType, RunStatus
 from app.tasks.clickup_correlation import identify_package, resolve_day_count
+from app.tasks.dashboard_summary import build_dashboard_json
 from app.tasks.matching import find_best_match
 from app.tasks.retention_check import (
     ACTIVE_RISK_STATUSES,
@@ -361,6 +362,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
     alias_map = get_alias_map(db)
     _SKIP_STATUSES = {"ignore", "complete"}
+    account_context: dict[str, dict] = {}  # account_name -> {"day": int, "stage": str}, for the dashboard
 
     for account_name in sorted(all_account_names):
         match = find_best_match(account_name, cards, aliases=alias_map)
@@ -393,6 +395,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
         package = identify_package(card["tags"], card["name"])
         days_elapsed = resolve_day_count(card["name"], card["date_created"]) if card["date_created"] else 0
+        account_context[account_name] = {"day": days_elapsed, "stage": card["status"]}
         clock_message = evaluate_package_clock(package, days_elapsed, is_live=account_name in live_accounts)
         if clock_message:
             escalated = package == "pkg-mktg" and days_elapsed >= MKTG_FLAG_DAYS[1]
@@ -504,6 +507,10 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     db.add_all(flags)
     digest_text = build_digest(flags)
     run.digest_text = digest_text
+    try:
+        run.dashboard_json = build_dashboard_json(flags, account_context, all_account_names)
+    except Exception as exc:
+        notes.append(f"Dashboard narrative synthesis failed: {exc}")
     run.status = RunStatus.success if not notes else RunStatus.partial
     run.notes = "\n".join(notes) if notes else None
     run.finished_at = datetime.utcnow()

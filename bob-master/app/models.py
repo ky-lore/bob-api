@@ -54,6 +54,11 @@ class AuditRun(Base):
     status: Mapped[RunStatus] = mapped_column(Enum(RunStatus))
     digest_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # the Slack DM body sent
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # e.g. which heartbeat sheet failed
+    # JSON blob: {"stat_tiles": {...}, "rows": [{"account":.., "day":.., "stage":.., "blocking":..}]}.
+    # Computed once per run (stat tiles deterministically, "blocking" narrative
+    # via one batched LLM call) and stored — same reasoning as digest_text:
+    # don't recompute/re-call the LLM every time someone loads the dashboard.
+    dashboard_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     flags: Mapped[list["Flag"]] = relationship(back_populates="run", cascade="all, delete-orphan")
 

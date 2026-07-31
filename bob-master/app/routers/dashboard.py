@@ -1,9 +1,11 @@
 """
 Daily priority list — the FastAPI replacement for the Cowork 'golive-pipeline-dashboard'
 artifact, which had no export in this package and can't run outside Cowork anyway
-(it called window.cowork.callMcpTool()). This version is intentionally plain HTML
-for now; the interactive version is a follow-up, not this pass.
+(it called window.cowork.callMcpTool()). Primary content is AuditRun.dashboard_json
+(stat tiles + LLM-narrated "what's blocking" rows, see tasks/dashboard_summary.py);
+the raw flag list below it is kept as a transparent detail view underneath.
 """
+import json
 from datetime import date
 
 from fastapi import APIRouter, Depends, Request
@@ -16,6 +18,16 @@ from app.models import AuditRun, FlagCategory
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+
+def _parse_dashboard_json(run: AuditRun | None) -> dict:
+    empty = {"stat_tiles": {}, "rows": []}
+    if not run or not run.dashboard_json:
+        return empty
+    try:
+        return json.loads(run.dashboard_json)
+    except (ValueError, TypeError):
+        return empty
 
 # Same order as build_digest()'s SECTIONS in daily_go_live_audit.py — Jinja's
 # groupby filter sorts alphabetically, which doesn't match the intended report
@@ -46,8 +58,17 @@ def _grouped_sections(run: AuditRun | None) -> list[tuple[str, list]]:
 def latest_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     latest = db.query(AuditRun).order_by(AuditRun.run_date.desc()).first()
     history = db.query(AuditRun).order_by(AuditRun.run_date.desc()).limit(30).all()
+    dashboard_data = _parse_dashboard_json(latest)
     return templates.TemplateResponse(
-        request, "dashboard.html", {"run": latest, "history": history, "sections": _grouped_sections(latest)}
+        request,
+        "dashboard.html",
+        {
+            "run": latest,
+            "history": history,
+            "sections": _grouped_sections(latest),
+            "stat_tiles": dashboard_data["stat_tiles"],
+            "rows": dashboard_data["rows"],
+        },
     )
 
 
@@ -55,6 +76,15 @@ def latest_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLRes
 def dashboard_for_date(run_date: date, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     run = db.query(AuditRun).filter_by(run_date=run_date).first()
     history = db.query(AuditRun).order_by(AuditRun.run_date.desc()).limit(30).all()
+    dashboard_data = _parse_dashboard_json(run)
     return templates.TemplateResponse(
-        request, "dashboard.html", {"run": run, "history": history, "sections": _grouped_sections(run)}
+        request,
+        "dashboard.html",
+        {
+            "run": run,
+            "history": history,
+            "sections": _grouped_sections(run),
+            "stat_tiles": dashboard_data["stat_tiles"],
+            "rows": dashboard_data["rows"],
+        },
     )

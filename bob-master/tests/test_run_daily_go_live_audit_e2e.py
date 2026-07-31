@@ -5,11 +5,22 @@ package-clock wiring actually executes correctly at runtime, not just compiles.
 """
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import app.tasks.daily_go_live_audit as mod
 from app.config import get_settings
 from app.db import get_engine, get_session_factory, init_db
 from app.integrations.google_drive import GoogleDriveClient as RealGoogleDriveClient
 from app.models import FlagCategory, RunStatus
+
+
+@pytest.fixture(autouse=True)
+def _mock_anthropic_narrative(monkeypatch):
+    # Every test in this file needs ANTHROPIC_API_KEY set (now a required
+    # setting) and must not make a real API call — dashboard_json generation
+    # is exercised (stat tiles are real), just not the LLM synthesis step.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", lambda accounts: {})
 
 _HEADER = [
     "Checked at", "Account name", "CID", "Enabled campaigns", "Enabled LSA",
