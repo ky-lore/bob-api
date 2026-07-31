@@ -84,6 +84,19 @@ def synthesize_blocking_narratives(accounts: list[dict[str, Any]]) -> dict[str, 
     for block in response.content:
         if block.type == "tool_use" and block.name == _TOOL_NAME:
             narratives = block.input.get("narratives", [])
-            return {n["account"]: n["blocking"] for n in narratives if n.get("account")}
+            result = {n["account"]: n["blocking"] for n in narratives if n.get("account")}
+            if not result:
+                # A "successful" call that yields nothing usable is just as much
+                # a failure as an exception — confirmed the hard way: the first
+                # live run with 81 accounts got exactly this (no error, no
+                # narratives, every row silently fell back to raw flag text).
+                raise RuntimeError(
+                    f"Claude tool call returned zero usable narratives for {len(accounts)} accounts "
+                    f"(stop_reason={response.stop_reason}, raw narratives array length={len(narratives)})"
+                )
+            return result
 
-    raise RuntimeError(f"Claude response had no {_TOOL_NAME} tool call (stop_reason={response.stop_reason})")
+    raise RuntimeError(
+        f"Claude response had no {_TOOL_NAME} tool call "
+        f"(stop_reason={response.stop_reason}, content block types={[b.type for b in response.content]})"
+    )
