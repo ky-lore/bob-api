@@ -21,6 +21,12 @@ class FlagCategory(str, enum.Enum):
     clock_violation = "clock_violation"
     new_deal = "new_deal"
     went_live = "went_live"
+    # "Ads off — who's dark and why" buckets, per the reference dashboard
+    # (golive-pipeline-dashboard.pdf) — see app/tasks/ads_off_classification.py.
+    ads_off_should_be_on = "ads_off_should_be_on"
+    ads_off_zero_spend = "ads_off_zero_spend"
+    ads_off_unsettled = "ads_off_unsettled"
+    ads_off_verified_off = "ads_off_verified_off"
 
 
 class FlagSeverity(str, enum.Enum):
@@ -59,6 +65,13 @@ class AuditRun(Base):
     # via one batched LLM call) and stored — same reasoning as digest_text:
     # don't recompute/re-call the LLM every time someone loads the dashboard.
     dashboard_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # JSON blob: {account_name: {"clickup_ok":, "clickup_comment_count":,
+    # "clickup_error":, "slack_channel_matched":, "slack_ok":,
+    # "slack_message_count":, "slack_error":}} — per-account diagnostics for
+    # the MVP rich-context gather (account_context_gather.py), surfaced via
+    # the manual-trigger endpoint's response body (see main.py). Separate
+    # from dashboard_json since this isn't dashboard content, just run health.
+    context_gather_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     flags: Mapped[list["Flag"]] = relationship(back_populates="run", cascade="all, delete-orphan")
 

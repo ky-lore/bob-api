@@ -1,9 +1,12 @@
 """
 Daily priority list — the FastAPI replacement for the Cowork 'golive-pipeline-dashboard'
 artifact, which had no export in this package and can't run outside Cowork anyway
-(it called window.cowork.callMcpTool()). Primary content is AuditRun.dashboard_json
-(stat tiles + LLM-narrated "what's blocking" rows, see tasks/dashboard_summary.py);
-the raw flag list below it is kept as a transparent detail view underneath.
+(it called window.cowork.callMcpTool()). Primary content is AuditRun.dashboard_json,
+structured to match the reference dashboard (golive-pipeline-dashboard.pdf):
+stat tiles, "waiting to go live" narrative table, "ads off" breakdown, new deals,
+went live. See tasks/dashboard_summary.py. The raw flag list below it is kept as a
+transparent detail view underneath — not part of the reference dashboard, but
+useful for us as developers.
 """
 import json
 from datetime import date
@@ -19,22 +22,41 @@ from app.models import AuditRun, FlagCategory
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
+_EMPTY_DASHBOARD_DATA = {
+    "stat_tiles": {},
+    "waiting_to_go_live": [],
+    "accounts_chart": [],
+    "clock_threshold_days": 14,
+    "ads_off": {"should_be_on_but_dark": [], "campaigns_on_zero_spend": [], "unsettled": [], "verified_off": []},
+    "new_deals": [],
+    "went_live": [],
+    "narrative_error": None,
+}
+
 
 def _parse_dashboard_json(run: AuditRun | None) -> dict:
-    empty = {"stat_tiles": {}, "rows": [], "narrative_error": None}
     if not run or not run.dashboard_json:
-        return empty
+        return dict(_EMPTY_DASHBOARD_DATA)
     try:
         parsed = json.loads(run.dashboard_json)
     except (ValueError, TypeError):
-        return empty
-    # .get() with fallback, not direct indexing — older stored runs predate
-    # the narrative_error key and shouldn't 500 the whole page over it.
+        return dict(_EMPTY_DASHBOARD_DATA)
+    # .get() with fallbacks throughout — older stored runs predate some of
+    # these keys and shouldn't 500 the whole page over it.
     return {
         "stat_tiles": parsed.get("stat_tiles", {}),
-        "rows": parsed.get("rows", []),
+        "waiting_to_go_live": parsed.get("waiting_to_go_live", []),
+        "accounts_chart": parsed.get("accounts_chart", []),
+        "clock_threshold_days": parsed.get("clock_threshold_days", 14),
+        "ads_off": {
+            **_EMPTY_DASHBOARD_DATA["ads_off"],
+            **parsed.get("ads_off", {}),
+        },
+        "new_deals": parsed.get("new_deals", []),
+        "went_live": parsed.get("went_live", []),
         "narrative_error": parsed.get("narrative_error"),
     }
+
 
 # Same order as build_digest()'s SECTIONS in daily_go_live_audit.py — Jinja's
 # groupby filter sorts alphabetically, which doesn't match the intended report
@@ -46,6 +68,10 @@ _SECTION_ORDER = [
     ("Clock violations by package", FlagCategory.clock_violation),
     ("New deals", FlagCategory.new_deal),
     ("Went live", FlagCategory.went_live),
+    ("Ads off — should be ON but dark", FlagCategory.ads_off_should_be_on),
+    ("Ads off — campaigns on, $0 spend", FlagCategory.ads_off_zero_spend),
+    ("Ads off — unsettled payment", FlagCategory.ads_off_unsettled),
+    ("Ads off — verified off", FlagCategory.ads_off_verified_off),
 ]
 
 
@@ -60,40 +86,26 @@ def _grouped_sections(run: AuditRun | None) -> list[tuple[str, list]]:
     return sections
 
 
+def _dashboard_context(run: AuditRun | None, history: list[AuditRun]) -> dict:
+    dashboard_data = _parse_dashboard_json(run)
+    return {
+        "run": run,
+        "history": history,
+        "sections": _grouped_sections(run),
+        **dashboard_data,
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 @router.get("/dashboard", response_class=HTMLResponse)
 def latest_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     latest = db.query(AuditRun).order_by(AuditRun.run_date.desc()).first()
     history = db.query(AuditRun).order_by(AuditRun.run_date.desc()).limit(30).all()
-    dashboard_data = _parse_dashboard_json(latest)
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "run": latest,
-            "history": history,
-            "sections": _grouped_sections(latest),
-            "stat_tiles": dashboard_data["stat_tiles"],
-            "rows": dashboard_data["rows"],
-            "narrative_error": dashboard_data["narrative_error"],
-        },
-    )
+    return templates.TemplateResponse(request, "dashboard.html", _dashboard_context(latest, history))
 
 
 @router.get("/dashboard/{run_date}", response_class=HTMLResponse)
 def dashboard_for_date(run_date: date, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     run = db.query(AuditRun).filter_by(run_date=run_date).first()
     history = db.query(AuditRun).order_by(AuditRun.run_date.desc()).limit(30).all()
-    dashboard_data = _parse_dashboard_json(run)
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "run": run,
-            "history": history,
-            "sections": _grouped_sections(run),
-            "stat_tiles": dashboard_data["stat_tiles"],
-            "rows": dashboard_data["rows"],
-            "narrative_error": dashboard_data["narrative_error"],
-        },
-    )
+    return templates.TemplateResponse(request, "dashboard.html", _dashboard_context(run, history))

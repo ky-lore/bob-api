@@ -80,6 +80,8 @@
       <div class="warning-banner">⚠️ Narrative synthesis failed this run — showing raw flag messages instead: {{ narrative_error }}</div>
     {% endif %}
 
+    {% include "_accounts_chart.html" %}
+
     {% if rows %}
       <div class="card">
         <h2>🚀 Needs attention — {{ rows|length }} accounts (oldest first)</h2>

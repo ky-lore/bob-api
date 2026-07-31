@@ -20,7 +20,25 @@ def _mock_anthropic_narrative(monkeypatch):
     # setting) and must not make a real API call — dashboard_json generation
     # is exercised (stat tiles are real), just not the LLM synthesis step.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", lambda accounts: {})
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", lambda accounts: ({}, []))
+
+
+_CAPTURED_NARRATIVE_ACCOUNTS: list = []
+
+
+@pytest.fixture
+def _capture_narrative_accounts(monkeypatch):
+    """Swaps the narrative-synthesis mock for one that records what it was
+    called with, so a test can assert on the rich context that actually
+    reached the LLM input — the point of the MVP full-context gather."""
+    _CAPTURED_NARRATIVE_ACCOUNTS.clear()
+
+    def _fake(accounts):
+        _CAPTURED_NARRATIVE_ACCOUNTS.extend(accounts)
+        return {}, []
+
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", _fake)
+    return _CAPTURED_NARRATIVE_ACCOUNTS
 
 _HEADER = [
     "Checked at", "Account name", "CID", "Enabled campaigns", "Enabled LSA",
@@ -59,6 +77,16 @@ class _FakeClickUp:
             "last_page": True,
         }
 
+    def get_task_with_subtasks(self, task_id):
+        return {"id": task_id, "subtasks": [{"id": "sub1"}]}
+
+    def get_task_comments(self, task_id):
+        if task_id == "card1":
+            return [{"comment_text": "Client hasn't sent brand assets yet"}]
+        if task_id == "sub1":
+            return [{"comment_text": "[CLIENT] logo pending"}]
+        return []
+
 
 class _FakeGHL:
     def recent_closed_won(self, pipeline_id, stage_id, days=3):
@@ -71,6 +99,14 @@ class _FakeSlack:
     def send_dm(self, user_id, text):
         _FakeSlack.sent.append((user_id, text))
         return {}
+
+    def list_channels(self, types="public_channel,private_channel"):
+        return [{"id": "C-ACME", "name": "internal-acme-co"}]
+
+    def channel_history(self, channel_id, oldest_ts=None):
+        if channel_id == "C-ACME":
+            return [{"text": "launching soon, just waiting on assets"}]
+        return []
 
 
 class _FakeGoogleDriveSpellingVariants:
@@ -307,6 +343,46 @@ def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
         # Slack DM was sent with the assembled digest
         assert len(_FakeSlack.sent) == 1
         assert "Acme Co" in _FakeSlack.sent[0][1]
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_full_context_gather_reaches_the_narrative_llm_input(monkeypatch, tmp_path, _capture_narrative_accounts):
+    """Proves the MVP full-context flow end-to-end (Bob, 2026-07-31): ClickUp
+    card+subtask comments and the fuzzy-matched Slack channel's full history
+    both actually reach the LLM's input for a real waiting-to-go-live account,
+    using nothing but the existing fuzzy matching -- no Atlas involved yet."""
+    db_path = tmp_path / "rich_context.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        mod.run_daily_go_live_audit(db)
+
+        assert len(_capture_narrative_accounts) == 1
+        acme = _capture_narrative_accounts[0]
+        assert acme["account"] == "Acme Co"
+        assert any("Client hasn't sent brand assets yet" in c for c in acme["context"])
+        assert any("[CLIENT] logo pending" in c for c in acme["context"])
+        assert any("launching soon, just waiting on assets" in c for c in acme["context"])
     finally:
         db.close()
         get_settings.cache_clear()

@@ -20,11 +20,15 @@ def test_synthesize_blocking_narratives_splits_into_batches(monkeypatch):
     monkeypatch.setattr(anthropic_client, "_synthesize_batch", _fake_batch)
     monkeypatch.setattr(anthropic_client, "_BATCH_SIZE", 20)
 
-    result = anthropic_client.synthesize_blocking_narratives(_accounts(45))
+    result, batch_results = anthropic_client.synthesize_blocking_narratives(_accounts(45))
 
     assert calls == [20, 20, 5]
     assert len(result) == 45
     assert result["Account 0"] == "narrative for Account 0"
+
+    assert [b["ok"] for b in batch_results] == [True, True, True]
+    assert [len(b["accounts"]) for b in batch_results] == [20, 20, 5]
+    assert [b["narrated_count"] for b in batch_results] == [20, 20, 5]
 
 
 def test_synthesize_blocking_narratives_partial_batch_failure_keeps_successful_ones(monkeypatch):
@@ -36,13 +40,18 @@ def test_synthesize_blocking_narratives_partial_batch_failure_keeps_successful_o
     monkeypatch.setattr(anthropic_client, "_synthesize_batch", _fake_batch)
     monkeypatch.setattr(anthropic_client, "_BATCH_SIZE", 20)
 
-    result = anthropic_client.synthesize_blocking_narratives(_accounts(45))
+    result, batch_results = anthropic_client.synthesize_blocking_narratives(_accounts(45))
 
     # First batch (0-19) and third batch (40-44) succeeded; second batch (20-39) failed.
     assert "Account 0" in result
     assert "Account 44" in result
     assert "Account 20" not in result
     assert len(result) == 25
+
+    assert [b["ok"] for b in batch_results] == [True, False, True]
+    assert "stop_reason=max_tokens" in batch_results[1]["error"]
+    assert batch_results[1]["accounts"][0] == "Account 20"
+    assert batch_results[1]["narrated_count"] == 0
 
 
 def test_synthesize_blocking_narratives_raises_only_if_every_batch_fails(monkeypatch):
@@ -64,4 +73,4 @@ def test_synthesize_blocking_narratives_empty_input_returns_empty_without_callin
         raise AssertionError("should not be called for empty input")
 
     monkeypatch.setattr(anthropic_client, "_synthesize_batch", _should_not_be_called)
-    assert anthropic_client.synthesize_blocking_narratives([]) == {}
+    assert anthropic_client.synthesize_blocking_narratives([]) == ({}, [])

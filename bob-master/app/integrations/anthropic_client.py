@@ -67,30 +67,64 @@ _MIN_TOKENS = 512
 _MAX_TOKENS_CAP = 4096
 
 
-def synthesize_blocking_narratives(accounts: list[dict[str, Any]]) -> dict[str, str]:
+def synthesize_blocking_narratives(
+    accounts: list[dict[str, Any]],
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """accounts: list of {"account": str, "day": int, "stage": str, "context": [str, ...]}
     where context is the already-gathered flag messages/facts for that account.
-    Returns {account_name: narrative_sentence} — may be a subset of accounts if
-    some batches failed; the caller falls back per-account for anything missing.
+
+    Returns (narratives, batch_results):
+      - narratives: {account_name: narrative_sentence} — may be a subset of
+        accounts if some batches failed; the caller falls back per-account for
+        anything missing.
+      - batch_results: one entry per batch attempted — {"batch_index",
+        "accounts" (names sent in), "narrated_count", "ok", "error"} — so a
+        caller can report exactly which Claude calls succeeded/failed, not
+        just an aggregate pass/fail. Surfaced via the manual-trigger endpoint's
+        response body (see main.py) for visibility into this batching, which
+        the max_tokens incident (see module docstring) showed can silently
+        eat whole batches.
 
     Raises only if EVERY batch fails, so a total outage is still visible (via
     build_dashboard_json's narrative_error) rather than silently returning {}."""
     if not accounts:
-        return {}
+        return {}, []
 
     results: dict[str, str] = {}
+    batch_results: list[dict[str, Any]] = []
     batch_errors: list[str] = []
 
     for i in range(0, len(accounts), _BATCH_SIZE):
         batch = accounts[i : i + _BATCH_SIZE]
+        batch_index = i // _BATCH_SIZE
         try:
-            results.update(_synthesize_batch(batch))
+            batch_narratives = _synthesize_batch(batch)
+            results.update(batch_narratives)
+            batch_results.append(
+                {
+                    "batch_index": batch_index,
+                    "accounts": [a["account"] for a in batch],
+                    "narrated_count": len(batch_narratives),
+                    "ok": True,
+                    "error": None,
+                }
+            )
         except Exception as exc:
-            batch_errors.append(f"batch {i // _BATCH_SIZE + 1} ({len(batch)} accounts): {exc}")
+            error_message = str(exc)
+            batch_errors.append(f"batch {batch_index + 1} ({len(batch)} accounts): {error_message}")
+            batch_results.append(
+                {
+                    "batch_index": batch_index,
+                    "accounts": [a["account"] for a in batch],
+                    "narrated_count": 0,
+                    "ok": False,
+                    "error": error_message,
+                }
+            )
 
     if not results and batch_errors:
         raise RuntimeError("; ".join(batch_errors))
-    return results
+    return results, batch_results
 
 
 def _synthesize_batch(accounts: list[dict[str, Any]]) -> dict[str, str]:

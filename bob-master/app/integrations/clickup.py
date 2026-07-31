@@ -34,6 +34,20 @@ class ClickUpClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_task_with_subtasks(self, task_id: str) -> dict[str, Any]:
+        """Same as get_task, but the response's "subtasks" key is populated
+        with full subtask objects (ClickUp normally omits subtasks unless
+        asked) — used for pulling every [CLIENT]/[AM] blocker subtask under a
+        go-live card."""
+        resp = self._client.get(f"/task/{task_id}", params={"include_subtasks": "true"})
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_task_comments(self, task_id: str) -> list[dict[str, Any]]:
+        resp = self._client.get(f"/task/{task_id}/comment")
+        resp.raise_for_status()
+        return resp.json().get("comments", [])
+
     def update_task_status(self, task_id: str, status: str) -> dict[str, Any]:
         resp = self._client.put(f"/task/{task_id}", json={"status": status})
         resp.raise_for_status()

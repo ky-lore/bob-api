@@ -11,6 +11,13 @@ or built against real sandboxed ClickUp data — see chat history):
     app/tasks/clickup_correlation.py (package identification + day count)
   - ex-client filtering against the admin-editable list (replaces the hardcoded list)
   - digest assembly from persisted flags, and AuditRun/Flag persistence
+  - MVP full-context gather for waiting-to-go-live narratives (full ClickUp
+    card+subtask comments, full "internal-<client>" Slack channel history) via
+    the same fuzzy account matching used elsewhere — see
+    app/tasks/account_context_gather.py. Deliberately a stopgap: Bob is
+    building "Atlas", a proprietary source-of-truth API for exact per-account
+    IDs (ClickUp, Slack, ad platforms), which will replace the fuzzy matching
+    here once it exists (2026-07-31 decision)
 
 What's intentionally left as TODOs — these require judgment calls this port
 should not guess at (see docs/TASK-INVENTORY.md and the chat history this was
@@ -42,8 +49,10 @@ from app.integrations.ghl import GHLClient
 from app.integrations.google_drive import GoogleDriveClient
 from app.integrations.slack import SlackClient
 from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, ManagedClientEntry, ManagedListType, RunStatus
+from app.tasks.account_context_gather import gather_rich_context
+from app.tasks.ads_off_classification import classify_ads_off
 from app.tasks.clickup_correlation import identify_package, resolve_day_count
-from app.tasks.dashboard_summary import build_dashboard_json
+from app.tasks.dashboard_summary import build_dashboard_json, waiting_to_go_live_candidates
 from app.tasks.matching import find_best_match
 from app.tasks.retention_check import (
     ACTIVE_RISK_STATUSES,
@@ -71,6 +80,14 @@ class HeartbeatRow:
     legacy_spend: float
     lsa_spend: float
     checked_at: datetime
+    # Meta-only ("Account status": ACTIVE / UNSETTLED / DISABLED, per
+    # GoLive_Audit_Dev_Handover_Brief.md §1) — empty string on the Google Ads
+    # sheet, which has no equivalent column.
+    account_status: str = ""
+
+    @property
+    def total_spend(self) -> float:
+        return self.am_build_spend + self.legacy_spend + self.lsa_spend
 
 
 def parse_heartbeat_rows(raw_rows: list[list[str]]) -> list[HeartbeatRow]:
@@ -104,6 +121,8 @@ def parse_heartbeat_rows(raw_rows: list[list[str]]) -> list[HeartbeatRow]:
     # legacy-only on the first real run.
     lsa_i = col_all("lsa", "yesterday") or col_all("lsa", "today") or col("lsa")
     checked_i = col("checked at")
+    # Meta-only. col_all (not col) — bare "account" would hit "Account name" first.
+    account_status_i = col_all("account", "status")
 
     rows = []
     for raw in raw_rows[1:]:
@@ -131,6 +150,11 @@ def parse_heartbeat_rows(raw_rows: list[list[str]]) -> list[HeartbeatRow]:
                 legacy_spend=get_float(legacy_i),
                 lsa_spend=get_float(lsa_i),
                 checked_at=_parse_checked_at(raw[checked_i]) if checked_i is not None and checked_i < len(raw) else datetime.min,
+                account_status=(
+                    raw[account_status_i].strip().upper()
+                    if account_status_i is not None and account_status_i < len(raw)
+                    else ""
+                ),
             )
         )
     return rows
@@ -271,6 +295,18 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         db.delete(existing)
         db.flush()
 
+    # For "went live" detection: the most recent run strictly before today,
+    # not affected by whether today's row already exists from an earlier
+    # same-day re-run. live_accounts from its stored dashboard_json is the
+    # comparison baseline — diffed against today's live_accounts below.
+    previous_run = db.query(AuditRun).filter(AuditRun.run_date < run_date).order_by(AuditRun.run_date.desc()).first()
+    previous_live_accounts: set[str] = set()
+    if previous_run and previous_run.dashboard_json:
+        try:
+            previous_live_accounts = set(json.loads(previous_run.dashboard_json).get("live_accounts", []))
+        except (ValueError, TypeError):
+            pass
+
     run = AuditRun(run_date=run_date, started_at=datetime.utcnow(), status=RunStatus.partial)
     db.add(run)
     db.flush()  # get run.id before attaching flags
@@ -329,6 +365,10 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             heartbeat_rows.append((label, row, canonical_name))
             if row.checked_at != datetime.min and GoogleDriveClient.is_stale(row.checked_at):
                 notes.append(f"{label} heartbeat sheet stale for {row.account_name} (checked_at {row.checked_at})")
+
+    rows_by_account: dict[str, dict[str, HeartbeatRow]] = {}
+    for label, row, canonical_name in heartbeat_rows:
+        rows_by_account.setdefault(canonical_name, {})[label] = row
 
     for label, row, canonical_name in heartbeat_rows:
         if legacy_only_spend_flag(row) and canonical_name not in live_accounts:
@@ -391,12 +431,24 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             continue
 
         card = next((c for c in cards if c["id"] == match.card_id), None)
-        if not card or card["status"] in _SKIP_STATUSES:
+        if not card:
             continue
 
         package = identify_package(card["tags"], card["name"])
         days_elapsed = resolve_day_count(card["name"], card["date_created"]) if card["date_created"] else 0
-        account_context[account_name] = {"day": days_elapsed, "stage": card["status"]}
+        # Recorded for every matched card, including ignore/complete — the
+        # ads-off classification pass below needs card status regardless of
+        # whether this account is clock-eligible.
+        account_context[account_name] = {
+            "day": days_elapsed,
+            "stage": card["status"],
+            "package": package,
+            "card_id": card["id"],
+        }
+
+        if card["status"] in _SKIP_STATUSES:
+            continue
+
         clock_message = evaluate_package_clock(package, days_elapsed, is_live=account_name in live_accounts)
         if clock_message:
             escalated = package == "pkg-mktg" and days_elapsed >= MKTG_FLAG_DAYS[1]
@@ -433,6 +485,8 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         retention_cards = []
         notes.append(f"Retention pipeline pull failed: {exc}")
 
+    retention_status_by_account: dict[str, str] = {}
+
     for account_name in sorted(all_account_names):
         retention_match = find_best_match(
             account_name, retention_cards, name_extractor=extract_retention_candidate_name
@@ -445,6 +499,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             continue
 
         status = retention_card["status"]
+        retention_status_by_account[account_name] = status
         if status in CHURNED_STATUSES:
             flags.append(
                 Flag(
@@ -478,6 +533,68 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 )
             )
 
+    # --- "Ads off — who's dark and why" classification, per the reference
+    # dashboard (golive-pipeline-dashboard.pdf). Iterates heartbeat-known
+    # accounts — does NOT catch an account fully unmapped on BOTH platforms
+    # that still has a "live" card (the reference dashboard's own "Shelby
+    # Plumbing" example: no Meta heartbeat row at all). Closing that gap needs
+    # card-driven discovery in addition to heartbeat-driven, which is a
+    # bigger change than this pass — known, accepted limitation for now. ---
+    for account_name in sorted(all_account_names):
+        platform_rows = rows_by_account.get(account_name, {})
+        classification = classify_ads_off(
+            google_row=platform_rows.get("Google Ads"),
+            meta_row=platform_rows.get("Meta"),
+            card_status=account_context.get(account_name, {}).get("stage"),
+            retention_status=retention_status_by_account.get(account_name),
+            churned_statuses=CHURNED_STATUSES,
+        )
+
+        if classification.should_be_on_but_dark:
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.ads_off_should_be_on,
+                    severity=FlagSeverity.urgent,
+                    client_name=account_name,
+                    message="Board says live/optimizations but both platforms are dark — verify account mapping or billing",
+                    created_at=datetime.utcnow(),
+                )
+            )
+        for platform in classification.campaigns_on_zero_spend:
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.ads_off_zero_spend,
+                    severity=FlagSeverity.warning,
+                    client_name=account_name,
+                    message=f"{platform}: campaigns enabled, $0 spend — billing/payment check",
+                    created_at=datetime.utcnow(),
+                )
+            )
+        if classification.unsettled:
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.ads_off_unsettled,
+                    severity=FlagSeverity.urgent,
+                    client_name=account_name,
+                    message="Meta account status is UNSETTLED — payment is blocking ad delivery",
+                    created_at=datetime.utcnow(),
+                )
+            )
+        if classification.verified_off:
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.ads_off_verified_off,
+                    severity=FlagSeverity.info,
+                    client_name=account_name,
+                    message="Retention shows churned/cancelled and heartbeat confirms no active spend — verified off",
+                    created_at=datetime.utcnow(),
+                )
+            )
+
     # --- Step 3 (partial): GHL Closed Won sweep — data pull wired, card creation is not ---
     try:
         recent_deals = ghl.recent_closed_won(
@@ -505,11 +622,51 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     # ~3 days of the matching Slack channel. Blocked on the Slack search-API
     # decision documented in integrations/slack.py.
 
+    slack = SlackClient()
+
+    # --- MVP full-context gather for narrative synthesis (Bob, 2026-07-31):
+    # prove the logic against the existing fuzzy account matching now, ahead
+    # of Atlas (unbuilt proprietary source-of-truth API) removing the need for
+    # it. Deliberately unbounded/inefficient per that steer — full ClickUp
+    # card+subtask comments and full Slack channel history, no truncation.
+    # Scoped to waiting-to-go-live candidates only (the one section that gets
+    # an LLM narrative at all), not every account on the board. ---
+    rich_context: dict[str, list[str]] = {}
+    context_gather_diagnostics: dict[str, dict] = {}
+    try:
+        candidates = waiting_to_go_live_candidates(flags, account_context)
+        if candidates:
+            slack_channels = slack.list_channels()
+            for account_name in candidates:
+                gather_result = gather_rich_context(
+                    account_name,
+                    account_context.get(account_name, {}).get("card_id"),
+                    clickup,
+                    slack,
+                    slack_channels,
+                )
+                rich_context[account_name] = gather_result.context
+                context_gather_diagnostics[account_name] = {
+                    "clickup_ok": gather_result.clickup_ok,
+                    "clickup_comment_count": gather_result.clickup_comment_count,
+                    "clickup_error": gather_result.clickup_error,
+                    "slack_channel_matched": gather_result.slack_channel_matched,
+                    "slack_ok": gather_result.slack_ok,
+                    "slack_message_count": gather_result.slack_message_count,
+                    "slack_error": gather_result.slack_error,
+                }
+    except Exception as exc:
+        notes.append(f"Rich context gather failed, narratives will use flag messages only: {exc}")
+
+    run.context_gather_json = json.dumps(context_gather_diagnostics)
+
     db.add_all(flags)
     digest_text = build_digest(flags)
     run.digest_text = digest_text
     try:
-        run.dashboard_json = build_dashboard_json(flags, account_context, all_account_names)
+        run.dashboard_json = build_dashboard_json(
+            flags, account_context, all_account_names, live_accounts, previous_live_accounts, rich_context
+        )
         narrative_error = json.loads(run.dashboard_json).get("narrative_error")
         if narrative_error:
             notes.append(f"Dashboard narrative synthesis failed, showing raw flags instead: {narrative_error}")
@@ -520,7 +677,6 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     run.finished_at = datetime.utcnow()
     db.commit()
 
-    slack = SlackClient()
     slack.send_dm(settings.slack_christian_user_id, digest_text)
 
     return run

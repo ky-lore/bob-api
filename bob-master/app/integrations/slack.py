@@ -49,8 +49,20 @@ class SlackClient:
         return channels
 
     def channel_history(self, channel_id: str, *, oldest_ts: str | None = None) -> list[dict[str, Any]]:
-        resp = self._client.conversations_history(channel=channel_id, oldest=oldest_ts)
-        return resp["messages"]
+        """Paginates to the full history (or everything since oldest_ts), not
+        just the first page — conversations_history caps at 100/page by
+        default. This is a known-channel read (a channel ID already in hand),
+        which works fine on a bot token; it's org-wide search that's blocked
+        on the user-token decision (see module docstring)."""
+        messages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            resp = self._client.conversations_history(channel=channel_id, oldest=oldest_ts, cursor=cursor, limit=200)
+            messages.extend(resp["messages"])
+            cursor = resp.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+        return messages
 
     def join_channel(self, channel_id: str) -> dict[str, Any]:
         """Requires the channels:join bot scope. Public channels only — Slack has
