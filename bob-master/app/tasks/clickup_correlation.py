@@ -1,6 +1,10 @@
 """
-Bridges a matched ClickUp card to the package-clock inputs evaluate_package_clock()
-needs: package identification and day count.
+Bridges a matched ClickUp card to package identification and day-count
+resolution. `resolve_day_count` is still used by daily_go_live_audit.py;
+`identify_package` is no longer called there as of 2026-07-31 (Bob went
+"fully macro" — package identification no longer gates anything in the
+dashboard/flagging flow) but is kept here, tested, as a standalone utility
+for whenever that granularity comes back.
 
 PACKAGE IDENTIFICATION, per SKILL.md's priority order:
   1. ClickUp pkg-* tags — checked, but confirmed NOT in use on the real board

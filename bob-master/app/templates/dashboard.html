@@ -35,8 +35,10 @@
     td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
     tr:last-child td { border-bottom: none; }
     .day { font-weight: 700; }
-    .day.high { color: var(--red); }
-    .day.mid { color: var(--amber); }
+    .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+    .badge.live { background: rgba(12,163,12,0.15); color: var(--green); }
+    .badge.not-live { background: rgba(102,102,102,0.15); color: var(--muted); }
+    .spend { color: var(--muted); font-size: 0.82rem; }
 
     section.detail { margin-bottom: 1.5rem; }
     section.detail h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); }
@@ -67,38 +69,83 @@
   {% else %}
     {% if stat_tiles %}
       <div class="tiles">
-        <div class="tile"><div class="n">{{ stat_tiles.flagged_accounts }}</div><div class="label">Accounts flagged</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.clock_violations }}</div><div class="label">Clock violations</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.heartbeat_mismatches }}</div><div class="label">Heartbeat mismatches</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.retention_risks }}</div><div class="label">Retention risks</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.new_deals }}</div><div class="label">New deals</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.total_accounts_tracked }}</div><div class="label">Accounts tracked</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.accounts_tracked }}</div><div class="label">Accounts tracked</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.live }}</div><div class="label">Live</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.not_live }}</div><div class="label">Not live yet</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.should_be_on_but_dark }}</div><div class="label">Should be on, dark</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.campaigns_on_zero_spend }}</div><div class="label">Campaigns on, $0 spend</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.verified_off }}</div><div class="label">Verified off</div></div>
       </div>
     {% endif %}
 
     {% if narrative_error %}
-      <div class="warning-banner">⚠️ Narrative synthesis failed this run — showing raw flag messages instead: {{ narrative_error }}</div>
+      <div class="warning-banner">⚠️ Narrative synthesis failed this run — showing raw context instead: {{ narrative_error }}</div>
     {% endif %}
 
     {% include "_accounts_chart.html" %}
 
-    {% if rows %}
+    {% if accounts_overview %}
       <div class="card">
-        <h2>🚀 Needs attention — {{ rows|length }} accounts (oldest first)</h2>
+        <h2>Accounts overview — {{ accounts_overview|length }} accounts (oldest first)</h2>
         <table>
-          <tr><th>Account</th><th>Day</th><th>Board Stage</th><th>What's Blocking</th></tr>
-          {% for r in rows %}
+          <tr><th>Account</th><th>Day</th><th>Status</th><th>Ad spend</th><th>Where they stand</th></tr>
+          {% for a in accounts_overview %}
             <tr>
-              <td>{{ r.account }}</td>
-              <td class="day {{ 'high' if r.day >= 14 else ('mid' if r.day >= 7 else '') }}">{{ r.day }}</td>
-              <td>{{ r.stage }}</td>
-              <td>{{ r.blocking }}</td>
+              <td>{{ a.account }}</td>
+              <td class="day">{{ a.day }}</td>
+              <td><span class="badge {{ 'live' if a.is_live else 'not-live' }}">{{ 'Live' if a.is_live else 'Not live' }}</span></td>
+              <td class="spend">
+                {% if a.ad_spend %}
+                  {% for platform, spend in a.ad_spend.items() %}
+                    {{ platform }}: ${{ "%.2f"|format(spend.spend) }} ({{ spend.enabled_campaigns }} campaigns){% if not loop.last %}<br>{% endif %}
+                  {% endfor %}
+                {% else %}
+                  No heartbeat data
+                {% endif %}
+              </td>
+              <td>{{ a.status }}</td>
             </tr>
           {% endfor %}
         </table>
       </div>
     {% else %}
-      <p class="empty">Nothing needs attention today.</p>
+      <p class="empty">No accounts matched to the go-live board yet.</p>
+    {% endif %}
+
+    {% if went_live %}
+      <div class="card">
+        <h2>✅ Went live since last run</h2>
+        <ul>{% for r in went_live %}<li>{{ r.account }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+
+    {% if new_deals %}
+      <div class="card">
+        <h2>🆕 New deals</h2>
+        <ul>{% for r in new_deals %}<li><strong>{{ r.account }}</strong> — {{ r.note }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+
+    {% if ads_off and (ads_off.should_be_on_but_dark or ads_off.campaigns_on_zero_spend or ads_off.unsettled or ads_off.verified_off) %}
+      <div class="card">
+        <h2>Ads off</h2>
+        {% if ads_off.should_be_on_but_dark %}
+          <h3>Should be on but dark</h3>
+          <ul>{% for r in ads_off.should_be_on_but_dark %}<li><strong>{{ r.account }}</strong> — {{ r.detail }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if ads_off.campaigns_on_zero_spend %}
+          <h3>Campaigns on, $0 spend</h3>
+          <ul>{% for r in ads_off.campaigns_on_zero_spend %}<li><strong>{{ r.account }}</strong> ({{ r.platform }}) — {{ r.note }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if ads_off.unsettled %}
+          <h3>Unsettled</h3>
+          <ul>{% for r in ads_off.unsettled %}<li><strong>{{ r.account }}</strong> — {{ r.note }}</li>{% endfor %}</ul>
+        {% endif %}
+        {% if ads_off.verified_off %}
+          <h3>Verified off</h3>
+          <ul>{% for r in ads_off.verified_off %}<li><strong>{{ r.account }}</strong> — {{ r.note }}</li>{% endfor %}</ul>
+        {% endif %}
+      </div>
     {% endif %}
 
     {% for title, items in sections %}

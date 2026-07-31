@@ -1,35 +1,20 @@
-{# Horizontal bar chart: days-since-signing per account vs the 14-day marketing
-   clock. Color = status (critical/warning/exempt), never the sole carrier of
-   meaning — every bar also gets a direct day-count label and a full aria-label,
-   and the legend below pairs each swatch with its text meaning.
-
-   The header row and each data row share the exact same
-   label-column + track + lane structure, so the threshold tick lines up with
-   the 14-day mark on every bar via plain flexbox — no cross-row pixel math. #}
+{# Horizontal bar chart: days-since-signing per account, colored by whether
+   the account is currently live (ads spending) — no package-based threshold
+   anymore (Bob, 2026-07-31: dropped the whole package-clock concept, went
+   fully macro). Color is never the sole carrier of meaning — every bar also
+   gets a direct day-count label and a full aria-label, and the legend below
+   pairs each swatch with its text meaning. #}
 {% if accounts_chart %}
-  {% set threshold = clock_threshold_days | default(14) %}
   {% set observed_days = accounts_chart | map(attribute='day') | list %}
-  {% set scale_max = ([threshold * 2] + observed_days) | max %}
-  {% set threshold_pct = (threshold / scale_max * 100) | round(2) %}
+  {% set scale_max = ([1] + observed_days) | max %}
   {% set status_text = {
-    "critical": "past the " ~ threshold ~ "-day target",
-    "warning": "approaching the " ~ threshold ~ "-day target",
-    "exempt": "exempt — website-lane/free-promo package",
+    "live": "live",
+    "not_live": "not live yet",
   } %}
 
   <div class="card chart-root">
-    <h2>Days since signing — marketing clock</h2>
+    <h2>Days since signing</h2>
     <div class="chart-frame">
-      <div class="chart-row chart-row--header">
-        <div class="chart-label"></div>
-        <div class="chart-track chart-track--header">
-          <div class="chart-lane chart-lane--header">
-            <div class="chart-tick" style="left: {{ threshold_pct }}%;"></div>
-            <div class="chart-threshold-label" style="left: {{ threshold_pct }}%;">{{ threshold }}d target</div>
-          </div>
-        </div>
-      </div>
-
       {% for item in accounts_chart %}
         {% set width_pct = [(item.day / scale_max * 100), 100] | min | round(2) %}
         <div class="chart-row">
@@ -42,7 +27,6 @@
                data-status-text="{{ status_text[item.status] }}"
                aria-label="{{ item.account }}: {{ item.day }} days, {{ status_text[item.status] }}">
             <div class="chart-lane">
-              <div class="chart-tick" style="left: {{ threshold_pct }}%;"></div>
               <div class="chart-bar chart-bar--{{ item.status }}" style="width: {{ width_pct }}%;"></div>
               <span class="chart-value" style="left: calc({{ width_pct }}% + 6px);">{{ item.day }}d</span>
             </div>
@@ -52,9 +36,8 @@
     </div>
 
     <div class="chart-legend">
-      <span class="chart-chip"><i class="chart-swatch chart-swatch--critical"></i>Past {{ threshold }}-day target</span>
-      <span class="chart-chip"><i class="chart-swatch chart-swatch--warning"></i>Approaching {{ threshold }}-day target</span>
-      <span class="chart-chip"><i class="chart-swatch chart-swatch--exempt"></i>Exempt (website-lane/free-promo)</span>
+      <span class="chart-chip"><i class="chart-swatch chart-swatch--live"></i>Live</span>
+      <span class="chart-chip"><i class="chart-swatch chart-swatch--not_live"></i>Not live yet</span>
     </div>
   </div>
 
@@ -62,56 +45,40 @@
 
   <style>
     .chart-root {
-      --chart-critical: #d03b3b;
-      --chart-warning: #fab219;
-      --chart-exempt: #9a9da3;
+      --chart-live: #0ca30c;
+      --chart-not-live: #9a9da3;
       --chart-track-bg: #eceae4;
       --chart-value-gutter: 44px;
     }
     @media (prefers-color-scheme: dark) {
-      .chart-root { --chart-exempt: #6b6e73; --chart-track-bg: #2c2c2a; }
+      .chart-root { --chart-not-live: #6b6e73; --chart-track-bg: #2c2c2a; }
     }
 
-    .chart-frame { overflow: visible; padding-top: 22px; }
+    .chart-frame { overflow: visible; }
 
     .chart-row { display: flex; align-items: center; gap: 0.75rem; padding: 5px 0; }
-    .chart-row--header { padding-top: 0; padding-bottom: 10px; }
     .chart-label {
       flex: 0 0 160px; font-size: 0.82rem; color: var(--text);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .chart-track { position: relative; flex: 1; height: 24px; }
-    .chart-track--header { height: 14px; }
     .chart-track:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; border-radius: 4px; }
 
     {# The lane is intentionally narrower than the track (right: var(--chart-value-gutter))
        so the value label always has guaranteed room past the bar's tip, even at 100% width —
-       it never has to overflow the card to be read. Bar/tick/value percentages are all
+       it never has to overflow the card to be read. Bar/value percentages are all
        relative to this lane, so they stay in lockstep regardless of container width. #}
     .chart-lane {
       position: absolute; top: 4px; bottom: 4px; left: 0; right: var(--chart-value-gutter);
       border-radius: 4px; background: var(--chart-track-bg);
-    }
-    .chart-lane--header { top: 100%; bottom: auto; height: 0; background: none; }
-
-    .chart-tick {
-      position: absolute; top: -4px; bottom: -4px; width: 1px;
-      background: var(--muted); opacity: 0.6;
-    }
-    .chart-lane--header .chart-tick { top: 0; height: 6px; bottom: auto; }
-
-    .chart-threshold-label {
-      position: absolute; top: -22px; transform: translateX(-50%);
-      font-size: 0.7rem; color: var(--muted); white-space: nowrap;
     }
 
     .chart-bar {
       position: absolute; top: 0; left: 0; height: 100%;
       border-radius: 0 4px 4px 0;
     }
-    .chart-bar--critical { background: var(--chart-critical); }
-    .chart-bar--warning { background: var(--chart-warning); }
-    .chart-bar--exempt { background: var(--chart-exempt); }
+    .chart-bar--live { background: var(--chart-live); }
+    .chart-bar--not_live { background: var(--chart-not-live); }
     .chart-value {
       position: absolute; top: 50%; transform: translateY(-50%);
       font-size: 0.75rem; color: var(--muted); white-space: nowrap;
@@ -120,9 +87,8 @@
     .chart-legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.9rem; font-size: 0.78rem; color: var(--muted); }
     .chart-chip { display: inline-flex; align-items: center; gap: 0.4rem; }
     .chart-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-    .chart-swatch--critical { background: var(--chart-critical); }
-    .chart-swatch--warning { background: var(--chart-warning); }
-    .chart-swatch--exempt { background: var(--chart-exempt); }
+    .chart-swatch--live { background: var(--chart-live); }
+    .chart-swatch--not_live { background: var(--chart-not-live); }
 
     .chart-tooltip {
       position: fixed; z-index: 50; pointer-events: none;

@@ -1,8 +1,11 @@
 """
 End-to-end test of run_daily_go_live_audit() with the four external clients
-faked out, against a real (temp file) SQLite DB — proves the ClickUp/matching/
-package-clock wiring actually executes correctly at runtime, not just compiles.
+faked out, against a real (temp file) SQLite DB — proves the ClickUp/matching
+wiring actually executes correctly at runtime, not just compiles. Fully macro
+as of 2026-07-31: no more package-clock branching, every matched account is
+treated the same regardless of package/status.
 """
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -20,7 +23,7 @@ def _mock_anthropic_narrative(monkeypatch):
     # setting) and must not make a real API call — dashboard_json generation
     # is exercised (stat tiles are real), just not the LLM synthesis step.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", lambda accounts: ({}, []))
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
 
 
 _CAPTURED_NARRATIVE_ACCOUNTS: list = []
@@ -30,14 +33,14 @@ _CAPTURED_NARRATIVE_ACCOUNTS: list = []
 def _capture_narrative_accounts(monkeypatch):
     """Swaps the narrative-synthesis mock for one that records what it was
     called with, so a test can assert on the rich context that actually
-    reached the LLM input — the point of the MVP full-context gather."""
+    reached the LLM input — the point of the full-context gather."""
     _CAPTURED_NARRATIVE_ACCOUNTS.clear()
 
     def _fake(accounts):
         _CAPTURED_NARRATIVE_ACCOUNTS.extend(accounts)
         return {}, []
 
-    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", _fake)
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", _fake)
     return _CAPTURED_NARRATIVE_ACCOUNTS
 
 _HEADER = [
@@ -323,15 +326,16 @@ def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
         assert run.status in (RunStatus.success, RunStatus.partial)
 
         flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
-        clock_flags = [f for f in flags if f.category == FlagCategory.clock_violation]
         new_deal_flags = [f for f in flags if f.category == FlagCategory.new_deal]
         heartbeat_flags = [f for f in flags if f.category == FlagCategory.heartbeat_mismatch]
 
-        # Acme Co: matched to card1 (pkg-mktg, ~15 days old, not live) -> Day 14 flag
-        assert len(clock_flags) == 1
-        assert clock_flags[0].client_name == "Acme Co"
-        assert "Day 14" in clock_flags[0].message
-        assert clock_flags[0].evidence_url == "https://app.clickup.com/t/card1"
+        # Acme Co: matched to card1, ~15 days old, zero heartbeat spend -> not
+        # live -- shows up in accounts_overview regardless (fully macro, no
+        # package-based gating anymore).
+        dashboard_data = json.loads(run.dashboard_json)
+        by_account = {a["account"]: a for a in dashboard_data["accounts_overview"]}
+        assert by_account["Acme Co"]["is_live"] is False
+        assert by_account["Acme Co"]["day"] == 15
 
         # Zero spend everywhere means no legacy-only-spend flag (nothing to be legacy about)
         assert heartbeat_flags == []
@@ -340,9 +344,11 @@ def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
         assert len(new_deal_flags) == 1
         assert new_deal_flags[0].client_name == "Brand New Client"
 
-        # Slack DM was sent with the assembled digest
+        # Slack DM was sent with the assembled digest -- Acme Co isn't in it
+        # (no flag was raised for it; "not live yet" alone isn't alarm-worthy
+        # without the old package clock), but the new-deal flag still is.
         assert len(_FakeSlack.sent) == 1
-        assert "Acme Co" in _FakeSlack.sent[0][1]
+        assert "Brand New Client" in _FakeSlack.sent[0][1]
     finally:
         db.close()
         get_settings.cache_clear()
@@ -351,10 +357,10 @@ def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
 
 
 def test_full_context_gather_reaches_the_narrative_llm_input(monkeypatch, tmp_path, _capture_narrative_accounts):
-    """Proves the MVP full-context flow end-to-end (Bob, 2026-07-31): ClickUp
+    """Proves the full-context flow end-to-end (Bob, 2026-07-31): ClickUp
     card+subtask comments and the fuzzy-matched Slack channel's full history
-    both actually reach the LLM's input for a real waiting-to-go-live account,
-    using nothing but the existing fuzzy matching -- no Atlas involved yet."""
+    both actually reach the LLM's input for a real matched account, using
+    nothing but the existing fuzzy matching -- no Atlas involved yet."""
     db_path = tmp_path / "rich_context.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     monkeypatch.setenv("GHL_API_KEY", "x")

@@ -1,19 +1,28 @@
 """
 Port of tasks/daily-go-live-audit/SKILL.md.
 
+FULLY MACRO as of 2026-07-31 (Bob's explicit call): the original package-type
+clock-threshold branching (marketing 14d/21d, website 10d, custom-ETA,
+SEO-same-week, etc. — SKILL.md's PACKAGE CLOCKS section) has been ripped out
+entirely. No more per-package day thresholds, no more "exempt" packages, no
+more package identification gating anything. Every account matched to a
+go-live-list card now gets treated the same way: day count since signing,
+live/not-live (from heartbeat spend), ad spend summary, full ClickUp+Slack
+context, and one LLM-synthesized "where do they stand" sentence — see
+dashboard_summary.py and account_context_gather.py. The idea is to see the
+whole board's real state before re-introducing any granular rules.
+
 What's fully implemented below (deterministic, spec'd precisely in the prompt,
 or built against real sandboxed ClickUp data — see chat history):
   - heartbeat sheet pull, freshness check, CSV-export fallback
   - the LIVE DEFINITION cross-check, now genuinely cross-platform (a client
     live via Meta no longer gets flagged for a $0 legacy campaign on Google)
-  - package-clock rule evaluation, wired to real ClickUp card data via
-    app/tasks/matching.py (fuzzy name matching) and
-    app/tasks/clickup_correlation.py (package identification + day count)
+  - ClickUp board correlation via app/tasks/matching.py (fuzzy name matching)
   - ex-client filtering against the admin-editable list (replaces the hardcoded list)
   - digest assembly from persisted flags, and AuditRun/Flag persistence
-  - MVP full-context gather for waiting-to-go-live narratives (full ClickUp
-    card+subtask comments, full "internal-<client>" Slack channel history) via
-    the same fuzzy account matching used elsewhere — see
+  - full-context gather for EVERY matched account (full ClickUp card+subtask
+    comments, full "internal-<client>" Slack channel history) via the same
+    fuzzy account matching used elsewhere — see
     app/tasks/account_context_gather.py. Deliberately a stopgap: Bob is
     building "Atlas", a proprietary source-of-truth API for exact per-account
     IDs (ClickUp, Slack, ad platforms), which will replace the fuzzy matching
@@ -23,11 +32,8 @@ What's intentionally left as TODOs — these require judgment calls this port
 should not guess at (see docs/TASK-INVENTORY.md and the chat history this was
 built from for why):
   - accounts with heartbeat/GHL data but NO matched ClickUp card are currently
-    silently skipped for clock evaluation, not flagged — could mean a real
-    "no card exists" gap or just a matching miss; needs real volume data
-    before deciding which
-  - GHL "Package Type" field lookup (package ID priority #2) — skipped, no
-    bridge from account name to GHL contact ID exists yet
+    silently skipped, not flagged — could mean a real "no card exists" gap or
+    just a matching miss; needs real volume data before deciding which
   - the GHL Closed-Won -> new ClickUp card flow, including reading sales notes
     for the "over-promise" check
   - stage-aware checks that require correlating ClickUp card state with Slack
@@ -51,8 +57,8 @@ from app.integrations.slack import SlackClient
 from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, ManagedClientEntry, ManagedListType, RunStatus
 from app.tasks.account_context_gather import gather_rich_context
 from app.tasks.ads_off_classification import classify_ads_off
-from app.tasks.clickup_correlation import identify_package, resolve_day_count
-from app.tasks.dashboard_summary import build_dashboard_json, waiting_to_go_live_candidates
+from app.tasks.clickup_correlation import resolve_day_count
+from app.tasks.dashboard_summary import all_matched_accounts, build_dashboard_json
 from app.tasks.matching import find_best_match
 from app.tasks.retention_check import (
     ACTIVE_RISK_STATUSES,
@@ -65,11 +71,6 @@ from app.tasks.retention_check import (
 # accounts never assigned a name in Meta Business Manager, per
 # GoLive_Audit_Dev_Handover_Brief.md §1.
 _NUMERIC_ONLY_NAME_RE = re.compile(r"^\d+$")
-
-# --- Package clock day thresholds, per SKILL.md PACKAGE CLOCKS ---
-MKTG_FLAG_DAYS = (14, 21)
-WEB_FLAG_DAYS = (10,)
-WEB_SEO_FLAG_DAYS = (10,)
 
 
 @dataclass
@@ -177,58 +178,6 @@ def legacy_only_spend_flag(row: HeartbeatRow) -> bool:
     return row.legacy_spend > 0 and row.am_build_spend == 0 and row.lsa_spend == 0
 
 
-def evaluate_package_clock(
-    package: str,
-    days_elapsed: int,
-    *,
-    is_live: bool,
-    has_eta: bool = False,
-    eta_passed: bool = False,
-    seo_started: bool = False,
-    fully_complete: bool = False,
-) -> str | None:
-    """Returns a flag message, or None if clean. Pure function so it's testable
-    without touching ClickUp/GHL — the day-count and package-type inputs still
-    need to come from a real card (TODO: card ⇄ package/day-count resolution)."""
-    if package == "pkg-mktg":
-        if is_live:
-            return None
-        if days_elapsed >= MKTG_FLAG_DAYS[1]:
-            return f"Marketing package: {days_elapsed}d, not live (Day 21 escalation)"
-        if days_elapsed >= MKTG_FLAG_DAYS[0]:
-            return f"Marketing package: {days_elapsed}d, not live (Day 14 flag)"
-        return None
-
-    if package == "pkg-web":
-        if is_live:
-            return None
-        if days_elapsed >= WEB_FLAG_DAYS[0]:
-            return f"Website package: {days_elapsed}d, not live (Day 10 flag)"
-        return None
-
-    if package == "pkg-web-custom":
-        if not has_eta:
-            return "Custom web build has no dated ETA on the card"
-        if eta_passed:
-            return "Custom web build ETA has passed"
-        return None
-
-    if package == "pkg-seo":
-        if not seo_started:
-            return "SEO package: no on-site/off-site kickoff proof by end of signing week"
-        return None
-
-    if package == "pkg-web-seo":
-        if days_elapsed >= WEB_SEO_FLAG_DAYS[0] and not fully_complete:
-            return f"Website+SEO package: {days_elapsed}d, not fully complete (Day 10 flag)"
-        return None
-
-    if package == "pkg-free-promo":
-        return None  # tracked, never alarmed per SKILL.md
-
-    return f"Package unidentified — tag the card (defaulted to marketing rules for day count {days_elapsed})"
-
-
 def get_active_client_names(db: Session, list_type: ManagedListType) -> set[str]:
     rows = db.query(ManagedClientEntry).filter_by(list_type=list_type, active=True).all()
     return {r.client_name for r in rows}
@@ -265,7 +214,6 @@ def build_digest(flags: list[Flag]) -> str:
         (":rotating_light: Action needed today", FlagCategory.action_needed),
         (":bar_chart: Heartbeat mismatches", FlagCategory.heartbeat_mismatch),
         (":credit_card: Payment", FlagCategory.payment),
-        (":alarm_clock: Clock violations by package", FlagCategory.clock_violation),
         (":new: New deals", FlagCategory.new_deal),
         (":white_check_mark: Went live", FlagCategory.went_live),
     ]
@@ -383,7 +331,10 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 )
             )
 
-    # --- ClickUp board correlation + package-clock evaluation ---
+    # --- ClickUp board correlation (fully macro — see module docstring: no
+    # package identification, no clock-threshold evaluation, no flags here
+    # anymore. Every matched account just gets recorded for the dashboard;
+    # "where they stand" is now the LLM narrative's job, not this loop's) ---
     try:
         clickup = ClickUpClient()
         board_data = clickup.get_list_tasks(settings.clickup_go_live_list_id, include_closed=True)
@@ -402,8 +353,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         notes.append(f"ClickUp Go-Live board pull failed: {exc}")
 
     alias_map = get_alias_map(db)
-    _SKIP_STATUSES = {"ignore", "complete"}
-    account_context: dict[str, dict] = {}  # account_name -> {"day": int, "stage": str}, for the dashboard
+    account_context: dict[str, dict] = {}  # account_name -> {"day": int, "stage": str, "card_id": str}
 
     for account_name in sorted(all_account_names):
         match = find_best_match(account_name, cards, aliases=alias_map)
@@ -434,35 +384,14 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         if not card:
             continue
 
-        package = identify_package(card["tags"], card["name"])
         days_elapsed = resolve_day_count(card["name"], card["date_created"]) if card["date_created"] else 0
         # Recorded for every matched card, including ignore/complete — the
-        # ads-off classification pass below needs card status regardless of
-        # whether this account is clock-eligible.
+        # dashboard shows every matched account regardless of status now.
         account_context[account_name] = {
             "day": days_elapsed,
             "stage": card["status"],
-            "package": package,
             "card_id": card["id"],
         }
-
-        if card["status"] in _SKIP_STATUSES:
-            continue
-
-        clock_message = evaluate_package_clock(package, days_elapsed, is_live=account_name in live_accounts)
-        if clock_message:
-            escalated = package == "pkg-mktg" and days_elapsed >= MKTG_FLAG_DAYS[1]
-            flags.append(
-                Flag(
-                    run_id=run.id,
-                    category=FlagCategory.clock_violation,
-                    severity=FlagSeverity.urgent if escalated else FlagSeverity.warning,
-                    client_name=account_name,
-                    message=clock_message,
-                    evidence_url=f"https://app.clickup.com/t/{card['id']}",
-                    created_at=datetime.utcnow(),
-                )
-            )
 
     # --- Retention pipeline cancel-intent cross-check (ACCURACY RULES §2:
     # "board LIVE is not proof of active... check the Retention pipeline
@@ -624,20 +553,19 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
     slack = SlackClient()
 
-    # --- MVP full-context gather for narrative synthesis (Bob, 2026-07-31):
-    # prove the logic against the existing fuzzy account matching now, ahead
-    # of Atlas (unbuilt proprietary source-of-truth API) removing the need for
-    # it. Deliberately unbounded/inefficient per that steer — full ClickUp
-    # card+subtask comments and full Slack channel history, no truncation.
-    # Scoped to waiting-to-go-live candidates only (the one section that gets
-    # an LLM narrative at all), not every account on the board. ---
+    # --- Full-context gather for narrative synthesis (Bob, 2026-07-31, "go
+    # fully macro"): every matched account gets the same treatment now, not
+    # just a package-based subset — full ClickUp card+subtask comments, full
+    # Slack channel history, no truncation. Built against the existing fuzzy
+    # account matching now, ahead of Atlas (unbuilt proprietary source-of-truth
+    # API) removing the need for it. Deliberately unbounded/inefficient. ---
     rich_context: dict[str, list[str]] = {}
     context_gather_diagnostics: dict[str, dict] = {}
     try:
-        candidates = waiting_to_go_live_candidates(flags, account_context)
-        if candidates:
+        matched_accounts = all_matched_accounts(account_context)
+        if matched_accounts:
             slack_channels = slack.list_channels()
-            for account_name in candidates:
+            for account_name in matched_accounts:
                 gather_result = gather_rich_context(
                     account_name,
                     account_context.get(account_name, {}).get("card_id"),
@@ -660,12 +588,29 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
     run.context_gather_json = json.dumps(context_gather_diagnostics)
 
+    # --- Ad spend summary per account (Google Ads / Meta), for the accounts
+    # overview + its LLM narrative — straight from the heartbeat rows already
+    # pulled in Step 1, no package logic involved. ---
+    spend_by_account: dict[str, dict] = {
+        account_name: {
+            label: {"spend": row.total_spend, "enabled_campaigns": row.enabled_campaigns}
+            for label, row in platform_rows.items()
+        }
+        for account_name, platform_rows in rows_by_account.items()
+    }
+
     db.add_all(flags)
     digest_text = build_digest(flags)
     run.digest_text = digest_text
     try:
         run.dashboard_json = build_dashboard_json(
-            flags, account_context, all_account_names, live_accounts, previous_live_accounts, rich_context
+            flags,
+            account_context,
+            all_account_names,
+            live_accounts,
+            previous_live_accounts,
+            rich_context,
+            spend_by_account,
         )
         narrative_error = json.loads(run.dashboard_json).get("narrative_error")
         if narrative_error:

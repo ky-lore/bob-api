@@ -91,7 +91,7 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
     monkeypatch.setattr(audit_mod, "GHLClient", _FakeGHL)
     monkeypatch.setattr(audit_mod, "SlackClient", _FakeSlack)
     monkeypatch.setattr(
-        "app.tasks.dashboard_summary.synthesize_blocking_narratives",
+        "app.tasks.dashboard_summary.synthesize_account_narratives",
         lambda accounts: (
             {},
             [{"batch_index": 0, "accounts": [a["account"] for a in accounts], "narrated_count": 0, "ok": True, "error": None}],
@@ -106,7 +106,7 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
 
         assert set(body.keys()) >= {"run_id", "status", "notes", "context_gather", "narrative_batches", "narrative_error"}
 
-        # Per-account gather diagnostics for Acme Co (the waiting-to-go-live candidate)
+        # Per-account gather diagnostics for Acme Co (every matched account now, not just a package-based subset)
         acme_diagnostics = body["context_gather"]["Acme Co"]
         assert acme_diagnostics["clickup_ok"] is True
         assert acme_diagnostics["clickup_comment_count"] == 1

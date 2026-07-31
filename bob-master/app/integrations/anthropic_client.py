@@ -1,19 +1,27 @@
 """
-Synthesizes the dashboard's per-account "what's blocking" narrative — the one
-piece of the original system that was genuinely LLM-narrated, not a fixed
-template (see chat history: sentences like "Client GHOSTING (red list) —
-Meta campaign on, $0 spend. Escalation call overdue." require reading raw
-signals and writing prose, not applying a rule). Everything numeric (stat
-tile counts, day counts, package/stage) stays deterministic Python — this
-only synthesizes the sentence, from facts already gathered elsewhere.
+Synthesizes the dashboard's per-account status narrative — the one piece of
+the original system that was genuinely LLM-narrated, not a fixed template
+(see chat history: sentences like "Client GHOSTING (red list) — Meta campaign
+on, $0 spend. Escalation call overdue." require reading raw signals and
+writing prose, not applying a rule). Everything numeric (stat tile counts,
+day counts, live/not-live) stays deterministic Python — this only synthesizes
+the sentence, from facts already gathered elsewhere.
+
+Covers EVERY matched go-live-list account, live or not (Bob, 2026-07-31: went
+"fully macro" — dropped the old package-type clock-threshold branching
+entirely; this now just describes where each account stands given its full
+context, rather than only narrating "what's blocking" a not-yet-live subset).
 
 Batched rather than one call for every account: the first live run (81 real
 flagged accounts) hit stop_reason=max_tokens with zero usable narratives
 produced — a single call's token budget for that many accounts, each with
-potentially long context strings, is not a safe bet. Smaller fixed-size
-batches keep each call's output comfortably within budget, and a failed batch
-only costs that batch's accounts their narrative (they fall back to raw flag
-text in build_dashboard_json) instead of taking down the whole run.
+potentially long context strings (now including full ClickUp comments and
+full Slack channel history per account — see account_context_gather.py — so
+this budget concern is even more live than when it was first hit), is not a
+safe bet. Smaller fixed-size batches keep each call's output comfortably
+within budget, and a failed batch only costs that batch's accounts their
+narrative (they fall back to raw context text in build_dashboard_json)
+instead of taking down the whole run.
 """
 from __future__ import annotations
 
@@ -27,7 +35,7 @@ from app.config import get_settings
 _TOOL_NAME = "submit_narratives"
 _TOOL_SCHEMA = {
     "name": _TOOL_NAME,
-    "description": "Submit the synthesized 'what's blocking' narrative for each account.",
+    "description": "Submit the synthesized status narrative for each account.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -37,12 +45,12 @@ _TOOL_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "account": {"type": "string"},
-                        "blocking": {
+                        "status": {
                             "type": "string",
                             "description": "One concise, matter-of-fact sentence. No fluff, no greeting.",
                         },
                     },
-                    "required": ["account", "blocking"],
+                    "required": ["account", "status"],
                 },
             }
         },
@@ -51,14 +59,17 @@ _TOOL_SCHEMA = {
 }
 
 _SYSTEM_PROMPT = (
-    "You are synthesizing a one-line 'what's blocking' status for each client account on a "
-    "marketing agency's internal go-live tracking dashboard, for management. Given structured "
-    "signals about an account (ClickUp card stage, day count, package type, ad-spend heartbeat "
-    "status, retention/cancel-risk flags), write ONE concise, matter-of-fact sentence describing "
-    "what's blocking it from going live or what needs attention. Do not invent facts not present "
-    "in the input. If the input signals conflict with each other, say so plainly instead of "
-    "picking a side — never silently resolve a conflict. No greetings, no preamble, no markdown. "
-    "You MUST produce one entry per account given, even if it's a short restatement of the input."
+    "You are synthesizing a one-line status summary for each client account on a marketing "
+    "agency's internal go-live tracking dashboard, for management. You'll be given, per account: "
+    "day count since signing, whether it is currently live (running ad spend), its ClickUp card "
+    "stage, ad-spend heartbeat data, and raw context — every ClickUp comment on its card and "
+    "subtasks, and its Slack channel's message history. Using ALL of that, write ONE concise, "
+    "matter-of-fact sentence describing where the account currently stands: if it's live, what's "
+    "actually happening operationally (any risk, any open thread worth knowing); if it's not live "
+    "yet, what's blocking it. Do not invent facts not present in the input. If the input signals "
+    "conflict with each other, say so plainly instead of picking a side — never silently resolve a "
+    "conflict. No greetings, no preamble, no markdown. You MUST produce one entry per account "
+    "given, even if it's a short restatement of the input."
 )
 
 _BATCH_SIZE = 20
@@ -67,11 +78,12 @@ _MIN_TOKENS = 512
 _MAX_TOKENS_CAP = 4096
 
 
-def synthesize_blocking_narratives(
+def synthesize_account_narratives(
     accounts: list[dict[str, Any]],
 ) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """accounts: list of {"account": str, "day": int, "stage": str, "context": [str, ...]}
-    where context is the already-gathered flag messages/facts for that account.
+    """accounts: list of {"account": str, "day": int, "stage": str, "is_live": bool,
+    "context": [str, ...]} where context is the already-gathered ClickUp/Slack
+    material for that account (see account_context_gather.py).
 
     Returns (narratives, batch_results):
       - narratives: {account_name: narrative_sentence} — may be a subset of
@@ -144,7 +156,7 @@ def _synthesize_batch(accounts: list[dict[str, Any]]) -> dict[str, str]:
     for block in response.content:
         if block.type == "tool_use" and block.name == _TOOL_NAME:
             narratives = block.input.get("narratives", [])
-            result = {n["account"]: n["blocking"] for n in narratives if n.get("account")}
+            result = {n["account"]: n["status"] for n in narratives if n.get("account")}
             if not result:
                 raise RuntimeError(
                     f"zero usable narratives (stop_reason={response.stop_reason}, "

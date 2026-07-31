@@ -1,30 +1,33 @@
 """
-Builds the JSON stored on AuditRun.dashboard_json, structured to match the
-reference dashboard (golive-pipeline-dashboard.pdf, provided 2026-07-31):
-  - stat_tiles: the same 6 categories, computed deterministically
-  - waiting_to_go_live: marketing-package accounts not yet live, oldest first,
-    with an LLM-synthesized "what's blocking" sentence (see
-    integrations/anthropic_client.py) — the only section that gets narrative
-    prose, matching the original (the "ads off" tables are plain factual
-    detail there, not synthesized sentences)
-  - ads_off: the 4 sub-buckets from ads_off_classification.py
-  - new_deals / went_live: plain factual lists
-  - live_accounts: stored so the NEXT run can diff against it for went_live
+Builds the JSON stored on AuditRun.dashboard_json.
 
-The existing raw per-category flag list (rendered separately in dashboard.html
-as a "detail" section) is untouched by this — this module only builds the
-polished, reference-dashboard-shaped view.
+Fully macro (Bob, 2026-07-31): every account matched to a go-live-list card
+gets ONE row — live or not, whatever package it might be tagged with — with
+its day count, live/not-live status, ad spend summary, and an LLM-synthesized
+"where they stand" narrative built from its full ClickUp+Slack context (see
+account_context_gather.py). This replaces the old package-type clock-threshold
+branching (marketing 14d/21d, website 10d, custom-ETA, SEO-same-week, etc.)
+entirely — Bob was explicit he's done with that granularity for now and wants
+the full-account macro picture first, drilling down into specifics later.
+
+  - stat_tiles: simple deterministic counts (tracked / live / not-live, plus
+    the ads-off buckets, unchanged)
+  - accounts_overview: every matched account, oldest-signed first, each with
+    an LLM narrative synthesized over its full context — the one section that
+    gets narrative prose
+  - accounts_chart: day count per account, colored live vs not-live
+  - ads_off: the 4 sub-buckets from ads_off_classification.py (unchanged —
+    already package-agnostic)
+  - new_deals / went_live: plain factual lists (unchanged)
+  - live_accounts: stored so the NEXT run can diff against it for went_live
 """
 from __future__ import annotations
 
 import json
 from collections import defaultdict
 
-from app.integrations.anthropic_client import synthesize_blocking_narratives
+from app.integrations.anthropic_client import synthesize_account_narratives
 from app.models import Flag, FlagCategory
-
-_WEBSITE_LANE_PACKAGES = {"pkg-web", "pkg-web-custom", "pkg-free-promo"}
-_MKTG_BEHIND_DAYS = 14
 
 
 def _group_flags_by_account(flags: list[Flag]) -> dict[str, list[Flag]]:
@@ -34,21 +37,13 @@ def _group_flags_by_account(flags: list[Flag]) -> dict[str, list[Flag]]:
     return by_account
 
 
-def waiting_to_go_live_candidates(flags: list[Flag], account_context: dict[str, dict]) -> list[str]:
-    """Marketing-package accounts with a clock violation (i.e. not live) —
-    the only accounts that get an LLM-narrated "what's blocking" sentence.
-    Exposed standalone (not just inlined in build_dashboard_json) so the
-    caller can pre-fetch rich per-account context (ClickUp comments, Slack
-    channel history — see account_context_gather.py) for exactly this set
-    before build_dashboard_json runs, rather than for every account on the
-    board."""
-    by_account = _group_flags_by_account(flags)
-    return [
-        account_name
-        for account_name, account_flags in by_account.items()
-        if account_context.get(account_name, {}).get("package") == "pkg-mktg"
-        and any(f.category == FlagCategory.clock_violation for f in account_flags)
-    ]
+def all_matched_accounts(account_context: dict[str, dict]) -> list[str]:
+    """Every account with a matched go-live-list card — live or not, whatever
+    package (package is no longer tracked at all — see module docstring).
+    Exposed standalone so the caller can pre-fetch rich per-account context
+    (ClickUp comments, Slack channel history — see account_context_gather.py)
+    for this full set before build_dashboard_json runs."""
+    return list(account_context.keys())
 
 
 def build_dashboard_json(
@@ -58,61 +53,62 @@ def build_dashboard_json(
     live_accounts: set[str],
     previous_live_accounts: set[str],
     rich_context: dict[str, list[str]] | None = None,
+    spend_by_account: dict[str, dict] | None = None,
 ) -> str:
-    """rich_context: optional {account_name: [context strings, ...]} — extra
-    ClickUp/Slack material (see account_context_gather.py) appended after the
-    deterministic flag messages for that account's LLM narrative input. Pure
-    merge only; this function does no I/O of its own, per the module docstring."""
+    """rich_context: optional {account_name: [context strings, ...]} — full
+    ClickUp/Slack material (see account_context_gather.py) for that account's
+    LLM narrative input. spend_by_account: optional {account_name: {"Google
+    Ads": {"spend": float, "enabled_campaigns": int} | None, "Meta": ... |
+    None}} — ad spend summary, also fed to the narrative. Pure merge only;
+    this function does no I/O of its own, per the module docstring."""
     by_account = _group_flags_by_account(flags)
     rich_context = rich_context or {}
+    spend_by_account = spend_by_account or {}
 
-    # --- Waiting to go live: marketing-package accounts with a clock
-    # violation (i.e. not live), narrated via one batched LLM call ---
-    waiting_candidates = waiting_to_go_live_candidates(flags, account_context)
+    matched_accounts = all_matched_accounts(account_context)
     accounts_for_llm = [
         {
             "account": account_name,
             "day": account_context.get(account_name, {}).get("day", 0),
             "stage": account_context.get(account_name, {}).get("stage", "unknown"),
-            "context": [f.message for f in by_account[account_name]] + rich_context.get(account_name, []),
+            "is_live": account_name in live_accounts,
+            "ad_spend": spend_by_account.get(account_name, {}),
+            "context": [f.message for f in by_account.get(account_name, [])] + rich_context.get(account_name, []),
         }
-        for account_name in waiting_candidates
+        for account_name in matched_accounts
     ]
 
     narrative_error: str | None = None
     narrative_batches: list[dict] = []
     try:
-        narratives, narrative_batches = synthesize_blocking_narratives(accounts_for_llm)
+        narratives, narrative_batches = synthesize_account_narratives(accounts_for_llm)
     except Exception as exc:
-        # Degrade to the raw flag-message join per account (never blank the
+        # Degrade to the raw context join per account (never blank the
         # dashboard over this), but surface *why* — silently swallowing this
         # is exactly what made the first real failure undiagnosable.
         narratives = {}
         narrative_error = f"{type(exc).__name__}: {exc}"
 
-    waiting_to_go_live = [
+    accounts_overview = [
         {
             "account": a["account"],
             "day": a["day"],
             "stage": a["stage"],
-            "blocking": narratives.get(a["account"]) or "; ".join(a["context"]),
+            "is_live": a["is_live"],
+            "ad_spend": a["ad_spend"],
+            "status": narratives.get(a["account"]) or "; ".join(a["context"]) or "No additional context gathered.",
         }
         for a in accounts_for_llm
     ]
-    waiting_to_go_live.sort(key=lambda r: r["day"], reverse=True)  # oldest first
+    accounts_overview.sort(key=lambda r: r["day"], reverse=True)  # oldest first
 
     # --- Accounts chart: every board-matched account's day count, colored by
-    # clock status (website-lane/free-promo packages are exempt from the
-    # 14-day marketing clock entirely, not just "not yet behind") ---
+    # whether it's currently live — no package-based distinction anymore ---
     accounts_chart = [
         {
             "account": account_name,
             "day": ctx.get("day", 0),
-            "status": (
-                "exempt"
-                if ctx.get("package") in _WEBSITE_LANE_PACKAGES
-                else ("critical" if ctx.get("day", 0) >= _MKTG_BEHIND_DAYS else "warning")
-            ),
+            "status": "live" if account_name in live_accounts else "not_live",
         }
         for account_name, ctx in account_context.items()
     ]
@@ -151,22 +147,19 @@ def build_dashboard_json(
     went_live = [{"account": name} for name in sorted(live_accounts - previous_live_accounts)]
 
     stat_tiles = {
-        "waiting_to_go_live": len(waiting_to_go_live),
-        "behind_14_day_target": sum(1 for r in waiting_to_go_live if r["day"] >= _MKTG_BEHIND_DAYS),
+        "accounts_tracked": len(matched_accounts),
+        "live": sum(1 for a in matched_accounts if a in live_accounts),
+        "not_live": sum(1 for a in matched_accounts if a not in live_accounts),
         "should_be_on_but_dark": len(should_be_on_but_dark),
         "verified_off": len(verified_off),
         "campaigns_on_zero_spend": len(campaigns_on_zero_spend),
-        "website_lane_builds": sum(
-            1 for ctx in account_context.values() if ctx.get("package") in _WEBSITE_LANE_PACKAGES
-        ),
     }
 
     return json.dumps(
         {
             "stat_tiles": stat_tiles,
-            "waiting_to_go_live": waiting_to_go_live,
+            "accounts_overview": accounts_overview,
             "accounts_chart": accounts_chart,
-            "clock_threshold_days": _MKTG_BEHIND_DAYS,
             "ads_off": {
                 "should_be_on_but_dark": should_be_on_but_dark,
                 "campaigns_on_zero_spend": campaigns_on_zero_spend,

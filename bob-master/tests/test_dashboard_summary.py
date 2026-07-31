@@ -2,37 +2,44 @@ import json
 from datetime import datetime
 
 from app.models import Flag, FlagCategory, FlagSeverity
-from app.tasks.dashboard_summary import build_dashboard_json, waiting_to_go_live_candidates
+from app.tasks.dashboard_summary import all_matched_accounts, build_dashboard_json
 
 
 def _flag(**kwargs) -> Flag:
     defaults = dict(
         run_id=1,
-        category=FlagCategory.clock_violation,
+        category=FlagCategory.ads_off_zero_spend,
         severity=FlagSeverity.warning,
         client_name="Acme Co",
-        message="Marketing package: 14d, not live",
+        message="Meta: campaigns enabled, $0 spend — billing/payment check",
         created_at=datetime.utcnow(),
     )
     defaults.update(kwargs)
     return Flag(**defaults)
 
 
-def test_waiting_to_go_live_only_includes_marketing_package_clock_violations(monkeypatch):
-    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", lambda accounts: ({}, []))
+def test_accounts_overview_includes_every_matched_account_regardless_of_live_status(monkeypatch):
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
 
-    flags = [
-        _flag(client_name="Acme Co", category=FlagCategory.clock_violation, message="Marketing package: 14d, not live"),
-        _flag(client_name="Beta LLC", category=FlagCategory.clock_violation, message="Website package: 10d, not live"),
-    ]
     account_context = {
-        "Acme Co": {"day": 14, "stage": "onboarding", "package": "pkg-mktg"},
-        "Beta LLC": {"day": 10, "stage": "development", "package": "pkg-web"},
+        "Acme Co": {"day": 21, "stage": "onboarding", "card_id": "card1"},
+        "Beta LLC": {"day": 10, "stage": "development", "card_id": "card2"},
     }
-    result = json.loads(build_dashboard_json(flags, account_context, {"Acme Co", "Beta LLC"}, set(), set()))
+    result = json.loads(build_dashboard_json([], account_context, {"Acme Co", "Beta LLC"}, {"Beta LLC"}, set()))
 
-    accounts = [r["account"] for r in result["waiting_to_go_live"]]
-    assert accounts == ["Acme Co"]  # Beta LLC is pkg-web, not pkg-mktg -- excluded
+    accounts = {r["account"] for r in result["accounts_overview"]}
+    assert accounts == {"Acme Co", "Beta LLC"}  # both included, live or not -- no package filtering anymore
+    by_account = {r["account"]: r for r in result["accounts_overview"]}
+    assert by_account["Acme Co"]["is_live"] is False
+    assert by_account["Beta LLC"]["is_live"] is True
+
+
+def test_all_matched_accounts_returns_every_account_context_key():
+    account_context = {
+        "Acme Co": {"day": 14, "stage": "onboarding", "card_id": "card1"},
+        "Beta LLC": {"day": 10, "stage": "development", "card_id": "card2"},
+    }
+    assert sorted(all_matched_accounts(account_context)) == ["Acme Co", "Beta LLC"]
 
 
 def test_ads_off_buckets_populated_from_flag_categories():
@@ -80,115 +87,111 @@ def test_live_accounts_stored_for_next_run_diff():
     assert sorted(result["live_accounts"]) == ["Acme Co", "Beta LLC"]
 
 
-def test_website_lane_stat_tile_counts_web_packages():
+def test_stat_tiles_count_live_vs_not_live_with_no_package_distinction():
     account_context = {
-        "A": {"day": 0, "stage": "x", "package": "pkg-web"},
-        "B": {"day": 0, "stage": "x", "package": "pkg-web-custom"},
-        "C": {"day": 0, "stage": "x", "package": "pkg-free-promo"},
-        "D": {"day": 0, "stage": "x", "package": "pkg-mktg"},
+        "A": {"day": 0, "stage": "x", "card_id": "1"},
+        "B": {"day": 0, "stage": "x", "card_id": "2"},
+        "C": {"day": 0, "stage": "x", "card_id": "3"},
     }
-    result = json.loads(build_dashboard_json([], account_context, set(), set(), set()))
-    assert result["stat_tiles"]["website_lane_builds"] == 3
+    result = json.loads(build_dashboard_json([], account_context, set(), {"A", "B"}, set()))
+    assert result["stat_tiles"]["accounts_tracked"] == 3
+    assert result["stat_tiles"]["live"] == 2
+    assert result["stat_tiles"]["not_live"] == 1
 
 
-def test_behind_14_day_target_only_counts_waiting_to_go_live_rows(monkeypatch):
-    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", lambda accounts: ({}, []))
-
-    flags = [_flag(client_name="Acme Co", message="Marketing package: 21d, not live")]
-    account_context = {"Acme Co": {"day": 21, "stage": "onboarding", "package": "pkg-mktg"}}
-    result = json.loads(build_dashboard_json(flags, account_context, {"Acme Co"}, set(), set()))
-
-    assert result["stat_tiles"]["behind_14_day_target"] == 1
-
-
-def test_accounts_chart_classifies_by_package_and_day():
+def test_accounts_chart_is_live_vs_not_live_only_no_package_status():
     account_context = {
-        "Acme Co": {"day": 21, "stage": "onboarding", "package": "pkg-mktg"},  # past target
-        "Beta LLC": {"day": 5, "stage": "onboarding", "package": "pkg-mktg"},  # approaching
-        "Gamma Inc": {"day": 30, "stage": "onboarding", "package": "pkg-web"},  # exempt, despite high day count
+        "Acme Co": {"day": 21, "stage": "onboarding", "card_id": "1"},
+        "Beta LLC": {"day": 5, "stage": "onboarding", "card_id": "2"},
+        "Gamma Inc": {"day": 30, "stage": "onboarding", "card_id": "3"},
     }
-    result = json.loads(build_dashboard_json([], account_context, set(), set(), set()))
+    result = json.loads(build_dashboard_json([], account_context, set(), {"Beta LLC"}, set()))
 
     by_account = {r["account"]: r for r in result["accounts_chart"]}
-    assert by_account["Acme Co"]["status"] == "critical"
-    assert by_account["Beta LLC"]["status"] == "warning"
-    assert by_account["Gamma Inc"]["status"] == "exempt"
+    assert by_account["Beta LLC"]["status"] == "live"
+    assert by_account["Acme Co"]["status"] == "not_live"
+    assert by_account["Gamma Inc"]["status"] == "not_live"
     # oldest first
     assert [r["account"] for r in result["accounts_chart"]] == ["Gamma Inc", "Acme Co", "Beta LLC"]
-    assert result["clock_threshold_days"] == 14
+    assert "clock_threshold_days" not in result
 
 
-def test_waiting_to_go_live_candidates_matches_build_dashboard_json_selection():
-    flags = [
-        _flag(client_name="Acme Co", category=FlagCategory.clock_violation, message="Marketing package: 14d, not live"),
-        _flag(client_name="Beta LLC", category=FlagCategory.clock_violation, message="Website package: 10d, not live"),
-    ]
-    account_context = {
-        "Acme Co": {"day": 14, "stage": "onboarding", "package": "pkg-mktg"},
-        "Beta LLC": {"day": 10, "stage": "development", "package": "pkg-web"},
-    }
-    assert waiting_to_go_live_candidates(flags, account_context) == ["Acme Co"]
-
-
-def test_rich_context_is_appended_to_llm_context_for_waiting_candidates(monkeypatch):
+def test_rich_context_is_appended_to_llm_context_for_every_account(monkeypatch):
     captured = {}
 
     def _fake_synthesize(accounts):
         captured["accounts"] = accounts
         return {}, []
 
-    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", _fake_synthesize)
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", _fake_synthesize)
 
-    flags = [_flag(client_name="Acme Co", message="Marketing package: 14d, not live")]
-    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "package": "pkg-mktg"}}
+    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "card_id": "card1"}}
     rich_context = {"Acme Co": ["[ClickUp comment, task card1] waiting on access", "[Slack #internal-acme-co] hi team"]}
 
-    build_dashboard_json(flags, account_context, {"Acme Co"}, set(), set(), rich_context)
+    build_dashboard_json([], account_context, {"Acme Co"}, set(), set(), rich_context)
 
     acme_context = captured["accounts"][0]["context"]
-    assert "Marketing package: 14d, not live" in acme_context
     assert "[ClickUp comment, task card1] waiting on access" in acme_context
     assert "[Slack #internal-acme-co] hi team" in acme_context
 
 
-def test_rich_context_defaults_to_empty_without_breaking_existing_callers(monkeypatch):
-    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", lambda accounts: ({}, []))
-    flags = [_flag(client_name="Acme Co", message="Marketing package: 14d, not live")]
-    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "package": "pkg-mktg"}}
+def test_spend_by_account_flows_into_the_overview_and_llm_input(monkeypatch):
+    captured = {}
 
-    # No rich_context arg at all -- must not raise, must behave exactly as before.
-    result = json.loads(build_dashboard_json(flags, account_context, {"Acme Co"}, set(), set()))
-    assert result["waiting_to_go_live"][0]["account"] == "Acme Co"
+    def _fake_synthesize(accounts):
+        captured["accounts"] = accounts
+        return {}, []
+
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", _fake_synthesize)
+
+    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "card_id": "card1"}}
+    spend_by_account = {"Acme Co": {"Google Ads": {"spend": 123.45, "enabled_campaigns": 2}}}
+
+    result = json.loads(
+        build_dashboard_json([], account_context, {"Acme Co"}, set(), set(), None, spend_by_account)
+    )
+
+    assert result["accounts_overview"][0]["ad_spend"] == {"Google Ads": {"spend": 123.45, "enabled_campaigns": 2}}
+    assert captured["accounts"][0]["ad_spend"] == {"Google Ads": {"spend": 123.45, "enabled_campaigns": 2}}
+
+
+def test_rich_context_defaults_to_empty_without_breaking_existing_callers(monkeypatch):
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
+    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "card_id": "card1"}}
+
+    # No rich_context/spend_by_account args at all -- must not raise.
+    result = json.loads(build_dashboard_json([], account_context, {"Acme Co"}, set(), set()))
+    assert result["accounts_overview"][0]["account"] == "Acme Co"
+    assert result["accounts_overview"][0]["ad_spend"] == {}
 
 
 def test_narrative_batches_are_surfaced_in_the_result(monkeypatch):
     fake_batches = [{"batch_index": 0, "accounts": ["Acme Co"], "narrated_count": 1, "ok": True, "error": None}]
     monkeypatch.setattr(
-        "app.tasks.dashboard_summary.synthesize_blocking_narratives",
+        "app.tasks.dashboard_summary.synthesize_account_narratives",
         lambda accounts: ({"Acme Co": "narrative"}, fake_batches),
     )
 
-    flags = [_flag(client_name="Acme Co", message="Marketing package: 14d, not live")]
-    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "package": "pkg-mktg"}}
-    result = json.loads(build_dashboard_json(flags, account_context, {"Acme Co"}, set(), set()))
+    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "card_id": "card1"}}
+    result = json.loads(build_dashboard_json([], account_context, {"Acme Co"}, set(), set()))
 
     assert result["narrative_batches"] == fake_batches
 
 
 def test_build_dashboard_json_surfaces_llm_failure_instead_of_swallowing_it(monkeypatch):
-    # Real bug: the first version of synthesize_blocking_narratives caught its
-    # own exception and returned a silent fallback, so a real API failure was
+    # Real bug: the first version of the narrative synthesizer caught its own
+    # exception and returned a silent fallback, so a real API failure was
     # completely invisible anywhere. narrative_error must be populated whenever
-    # the LLM call fails, and rows must still fall back to raw flag messages.
+    # the LLM call fails, and rows must still fall back to raw context.
     def _raise(accounts):
         raise RuntimeError("Claude response had no submit_narratives tool call (stop_reason=max_tokens)")
 
-    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_blocking_narratives", _raise)
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", _raise)
 
-    flags = [_flag(client_name="Acme Co", message="Marketing package: 14d, not live")]
-    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "package": "pkg-mktg"}}
+    flags = [_flag(client_name="Acme Co", category=FlagCategory.ads_off_zero_spend, message="Meta: campaigns enabled, $0 spend")]
+    account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "card_id": "card1"}}
     result = json.loads(build_dashboard_json(flags, account_context, {"Acme Co"}, set(), set()))
 
     assert result["narrative_error"] is not None
     assert "max_tokens" in result["narrative_error"]
-    assert result["waiting_to_go_live"][0]["blocking"] == "Marketing package: 14d, not live"
+    assert result["accounts_overview"][0]["status"] == "Meta: campaigns enabled, $0 spend"

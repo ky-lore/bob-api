@@ -1,10 +1,10 @@
 """
 Daily priority list — the FastAPI replacement for the Cowork 'golive-pipeline-dashboard'
 artifact, which had no export in this package and can't run outside Cowork anyway
-(it called window.cowork.callMcpTool()). Primary content is AuditRun.dashboard_json,
-structured to match the reference dashboard (golive-pipeline-dashboard.pdf):
-stat tiles, "waiting to go live" narrative table, "ads off" breakdown, new deals,
-went live. See tasks/dashboard_summary.py. The raw flag list below it is kept as a
+(it called window.cowork.callMcpTool()). Primary content is AuditRun.dashboard_json:
+stat tiles, an "accounts overview" narrative table covering every matched go-live-list
+account (live or not — fully macro as of 2026-07-31, see dashboard_summary.py), "ads
+off" breakdown, new deals, went live. The raw flag list below it is kept as a
 transparent detail view underneath — not part of the reference dashboard, but
 useful for us as developers.
 """
@@ -24,9 +24,8 @@ templates = Jinja2Templates(directory="app/templates")
 
 _EMPTY_DASHBOARD_DATA = {
     "stat_tiles": {},
-    "waiting_to_go_live": [],
+    "accounts_overview": [],
     "accounts_chart": [],
-    "clock_threshold_days": 14,
     "ads_off": {"should_be_on_but_dark": [], "campaigns_on_zero_spend": [], "unsettled": [], "verified_off": []},
     "new_deals": [],
     "went_live": [],
@@ -45,9 +44,8 @@ def _parse_dashboard_json(run: AuditRun | None) -> dict:
     # these keys and shouldn't 500 the whole page over it.
     return {
         "stat_tiles": parsed.get("stat_tiles", {}),
-        "waiting_to_go_live": parsed.get("waiting_to_go_live", []),
+        "accounts_overview": parsed.get("accounts_overview", []),
         "accounts_chart": parsed.get("accounts_chart", []),
-        "clock_threshold_days": parsed.get("clock_threshold_days", 14),
         "ads_off": {
             **_EMPTY_DASHBOARD_DATA["ads_off"],
             **parsed.get("ads_off", {}),
