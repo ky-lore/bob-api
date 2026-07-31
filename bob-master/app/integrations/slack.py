@@ -24,13 +24,22 @@ from __future__ import annotations
 from typing import Any
 
 from slack_sdk import WebClient
+from slack_sdk.http_retry.builtin_handlers import RateLimitErrorRetryHandler
 
 from app.config import get_settings
 
 
 class SlackClient:
     def __init__(self) -> None:
-        self._client = WebClient(token=get_settings().slack_bot_token)
+        # join_all_public_channels() hammers conversations.join across
+        # hundreds of channels (real count: 750+ in this workspace) and
+        # reliably hits Slack's rate limit partway through — this handler
+        # retries on 429s honoring Slack's own Retry-After, for every call
+        # this client makes, not just join.
+        self._client = WebClient(
+            token=get_settings().slack_bot_token,
+            retry_handlers=[RateLimitErrorRetryHandler(max_retry_count=3)],
+        )
 
     def send_dm(self, user_id: str, text: str) -> dict[str, Any]:
         dm = self._client.conversations_open(users=[user_id])
@@ -71,15 +80,25 @@ class SlackClient:
 
     def join_all_public_channels(self) -> dict[str, list[str]]:
         """Idempotent — channels the bot is already in are just skipped. Safe to
-        re-run any time (e.g. after a new public channel is created)."""
-        joined, already_in, failed = [], [], []
+        re-run any time (e.g. after a new public channel is created).
+
+        Archived channels are skipped without attempting to join — Slack
+        rejects that unconditionally (is_archived error) and can never
+        succeed, so it doesn't belong in `failed` alongside things worth
+        investigating. `is_archived` is already on every row list_channels
+        returns, so this costs no extra API call — real workspace count: of
+        750 non-member public channels, ~580 were archived on the first run."""
+        joined, already_in, skipped_archived, failed = [], [], [], []
         for channel in self.list_channels(types="public_channel"):
             if channel.get("is_member"):
                 already_in.append(channel["name"])
+                continue
+            if channel.get("is_archived"):
+                skipped_archived.append(channel["name"])
                 continue
             try:
                 self.join_channel(channel["id"])
                 joined.append(channel["name"])
             except Exception as exc:
                 failed.append(f"{channel['name']}: {exc}")
-        return {"joined": joined, "already_in": already_in, "failed": failed}
+        return {"joined": joined, "already_in": already_in, "skipped_archived": skipped_archived, "failed": failed}

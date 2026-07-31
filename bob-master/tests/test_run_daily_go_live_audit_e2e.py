@@ -104,7 +104,7 @@ class _FakeSlack:
         return {}
 
     def join_all_public_channels(self):
-        return {"joined": [], "already_in": ["internal-acme-co"], "failed": []}
+        return {"joined": [], "already_in": ["internal-acme-co"], "skipped_archived": [], "failed": []}
 
     def list_channels(self, types="public_channel,private_channel"):
         return [{"id": "C-ACME", "name": "internal-acme-co"}]
@@ -364,7 +364,12 @@ class _FakeSlackJoinsNewChannels(_FakeSlack):
     auto-join step (Bob, 2026-07-31) runs and surfaces its result."""
 
     def join_all_public_channels(self):
-        return {"joined": ["internal-fresh-signup"], "already_in": ["internal-acme-co"], "failed": []}
+        return {
+            "joined": ["internal-fresh-signup"],
+            "already_in": ["internal-acme-co"],
+            "skipped_archived": ["old-project-x", "old-project-y"],
+            "failed": [],
+        }
 
 
 def test_slack_auto_join_runs_before_context_gather_and_is_noted(monkeypatch, tmp_path):
@@ -390,7 +395,59 @@ def test_slack_auto_join_runs_before_context_gather_and_is_noted(monkeypatch, tm
     try:
         run = mod.run_daily_go_live_audit(db)
         assert "1 newly joined" in run.notes
+        assert "2 archived (skipped)" in run.notes
         assert "internal-fresh-signup" not in run.notes  # only failures get named, not successes
+        assert "old-project-x" not in run.notes  # archived channels don't get named either
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+class _FakeSlackManyJoinFailures(_FakeSlack):
+    """Real scenario (Bob, 2026-07-31): a live run against ~750 channels
+    produced hundreds of failure lines before archived channels were
+    excluded and a cap was added -- this reproduces that shape at a testable
+    scale to prove run.notes stays readable."""
+
+    def join_all_public_channels(self):
+        return {
+            "joined": [],
+            "already_in": [],
+            "skipped_archived": [f"archived-{i}" for i in range(500)],
+            "failed": [f"channel-{i}: ratelimited" for i in range(8)],
+        }
+
+
+def test_slack_auto_join_caps_failure_detail_in_notes(monkeypatch, tmp_path):
+    db_path = tmp_path / "autojoin_many_failures.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlackManyJoinFailures)
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        assert "500 archived (skipped)" in run.notes
+        assert "8 failed" in run.notes
+        assert "channel-0: ratelimited" in run.notes
+        assert "+3 more" in run.notes  # 8 failures, only first 5 named
+        assert "channel-7: ratelimited" not in run.notes
+        assert len(run.notes) < 2000  # nowhere near the ~50k-char blob this used to produce
     finally:
         db.close()
         get_settings.cache_clear()

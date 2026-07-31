@@ -594,11 +594,21 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     # a silent no-op. ---
     try:
         join_result = slack.join_all_public_channels()
-        if join_result["joined"] or join_result["failed"]:
+        failed = join_result["failed"]
+        if join_result["joined"] or failed:
+            # Cap the detail: a real run against this workspace produced
+            # hundreds of failure lines (mostly rate-limiting before the
+            # retry handler was added) that once blew run.notes way past
+            # anything readable. Archived channels don't even reach `failed`
+            # any more (see slack.py) -- what's left here is worth seeing,
+            # a few at a time, not all at once.
+            detail = "; ".join(failed[:5]) + (f"; +{len(failed) - 5} more" if len(failed) > 5 else "")
             notes.append(
                 f"Slack auto-join: {len(join_result['joined'])} newly joined, "
-                f"{len(join_result['already_in'])} already in, {len(join_result['failed'])} failed"
-                + (f" ({'; '.join(join_result['failed'])})" if join_result["failed"] else "")
+                f"{len(join_result['already_in'])} already in, "
+                f"{len(join_result['skipped_archived'])} archived (skipped), "
+                f"{len(failed)} failed"
+                + (f" ({detail})" if failed else "")
             )
     except Exception as exc:
         notes.append(f"Slack auto-join-all-channels failed: {exc}")

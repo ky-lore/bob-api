@@ -67,7 +67,7 @@ class _FakeSlack:
         return {}
 
     def join_all_public_channels(self):
-        return {"joined": [], "already_in": [], "failed": []}
+        return {"joined": [], "already_in": [], "skipped_archived": [], "failed": []}
 
     def list_channels(self, types="public_channel,private_channel"):
         return []  # no channel match -- exercises the "slack_ok True, 0 messages" path
