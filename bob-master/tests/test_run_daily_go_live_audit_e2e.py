@@ -103,6 +103,9 @@ class _FakeSlack:
         _FakeSlack.sent.append((user_id, text))
         return {}
 
+    def join_all_public_channels(self):
+        return {"joined": [], "already_in": ["internal-acme-co"], "failed": []}
+
     def list_channels(self, types="public_channel,private_channel"):
         return [{"id": "C-ACME", "name": "internal-acme-co"}]
 
@@ -349,6 +352,84 @@ def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
         # without the old package clock), but the new-deal flag still is.
         assert len(_FakeSlack.sent) == 1
         assert "Brand New Client" in _FakeSlack.sent[0][1]
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+class _FakeSlackJoinsNewChannels(_FakeSlack):
+    """Reports actually joining a new public channel -- verifies the
+    auto-join step (Bob, 2026-07-31) runs and surfaces its result."""
+
+    def join_all_public_channels(self):
+        return {"joined": ["internal-fresh-signup"], "already_in": ["internal-acme-co"], "failed": []}
+
+
+def test_slack_auto_join_runs_before_context_gather_and_is_noted(monkeypatch, tmp_path):
+    db_path = tmp_path / "autojoin.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlackJoinsNewChannels)
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        assert "1 newly joined" in run.notes
+        assert "internal-fresh-signup" not in run.notes  # only failures get named, not successes
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+class _FakeSlackJoinFails(_FakeSlack):
+    def join_all_public_channels(self):
+        raise RuntimeError("missing_scope: channels:join")
+
+
+def test_slack_auto_join_failure_does_not_crash_the_run(monkeypatch, tmp_path):
+    db_path = tmp_path / "autojoin_fail.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlackJoinFails)
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        assert run.status in (RunStatus.success, RunStatus.partial)
+        assert "missing_scope" in run.notes
+        # The rest of the run (context gather, dashboard, digest) still completes.
+        assert run.dashboard_json is not None
+        assert len(_FakeSlack.sent) == 1
     finally:
         db.close()
         get_settings.cache_clear()

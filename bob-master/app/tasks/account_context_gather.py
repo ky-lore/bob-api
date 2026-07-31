@@ -11,7 +11,12 @@ Two sources, both keyed off the account's already-matched go-live card:
     ([CLIENT]/[AM] blockers), via get_task_with_subtasks + get_task_comments.
   - Slack: every message in the account's "internal-<client>" channel, found
     by fuzzy-matching the account name against the channel list (same
-    matching.find_best_match machinery already used for ClickUp cards).
+    matching.find_best_match machinery already used for ClickUp cards) —
+    liberal here on purpose: "ambiguous" confidence still counts (see
+    _add_slack_context), unlike the ClickUp/retention board matching, which
+    only trusts exact/alias/high. The match's confidence+score are recorded
+    on the result either way, so a shaky match is visible, not silently
+    trusted as ground truth.
 
 Each external call is soft-fail per account (a bad card ID or an unmatched
 Slack channel shouldn't drop the account's other context, or the whole run) —
@@ -49,6 +54,8 @@ class AccountContextResult:
     clickup_comment_count: int = 0
     clickup_error: str | None = None
     slack_channel_matched: str | None = None
+    slack_match_confidence: str | None = None
+    slack_match_score: float | None = None
     slack_ok: bool = True
     slack_message_count: int = 0
     slack_error: str | None = None
@@ -83,10 +90,18 @@ def _add_slack_context(
     slack: SlackClient, slack_channels: list[dict], account_name: str, result: AccountContextResult
 ) -> None:
     match = find_best_match(account_name, slack_channels, name_extractor=extract_channel_client_name)
-    if match.confidence not in ("exact", "alias", "high"):
+    # Liberal on purpose (Bob, 2026-07-31): "ambiguous" now counts as a match
+    # for Slack context, not just exact/alias/high. A wrong Slack channel just
+    # means some extra context in one account's LLM input, not a wrong
+    # ClickUp-card correlation — much lower stakes than the board-matching use
+    # of find_best_match, so the same caution isn't warranted here. Confidence
+    # + score are recorded so a bad match is visible, not silently trusted.
+    if match.confidence == "none":
         return
 
     result.slack_channel_matched = match.card_name
+    result.slack_match_confidence = match.confidence
+    result.slack_match_score = match.score
     try:
         messages = slack.channel_history(match.card_id)
     except Exception as exc:

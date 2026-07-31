@@ -65,9 +65,27 @@ def test_gather_rich_context_pulls_full_slack_channel_history_when_matched():
     assert "[Slack #internal-acme-co] hey team, launching soon" in result.context
     assert "[Slack #internal-acme-co] still waiting on assets" in result.context
     assert result.slack_channel_matched == "internal-acme-co"
+    assert result.slack_match_confidence == "exact"
+    assert result.slack_match_score == 1.0
     assert result.slack_ok is True
     assert result.slack_message_count == 2
     assert result.slack_error is None
+
+
+def test_gather_rich_context_accepts_ambiguous_confidence_slack_matches():
+    # Liberal on purpose (Bob, 2026-07-31): a wrong Slack channel just means
+    # extra context, not a wrong account correlation, so "ambiguous" is good
+    # enough here even though it isn't for ClickUp/retention board matching.
+    clickup = _FakeClickUp()
+    slack = _FakeSlack(messages=[{"text": "quick update on the account"}])
+    channels = [{"id": "C1", "name": "internal-roof-city-pros"}]  # scores ~0.76, "ambiguous"
+
+    result = gather_rich_context("Roof City Professionals", None, clickup, slack, channels)
+
+    assert "[Slack #internal-roof-city-pros] quick update on the account" in result.context
+    assert result.slack_channel_matched == "internal-roof-city-pros"
+    assert result.slack_match_confidence == "ambiguous"
+    assert result.slack_match_score is not None and 0.72 <= result.slack_match_score < 0.85
 
 
 def test_gather_rich_context_skips_slack_when_no_confident_channel_match():
@@ -79,6 +97,7 @@ def test_gather_rich_context_skips_slack_when_no_confident_channel_match():
 
     assert result.context == []
     assert result.slack_channel_matched is None
+    assert result.slack_match_confidence is None
     assert result.slack_ok is True
     assert result.slack_message_count == 0
 
@@ -106,6 +125,7 @@ def test_gather_rich_context_is_resilient_to_slack_failure():
     assert result.slack_ok is False
     assert "slack down" in result.slack_error
     assert result.slack_channel_matched == "internal-acme-co"  # matched fine, the history call is what failed
+    assert result.slack_match_confidence == "exact"
     assert result.slack_message_count == 0
 
 

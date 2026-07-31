@@ -27,6 +27,15 @@ or built against real sandboxed ClickUp data — see chat history):
     building "Atlas", a proprietary source-of-truth API for exact per-account
     IDs (ClickUp, Slack, ad platforms), which will replace the fuzzy matching
     here once it exists (2026-07-31 decision)
+  - auto-joins every public Slack channel the bot isn't already in before
+    gathering (2026-07-31) — channel_history() silently fails on a channel
+    the bot hasn't joined regardless of how good the name match is. Liberal
+    on purpose: Slack context matching now accepts "ambiguous" confidence
+    too, not just exact/alias/high (see account_context_gather.py) — a wrong
+    channel match just means extra context, not a wrong account correlation,
+    so the same caution as ClickUp/retention board matching isn't warranted.
+    Private channels still need a manual bot invite; there's no Slack API for
+    a bot to self-join one.
 
 What's intentionally left as TODOs — these require judgment calls this port
 should not guess at (see docs/TASK-INVENTORY.md and the chat history this was
@@ -553,6 +562,24 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
     slack = SlackClient()
 
+    # --- Auto-join every public channel the bot isn't already in (Bob,
+    # 2026-07-31): channel_history() 404s/errors on a channel the bot hasn't
+    # joined, silently starving the narrative of Slack context no matter how
+    # good the name match is. Idempotent (see slack.py) — cheap to run every
+    # day. Private channels still can't be self-joined (no Slack API for
+    # that); those need a manual invite, which is why this is a note, not
+    # a silent no-op. ---
+    try:
+        join_result = slack.join_all_public_channels()
+        if join_result["joined"] or join_result["failed"]:
+            notes.append(
+                f"Slack auto-join: {len(join_result['joined'])} newly joined, "
+                f"{len(join_result['already_in'])} already in, {len(join_result['failed'])} failed"
+                + (f" ({'; '.join(join_result['failed'])})" if join_result["failed"] else "")
+            )
+    except Exception as exc:
+        notes.append(f"Slack auto-join-all-channels failed: {exc}")
+
     # --- Full-context gather for narrative synthesis (Bob, 2026-07-31, "go
     # fully macro"): every matched account gets the same treatment now, not
     # just a package-based subset — full ClickUp card+subtask comments, full
@@ -579,6 +606,8 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                     "clickup_comment_count": gather_result.clickup_comment_count,
                     "clickup_error": gather_result.clickup_error,
                     "slack_channel_matched": gather_result.slack_channel_matched,
+                    "slack_match_confidence": gather_result.slack_match_confidence,
+                    "slack_match_score": gather_result.slack_match_score,
                     "slack_ok": gather_result.slack_ok,
                     "slack_message_count": gather_result.slack_message_count,
                     "slack_error": gather_result.slack_error,

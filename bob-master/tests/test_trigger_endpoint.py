@@ -66,6 +66,9 @@ class _FakeSlack:
         _FakeSlack.sent.append((user_id, text))
         return {}
 
+    def join_all_public_channels(self):
+        return {"joined": [], "already_in": [], "failed": []}
+
     def list_channels(self, types="public_channel,private_channel"):
         return []  # no channel match -- exercises the "slack_ok True, 0 messages" path
 
@@ -112,6 +115,7 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
         assert acme_diagnostics["clickup_comment_count"] == 1
         assert acme_diagnostics["slack_ok"] is True
         assert acme_diagnostics["slack_channel_matched"] is None  # no channels returned by the fake
+        assert acme_diagnostics["slack_match_confidence"] is None
 
         # Narrative batch outcome (the Claude call) is in the response body too
         assert len(body["narrative_batches"]) == 1
