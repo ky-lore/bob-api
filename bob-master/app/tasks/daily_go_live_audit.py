@@ -44,6 +44,11 @@ from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, ManagedClient
 from app.tasks.clickup_correlation import identify_package, resolve_day_count
 from app.tasks.matching import find_best_match
 
+# Real examples from the Meta sheet: "106231623122110", "129853217452321" —
+# accounts never assigned a name in Meta Business Manager, per
+# GoLive_Audit_Dev_Handover_Brief.md §1.
+_NUMERIC_ONLY_NAME_RE = re.compile(r"^\d+$")
+
 # --- Package clock day thresholds, per SKILL.md PACKAGE CLOCKS ---
 MKTG_FLAG_DAYS = (14, 21)
 WEB_FLAG_DAYS = (10,)
@@ -289,6 +294,26 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
         rows = [r for r in parse_heartbeat_rows(raw_rows) if r.account_name not in ex_clients]
         for row in rows:
+            if _NUMERIC_ONLY_NAME_RE.match(row.account_name):
+                # Per GoLive_Audit_Dev_Handover_Brief.md §1: an account whose
+                # name is just a numeric ID (real examples: "106231623122110")
+                # was never assigned a name in Meta Business Manager — it
+                # can't be matched to any client by name. Flag it as needing
+                # manual resolution instead of silently attempting (and
+                # failing) fuzzy matching against it.
+                flags.append(
+                    Flag(
+                        run_id=run.id,
+                        category=FlagCategory.action_needed,
+                        severity=FlagSeverity.info,
+                        client_name=row.account_name,
+                        message=f"{label}: unmapped account (numeric ID only, no name) — needs name resolution",
+                        unverified=True,
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                continue
+
             canonical_name = canonical_names.setdefault(_account_dedupe_key(row.account_name), row.account_name)
             all_account_names.add(canonical_name)
             if is_live(row):

@@ -129,14 +129,30 @@ def test_is_stale_interprets_naive_timestamp_as_pacific_not_utc():
     assert GoogleDriveClient.is_stale(one_hour_ago_naive) is False
 
 
-def test_is_stale_still_flags_genuinely_old_or_missing_timestamps():
+def test_is_stale_is_same_calendar_day_not_a_rolling_window():
+    # Per GoLive_Audit_Dev_Handover_Brief.md §1: the original checks "Checked
+    # at" is from *today* (same Pacific calendar day), not a rolling N-hour
+    # window — the source script refreshes on a staggered hourly cycle (some
+    # rows 10:27, others 13:27, both normal), so an early-in-the-day row that's
+    # still genuinely fresh must not be flagged stale just because it's >3h old.
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+
+    from app.integrations.google_drive import GoogleDriveClient
+
+    now_pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
+    earlier_today_naive = datetime.combine(now_pacific.date(), time(0, 1))
+    assert GoogleDriveClient.is_stale(earlier_today_naive) is False
+
+
+def test_is_stale_flags_genuinely_old_or_missing_timestamps():
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
     from app.integrations.google_drive import GoogleDriveClient
 
     now_pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
-    six_hours_ago_naive = (now_pacific - timedelta(hours=6)).replace(tzinfo=None)
+    yesterday_naive = (now_pacific - timedelta(days=1)).replace(tzinfo=None)
 
-    assert GoogleDriveClient.is_stale(six_hours_ago_naive) is True
+    assert GoogleDriveClient.is_stale(yesterday_naive) is True
     assert GoogleDriveClient.is_stale(datetime.min) is True

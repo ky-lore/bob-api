@@ -23,7 +23,7 @@ import base64
 import csv
 import io
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -83,14 +83,18 @@ class GoogleDriveClient:
         return list(csv.reader(io.StringIO(text)))
 
     @staticmethod
-    def is_stale(checked_at: datetime, *, max_age_hours: int = 3) -> bool:
-        """FRESHNESS CHECK per SKILL.md: heartbeat sheets are refreshed hourly by
-        separate scripts. If the sheet's own 'Checked at' timestamp is older than
-        this, say so in the digest instead of trusting the numbers.
+    def is_stale(checked_at: datetime) -> bool:
+        """FRESHNESS CHECK, corrected per GoLive_Audit_Dev_Handover_Brief.md §1:
+        the original audit checks the row's own "Checked at" is from *today*
+        (same Pacific calendar day), not a rolling N-hour window. The Google
+        Ads script refreshes on a staggered hourly cycle — some rows check in
+        at 10:27, others at 13:27, both normal — so a fixed-hours threshold
+        misclassifies legitimately-fresh-but-earlier-in-the-day rows as stale.
+        This was the original design intent; a prior version of this function
+        used a 3-hour window instead, which was a guess, not sourced.
 
         checked_at is naive — assumed to be _SHEET_TIMEZONE, not UTC. See that
         constant's comment before changing this."""
         if checked_at == datetime.min:
             return True  # unparseable/missing timestamp — treat as stale, not fresh
-        checked_at_utc = checked_at.replace(tzinfo=_SHEET_TIMEZONE).astimezone(timezone.utc)
-        return datetime.now(timezone.utc) - checked_at_utc > timedelta(hours=max_age_hours)
+        return checked_at.date() != datetime.now(_SHEET_TIMEZONE).date()

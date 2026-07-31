@@ -122,6 +122,59 @@ def test_spelling_variants_across_sheets_dedupe_to_one_account(monkeypatch, tmp_
         get_session_factory.cache_clear()
 
 
+class _FakeGoogleDriveNumericAccountName:
+    """Real examples from the Meta sheet, per GoLive_Audit_Dev_Handover_Brief.md
+    §1: accounts never assigned a name in Meta Business Manager show up with a
+    numeric-only "account name" — must not be silently fuzzy-matched."""
+
+    is_stale = staticmethod(RealGoogleDriveClient.is_stale)
+
+    def read_sheet_values(self, file_id, tab):
+        fresh = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        if tab == "Heartbeat":
+            return [_HEADER]
+        return [_HEADER, [fresh, "106231623122110", "1", "2", "FALSE", "0", "0", "0", "0", "0", "40", "", ""]]
+
+
+def test_numeric_only_account_name_flagged_not_matched(monkeypatch, tmp_path):
+    db_path = tmp_path / "numeric.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDriveNumericAccountName)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUpNoMatch)
+    monkeypatch.setattr(mod, "GHLClient", lambda: type("_G", (), {"recent_closed_won": lambda self, *a, **k: []})())
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
+
+        # Flagged as needing name resolution, not silently dropped or fuzzy-matched
+        unmapped = [f for f in flags if "unmapped account" in f.message]
+        assert len(unmapped) == 1
+        assert unmapped[0].client_name == "106231623122110"
+
+        # And never treated as a real account for the legacy-only-spend check
+        heartbeat_flags = [f for f in flags if f.category == FlagCategory.heartbeat_mismatch]
+        assert heartbeat_flags == []
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
 def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
     db_path = tmp_path / "e2e.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
