@@ -5,49 +5,55 @@ FULLY MACRO as of 2026-07-31 (Bob's explicit call): the original package-type
 clock-threshold branching (marketing 14d/21d, website 10d, custom-ETA,
 SEO-same-week, etc. — SKILL.md's PACKAGE CLOCKS section) has been ripped out
 entirely. No more per-package day thresholds, no more "exempt" packages, no
-more package identification gating anything. Every account matched to a
-go-live-list card now gets treated the same way: day count since signing,
-live/not-live (from heartbeat spend), ad spend summary, full ClickUp+Slack
-context, and one LLM-synthesized "where do they stand" sentence — see
-dashboard_summary.py and account_context_gather.py. The idea is to see the
-whole board's real state before re-introducing any granular rules.
+more package identification gating anything. Every account gets treated the
+same way: day count since signing, live/not-live (from heartbeat spend), ad
+spend summary, full ClickUp+Slack context, and one LLM-synthesized "where do
+they stand" sentence — see dashboard_summary.py and account_context_gather.py.
+
+ATLAS-DRIVEN as of 2026-08-04 (Bob's explicit call, after Atlas — his
+proprietary internal API — went live): Atlas is now the authoritative account
+universe and the source of stage + day-count, replacing ClickUp-card fuzzy
+matching entirely. `createdAt` is the true origin date (not a Slack/ClickUp
+proxy). Full-context gather uses Atlas's exact clickupFolderId /
+internalSlackChannelId directly — no channel-name or card-title fuzzy
+matching anywhere in that path anymore (see account_context_gather.py's
+gather_atlas_context). The ONE fuzzy match still standing: heartbeat sheet
+account names (Google Ads/Meta don't carry Atlas IDs) against Atlas's clean
+companyName — much higher-fidelity target than a ClickUp card title ever
+was, and a miss here is now flagged (action_needed), closing a gap this
+module used to carry as a silent-skip TODO.
 
 What's fully implemented below (deterministic, spec'd precisely in the prompt,
-or built against real sandboxed ClickUp data — see chat history):
+or built against real sandboxed ClickUp/Atlas data — see chat history):
   - heartbeat sheet pull, freshness check, CSV-export fallback
   - the LIVE DEFINITION cross-check, now genuinely cross-platform (a client
     live via Meta no longer gets flagged for a $0 legacy campaign on Google)
-  - ClickUp board correlation via app/tasks/matching.py (fuzzy name matching)
-  - ex-client filtering against the admin-editable list (replaces the hardcoded list)
+  - Atlas account correlation (stage, day-count, exact Slack/ClickUp IDs) —
+    see app/integrations/atlas_client.py
+  - ex-client filtering against the admin-editable list (independent of, and
+    layered alongside, Atlas's own isActive flag — kept both on purpose,
+    conservative call, since removing either wasn't confidently justified yet)
   - digest assembly from persisted flags, and AuditRun/Flag persistence
-  - full-context gather for EVERY matched account (full ClickUp card+subtask
-    comments, full "internal-<client>" Slack channel history) via the same
-    fuzzy account matching used elsewhere — see
-    app/tasks/account_context_gather.py. Deliberately a stopgap: Bob is
-    building "Atlas", a proprietary source-of-truth API for exact per-account
-    IDs (ClickUp, Slack, ad platforms), which will replace the fuzzy matching
-    here once it exists (2026-07-31 decision)
+  - full-context gather for EVERY Atlas account (full ClickUp folder — every
+    List's every Task's comments — + full Slack channel history) via exact
+    Atlas IDs — see app/tasks/account_context_gather.py's gather_atlas_context
   - auto-joins every public Slack channel the bot isn't already in before
-    gathering (2026-07-31) — channel_history() silently fails on a channel
-    the bot hasn't joined regardless of how good the name match is. Liberal
-    on purpose: Slack context matching now accepts "ambiguous" confidence
-    too, not just exact/alias/high (see account_context_gather.py) — a wrong
-    channel match just means extra context, not a wrong account correlation,
-    so the same caution as ClickUp/retention board matching isn't warranted.
-    Private channels still need a manual bot invite; there's no Slack API for
-    a bot to self-join one.
+    gathering — channel_history() silently fails on a channel the bot hasn't
+    joined, exact ID or not. Private channels still need a manual bot invite;
+    there's no Slack API for a bot to self-join one.
 
 What's intentionally left as TODOs — these require judgment calls this port
 should not guess at (see docs/TASK-INVENTORY.md and the chat history this was
 built from for why):
-  - accounts with heartbeat/GHL data but NO matched ClickUp card are currently
-    silently skipped, not flagged — could mean a real "no card exists" gap or
-    just a matching miss; needs real volume data before deciding which
   - the GHL Closed-Won -> new ClickUp card flow, including reading sales notes
-    for the "over-promise" check
+    for the "over-promise" check (Atlas's own salesNotes field may make this
+    moot — not yet wired into the narrative context)
   - stage-aware checks that require correlating ClickUp card state with Slack
     channel activity (needs the org-wide search decision — see integrations/slack.py)
   - evidence-conflict handling across board/Slack/heartbeat/GHL (ACCURACY RULES §5)
+  - retention pipeline / ex-client mapping hasn't been reconciled against
+    Atlas's own stage="closed" and isActive fields — both systems are kept
+    running independently for now rather than assuming overlap
 """
 from __future__ import annotations
 
@@ -59,16 +65,17 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
 from app.integrations.ghl import GHLClient
 from app.integrations.google_drive import GoogleDriveClient
 from app.integrations.slack import SlackClient
 from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, ManagedClientEntry, ManagedListType, RunStatus
-from app.tasks.account_context_gather import gather_rich_context
+from app.tasks.account_context_gather import gather_atlas_context
 from app.tasks.ads_off_classification import classify_ads_off
 from app.tasks.clickup_correlation import resolve_day_count
 from app.tasks.dashboard_summary import all_matched_accounts, build_dashboard_json
-from app.tasks.matching import find_best_match
+from app.tasks.matching import find_best_match, identity_name
 from app.tasks.retention_check import (
     ACTIVE_RISK_STATUSES,
     CHURNED_STATUSES,
@@ -185,6 +192,21 @@ def is_live(row: HeartbeatRow) -> bool:
 
 def legacy_only_spend_flag(row: HeartbeatRow) -> bool:
     return row.legacy_spend > 0 and row.am_build_spend == 0 and row.lsa_spend == 0
+
+
+def _days_since_atlas_created_at(created_at: str | None) -> int:
+    """Atlas's createdAt is the true origin date (Bob, 2026-08-04) — replaces
+    the old ClickUp date_created / manual "Day N" title-marker heuristic
+    entirely. Manual .replace("Z", "+00:00") rather than relying on
+    fromisoformat's native "Z" handling, which only exists from Python 3.11."""
+    if not created_at:
+        return 0
+    try:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    now = datetime.now(created.tzinfo) if created.tzinfo else datetime.utcnow()
+    return (now - created).days
 
 
 def get_active_client_names(db: Session, list_type: ManagedListType) -> set[str]:
@@ -340,67 +362,92 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 )
             )
 
-    # --- ClickUp board correlation (fully macro — see module docstring: no
-    # package identification, no clock-threshold evaluation, no flags here
-    # anymore. Every matched account just gets recorded for the dashboard;
-    # "where they stand" is now the LLM narrative's job, not this loop's) ---
+    # --- Atlas account correlation (Bob, 2026-08-04): Atlas is now the
+    # authoritative account universe and the source of stage + day-count,
+    # replacing ClickUp-card fuzzy matching entirely. Heartbeat rows don't
+    # carry an Atlas ID, so one fuzzy match still happens here — but against
+    # Atlas's clean companyName, not a messy ClickUp card title, which is why
+    # identity_name (no stripping at all) is the right extractor. A wrong or
+    # missing match here now gets flagged instead of silently dropped,
+    # closing the "no matched card" gap this module used to carry as a TODO. ---
+    clickup = ClickUpClient()
     try:
-        clickup = ClickUpClient()
-        board_data = clickup.get_list_tasks(settings.clickup_go_live_list_id, include_closed=True)
-        cards = [
-            {
-                "id": t.get("id"),
-                "name": t.get("name"),
-                "status": ((t.get("status") or {}).get("status") or "").lower(),
-                "tags": [tag.get("name") for tag in t.get("tags", [])],
-                "date_created": t.get("date_created"),
-            }
-            for t in board_data.get("tasks", [])
-        ]
+        atlas_accounts = [a for a in AtlasClient().get_all_accounts() if a.get("isActive")]
     except Exception as exc:
-        cards = []
-        notes.append(f"ClickUp Go-Live board pull failed: {exc}")
+        atlas_accounts = []
+        notes.append(f"Atlas accounts pull failed: {exc}")
 
     alias_map = get_alias_map(db)
-    account_context: dict[str, dict] = {}  # account_name -> {"day": int, "stage": str, "card_id": str}
+    atlas_targets = [
+        {"id": a["id"], "name": a["companyName"]} for a in atlas_accounts if a.get("id") and a.get("companyName")
+    ]
+    heartbeat_name_to_atlas_id: dict[str, str] = {}
 
-    for account_name in sorted(all_account_names):
-        match = find_best_match(account_name, cards, aliases=alias_map)
+    for heartbeat_name in sorted(all_account_names):
+        match = find_best_match(heartbeat_name, atlas_targets, aliases=alias_map, name_extractor=identity_name)
 
-        if match.confidence == "ambiguous":
+        if match.confidence in ("exact", "alias", "high"):
+            heartbeat_name_to_atlas_id[heartbeat_name] = match.card_id
+        elif match.confidence == "ambiguous":
             flags.append(
                 Flag(
                     run_id=run.id,
                     category=FlagCategory.action_needed,
                     severity=FlagSeverity.warning,
-                    client_name=account_name,
+                    client_name=heartbeat_name,
                     message=(
-                        f'Ambiguous ClickUp match — closest card is "{match.card_name}" '
-                        f"(similarity {match.score:.2f}); confirm or add an alias at /admin/watchlist"
+                        f'Ambiguous Atlas match — closest client is "{match.card_name}" '
+                        f"(similarity {match.score:.2f}); confirm or fix the spelling in Atlas"
                     ),
                     unverified=True,
                     created_at=datetime.utcnow(),
                 )
             )
-            continue
+        else:
+            flags.append(
+                Flag(
+                    run_id=run.id,
+                    category=FlagCategory.action_needed,
+                    severity=FlagSeverity.info,
+                    client_name=heartbeat_name,
+                    message="Heartbeat spend data doesn't match any active Atlas client — needs manual linking",
+                    unverified=True,
+                    created_at=datetime.utcnow(),
+                )
+            )
 
-        if match.confidence == "none":
-            # No card found at all — could be a real gap or a matching miss.
-            # Not flagged yet; see module docstring TODO.
-            continue
+    atlas_id_to_heartbeat_name = {v: k for k, v in heartbeat_name_to_atlas_id.items()}
+    heartbeat_live_accounts, heartbeat_rows_by_account = live_accounts, rows_by_account
 
-        card = next((c for c in cards if c["id"] == match.card_id), None)
-        if not card:
-            continue
+    # From here on, all_account_names / account_context / live_accounts /
+    # rows_by_account are Atlas-companyName-keyed — every section below this
+    # point (retention check, ads-off classification, rich-context gather,
+    # dashboard build) reads these same names unchanged.
+    all_account_names = set()
+    account_context: dict[str, dict] = {}  # companyName -> {day, stage, atlas_id, clickup_folder_id, slack_channel_id}
+    live_accounts = set()
+    rows_by_account = {}
 
-        days_elapsed = resolve_day_count(card["name"], card["date_created"]) if card["date_created"] else 0
-        # Recorded for every matched card, including ignore/complete — the
-        # dashboard shows every matched account regardless of status now.
-        account_context[account_name] = {
-            "day": days_elapsed,
-            "stage": card["status"],
-            "card_id": card["id"],
+    for atlas_account in atlas_accounts:
+        company_name = atlas_account.get("companyName")
+        if not company_name:
+            continue
+        all_account_names.add(company_name)
+        integ = atlas_account.get("integrations") or {}
+        account_context[company_name] = {
+            "day": _days_since_atlas_created_at(atlas_account.get("createdAt")),
+            "stage": atlas_account.get("stage") or "unknown",
+            "atlas_id": atlas_account.get("id"),
+            "clickup_folder_id": integ.get("clickupFolderId") or None,
+            "slack_channel_id": integ.get("internalSlackChannelId") or None,
         }
+
+        heartbeat_name = atlas_id_to_heartbeat_name.get(atlas_account.get("id"))
+        if heartbeat_name:
+            if heartbeat_name in heartbeat_live_accounts:
+                live_accounts.add(company_name)
+            if heartbeat_name in heartbeat_rows_by_account:
+                rows_by_account[company_name] = heartbeat_rows_by_account[heartbeat_name]
 
     # --- Retention pipeline cancel-intent cross-check (ACCURACY RULES §2:
     # "board LIVE is not proof of active... check the Retention pipeline
@@ -613,38 +660,34 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     except Exception as exc:
         notes.append(f"Slack auto-join-all-channels failed: {exc}")
 
-    # --- Full-context gather for narrative synthesis (Bob, 2026-07-31, "go
-    # fully macro"): every matched account gets the same treatment now, not
-    # just a package-based subset — full ClickUp card+subtask comments, full
-    # Slack channel history, no truncation. Built against the existing fuzzy
-    # account matching now, ahead of Atlas (unbuilt proprietary source-of-truth
-    # API) removing the need for it. Deliberately unbounded/inefficient. ---
+    # --- Full-context gather for narrative synthesis (Bob, 2026-08-04): Atlas's
+    # exact clickupFolderId / internalSlackChannelId now, no fuzzy matching or
+    # channel-list fetch at all — every matched account gets the same
+    # treatment, full ClickUp folder (lists -> tasks -> comments) + full Slack
+    # channel history, no truncation. Deliberately unbounded/inefficient. ---
     rich_context: dict[str, list[str]] = {}
     context_gather_diagnostics: dict[str, dict] = {}
     try:
-        matched_accounts = all_matched_accounts(account_context)
-        if matched_accounts:
-            slack_channels = slack.list_channels()
-            for account_name in matched_accounts:
-                gather_result = gather_rich_context(
-                    account_name,
-                    account_context.get(account_name, {}).get("card_id"),
-                    clickup,
-                    slack,
-                    slack_channels,
-                )
-                rich_context[account_name] = gather_result.context
-                context_gather_diagnostics[account_name] = {
-                    "clickup_ok": gather_result.clickup_ok,
-                    "clickup_comment_count": gather_result.clickup_comment_count,
-                    "clickup_error": gather_result.clickup_error,
-                    "slack_channel_matched": gather_result.slack_channel_matched,
-                    "slack_match_confidence": gather_result.slack_match_confidence,
-                    "slack_match_score": gather_result.slack_match_score,
-                    "slack_ok": gather_result.slack_ok,
-                    "slack_message_count": gather_result.slack_message_count,
-                    "slack_error": gather_result.slack_error,
-                }
+        for account_name in all_matched_accounts(account_context):
+            ctx = account_context.get(account_name, {})
+            gather_result = gather_atlas_context(
+                ctx.get("clickup_folder_id"),
+                ctx.get("slack_channel_id"),
+                clickup,
+                slack,
+            )
+            rich_context[account_name] = gather_result.context
+            context_gather_diagnostics[account_name] = {
+                "clickup_ok": gather_result.clickup_ok,
+                "clickup_comment_count": gather_result.clickup_comment_count,
+                "clickup_error": gather_result.clickup_error,
+                "slack_channel_matched": gather_result.slack_channel_matched,
+                "slack_match_confidence": gather_result.slack_match_confidence,
+                "slack_match_score": gather_result.slack_match_score,
+                "slack_ok": gather_result.slack_ok,
+                "slack_message_count": gather_result.slack_message_count,
+                "slack_error": gather_result.slack_error,
+            }
     except Exception as exc:
         notes.append(f"Rich context gather failed, narratives will use flag messages only: {exc}")
 

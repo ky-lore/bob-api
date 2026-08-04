@@ -2,7 +2,14 @@
 Tests against real card titles pulled from the sandboxed Go-Live board via
 GET /admin/clickup/go-live-sample — not synthetic examples, the actual mess.
 """
-from app.tasks.matching import extract_candidate_name, find_best_match, normalize
+from app.tasks.matching import extract_candidate_name, find_best_match, identity_name, normalize
+
+
+def test_identity_name_does_not_touch_the_string_at_all():
+    # Unlike extract_candidate_name, a company literally named "3M Roofing"
+    # must not get mangled by the stage-number-prefix pattern.
+    assert identity_name("3M Roofing") == "3M Roofing"
+    assert identity_name("Apex Landscape & Construction") == "Apex Landscape & Construction"
 
 
 def test_extract_candidate_name_stage_word_and_dot_form():

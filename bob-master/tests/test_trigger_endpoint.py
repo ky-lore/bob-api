@@ -31,24 +31,31 @@ class _FakeGoogleDrive:
         return [self._HEADER]
 
 
-class _FakeClickUp:
-    def get_list_tasks(self, list_id, include_closed=True, page=0):
-        fourteen_days_ago_ms = str(int((datetime.now(timezone.utc) - timedelta(days=15)).timestamp() * 1000))
-        return {
-            "tasks": [
-                {
-                    "id": "card1",
-                    "name": "1) Onboarding · Acme Co · signed · [MKTG]",
-                    "status": {"status": "onboarding"},
-                    "tags": [{"name": "newclientgolivetracker"}],
-                    "date_created": fourteen_days_ago_ms,
-                }
-            ],
-            "last_page": True,
-        }
+class _FakeAtlasClient:
+    def get_all_accounts(self):
+        created_at = (datetime.now(timezone.utc) - timedelta(days=15)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        return [
+            {
+                "id": "acme-co",
+                "companyName": "Acme Co",
+                "stage": "onboarding",
+                "isActive": True,
+                "createdAt": created_at,
+                "integrations": {"clickupFolderId": "folder1", "internalSlackChannelId": None},
+            }
+        ]
 
-    def get_task_with_subtasks(self, task_id):
-        return {"id": task_id, "subtasks": []}
+
+class _FakeClickUp:
+    def get_folder_lists(self, folder_id):
+        if folder_id == "folder1":
+            return [{"id": "list1", "name": "TODO"}]
+        return []
+
+    def get_list_tasks(self, list_id, include_closed=True, page=0):
+        if list_id == "list1":
+            return {"tasks": [{"id": "card1", "name": "Acme onboarding"}], "last_page": True}
+        return {"tasks": [], "last_page": True}
 
     def get_task_comments(self, task_id):
         return [{"comment_text": "waiting on client access"}] if task_id == "card1" else []
@@ -69,9 +76,6 @@ class _FakeSlack:
     def join_all_public_channels(self):
         return {"joined": [], "already_in": [], "skipped_archived": [], "failed": []}
 
-    def list_channels(self, types="public_channel,private_channel"):
-        return []  # no channel match -- exercises the "slack_ok True, 0 messages" path
-
     def channel_history(self, channel_id, oldest_ts=None):
         return []
 
@@ -91,6 +95,7 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
     get_session_factory.cache_clear()
 
     monkeypatch.setattr(audit_mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(audit_mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(audit_mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(audit_mod, "GHLClient", _FakeGHL)
     monkeypatch.setattr(audit_mod, "SlackClient", _FakeSlack)
@@ -110,12 +115,12 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
 
         assert set(body.keys()) >= {"run_id", "status", "notes", "context_gather", "narrative_batches", "narrative_error"}
 
-        # Per-account gather diagnostics for Acme Co (every matched account now, not just a package-based subset)
+        # Per-account gather diagnostics for Acme Co (every Atlas account now, not just a package-based subset)
         acme_diagnostics = body["context_gather"]["Acme Co"]
         assert acme_diagnostics["clickup_ok"] is True
         assert acme_diagnostics["clickup_comment_count"] == 1
         assert acme_diagnostics["slack_ok"] is True
-        assert acme_diagnostics["slack_channel_matched"] is None  # no channels returned by the fake
+        assert acme_diagnostics["slack_channel_matched"] is None  # no slack_channel_id on this Atlas account
         assert acme_diagnostics["slack_match_confidence"] is None
 
         # Narrative batch outcome (the Claude call) is in the response body too

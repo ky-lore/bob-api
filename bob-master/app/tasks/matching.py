@@ -47,6 +47,15 @@ def extract_candidate_name(card_title: str) -> str:
     return name.strip()
 
 
+def identity_name(name: str) -> str:
+    """No-op extractor for name sources that are already clean — e.g. Atlas's
+    companyName, unlike ClickUp card titles (extract_candidate_name's job),
+    needs no stage-prefix/bracket/emoji stripping at all. Using the default
+    extractor against a clean name risks corrupting it (a company literally
+    named "3M Roofing" could get mangled by the stage-number-prefix pattern)."""
+    return name
+
+
 def normalize(name: str) -> str:
     """Lowercase, drop common legal suffixes and punctuation, collapse
     whitespace — so "Roof City Inc - CC" and "Roof City Inc." compare fairly
