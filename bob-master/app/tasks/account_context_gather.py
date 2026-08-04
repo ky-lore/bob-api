@@ -1,12 +1,18 @@
 """
-MVP "full context" gathering for the waiting-to-go-live narrative synthesis —
-per Bob's steer (2026-07-31): prove the logic with the existing fuzzy-match
-account correlation *now*, before Atlas (a proprietary internal API, still
-unbuilt) provides exact per-account ClickUp folder / Slack channel IDs and
-removes the need for fuzzy matching entirely. Deliberately as inefficient as
-that implies — no truncation/summarization here, full dumps, see how it goes.
+Full-context gathering for the narrative synthesis. Two parallel paths as of
+2026-08-04, both still deliberately unbounded (no truncation/summarization) —
+full dumps, see how it goes:
 
-Two sources, both keyed off the account's already-matched go-live card:
+  - gather_rich_context(): the original MVP path (2026-07-31) — fuzzy-matches
+    account name against ClickUp go-live cards / Slack channel names. Still
+    what the production pipeline runs today.
+  - gather_atlas_context(): the new smoke-test path (2026-08-04) — Atlas (a
+    proprietary internal API, now live) gives exact per-account
+    clickupFolderId / internalSlackChannelId, no matching at all. Being
+    proven out here before it replaces the fuzzy path in daily_go_live_audit.py.
+
+Two sources, both keyed off the account's already-matched go-live card
+(gather_rich_context) or Atlas's exact IDs (gather_atlas_context):
   - ClickUp: every comment on the card AND on every one of its subtasks
     ([CLIENT]/[AM] blockers), via get_task_with_subtasks + get_task_comments.
   - Slack: every real message in the account's "internal-<client>" channel
@@ -99,6 +105,27 @@ def _add_clickup_context(clickup: ClickUpClient, card_id: str, result: AccountCo
                 result.clickup_comment_count += 1
 
 
+def _add_channel_messages(slack: SlackClient, channel_id: str, channel_label: str, result: AccountContextResult) -> None:
+    """Shared by both the fuzzy-matched and Atlas-exact-ID Slack paths --
+    once a channel_id is in hand (found however), pulling+filtering its
+    history is identical."""
+    try:
+        messages = slack.channel_history(channel_id)
+    except Exception as exc:
+        result.slack_ok = False
+        result.slack_error = str(exc)
+        result.context.append(f"[Slack context fetch failed for #{channel_label}: {exc}]")
+        return
+
+    for m in messages:
+        if m.get("subtype") in _SLACK_NOISE_SUBTYPES:
+            continue
+        text = (m.get("text") or "").strip()
+        if text:
+            result.context.append(f"[Slack #{channel_label}] {text}")
+            result.slack_message_count += 1
+
+
 def _add_slack_context(
     slack: SlackClient, slack_channels: list[dict], account_name: str, result: AccountContextResult
 ) -> None:
@@ -115,21 +142,7 @@ def _add_slack_context(
     result.slack_channel_matched = match.card_name
     result.slack_match_confidence = match.confidence
     result.slack_match_score = match.score
-    try:
-        messages = slack.channel_history(match.card_id)
-    except Exception as exc:
-        result.slack_ok = False
-        result.slack_error = str(exc)
-        result.context.append(f"[Slack context fetch failed for #{match.card_name}: {exc}]")
-        return
-
-    for m in messages:
-        if m.get("subtype") in _SLACK_NOISE_SUBTYPES:
-            continue
-        text = (m.get("text") or "").strip()
-        if text:
-            result.context.append(f"[Slack #{match.card_name}] {text}")
-            result.slack_message_count += 1
+    _add_channel_messages(slack, match.card_id, match.card_name, result)
 
 
 def gather_rich_context(
@@ -145,4 +158,69 @@ def gather_rich_context(
     if card_id:
         _add_clickup_context(clickup, card_id, result)
     _add_slack_context(slack, slack_channels, account_name, result)
+    return result
+
+
+def _add_clickup_folder_context(clickup: ClickUpClient, folder_id: str, result: AccountContextResult) -> None:
+    """Atlas's clickupFolderId is a real Folder (Space > Folder > List >
+    Task), not a single card -- walks every List inside it, every Task inside
+    each List, and every comment on each Task. Confirmed shape against a real
+    folder 2026-08-04 (Smithco construction: 2 lists, 13 tasks total)."""
+    try:
+        lists = clickup.get_folder_lists(folder_id)
+    except Exception as exc:
+        result.clickup_ok = False
+        result.clickup_error = str(exc)
+        result.context.append(f"[ClickUp context fetch failed for folder {folder_id}: {exc}]")
+        return
+
+    for lst in lists:
+        list_id = lst.get("id")
+        if not list_id:
+            continue
+        try:
+            task_data = clickup.get_list_tasks(list_id, include_closed=True)
+        except Exception as exc:
+            result.clickup_ok = False
+            result.clickup_error = str(exc)
+            result.context.append(f"[ClickUp tasks fetch failed for list {list_id}: {exc}]")
+            continue
+
+        for task in task_data.get("tasks", []):
+            task_id = task.get("id")
+            if not task_id:
+                continue
+            try:
+                comments = clickup.get_task_comments(task_id)
+            except Exception as exc:
+                result.clickup_ok = False
+                result.clickup_error = str(exc)
+                result.context.append(f"[ClickUp comments fetch failed for task {task_id}: {exc}]")
+                continue
+            for comment in comments:
+                text = (comment.get("comment_text") or "").strip()
+                if text:
+                    result.context.append(f"[ClickUp comment, task {task_id} ({task.get('name')})] {text}")
+                    result.clickup_comment_count += 1
+
+
+def gather_atlas_context(
+    clickup_folder_id: str | None,
+    slack_channel_id: str | None,
+    clickup: ClickUpClient,
+    slack: SlackClient,
+) -> AccountContextResult:
+    """Atlas-exact-ID smoke test path (Bob, 2026-08-04): no fuzzy matching at
+    all, no account_name/slack_channels list needed -- both IDs come straight
+    from an Atlas account record's `integrations` object. Missing either ID
+    just skips that source (ok stays True, counts stay 0), same resilience
+    contract as gather_rich_context."""
+    result = AccountContextResult()
+    if clickup_folder_id:
+        _add_clickup_folder_context(clickup, clickup_folder_id, result)
+    if slack_channel_id:
+        result.slack_channel_matched = slack_channel_id
+        result.slack_match_confidence = "atlas_exact_id"
+        result.slack_match_score = 1.0
+        _add_channel_messages(slack, slack_channel_id, slack_channel_id, result)
     return result

@@ -4,11 +4,38 @@ auth is the raw token in the Authorization header — no "Bearer " prefix.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
 
 from app.config import get_settings
+
+
+class _RetryOn429Transport(httpx.HTTPTransport):
+    """ClickUp's rate limit (100 req/min per token, confirmed via real
+    x-ratelimit-* response headers, 2026-08-04) is easy to hit once a single
+    account's context gather fans out to folder -> lists -> tasks -> comments
+    (real example: ~90 comment-fetch calls for one account), let alone
+    looping that across Atlas's 133 accounts. Retries on 429, waiting until
+    x-ratelimit-reset (a unix-epoch second ClickUp actually sends) rather
+    than guessing a backoff interval — confirmed ClickUp does NOT send a
+    Retry-After header the way Slack does."""
+
+    def __init__(self, *args: Any, max_retries: int = 3, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._max_retries = max_retries
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        for attempt in range(self._max_retries + 1):
+            response = super().handle_request(request)
+            if response.status_code != 429 or attempt == self._max_retries:
+                return response
+            response.close()
+            reset_at = response.headers.get("x-ratelimit-reset")
+            wait_seconds = max(1.0, float(reset_at) - time.time() + 1) if reset_at else 2.0**attempt
+            time.sleep(min(wait_seconds, 65.0))
+        return response
 
 
 class ClickUpClient:
@@ -19,6 +46,7 @@ class ClickUpClient:
             base_url=self._base_url,
             headers={"Authorization": settings.clickup_api_token, "Content-Type": "application/json"},
             timeout=30.0,
+            transport=_RetryOn429Transport(),
         )
 
     def get_list_tasks(self, list_id: str, *, include_closed: bool = False, page: int = 0) -> dict[str, Any]:
@@ -28,6 +56,14 @@ class ClickUpClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    def get_folder_lists(self, folder_id: str) -> list[dict[str, Any]]:
+        """Lists inside a Folder (Space > Folder > List > Task) — used for
+        Atlas's per-client clickupFolderId, which is a real Folder, not a
+        List. Confirmed shape against a real folder 2026-08-04: {"lists": [...]}."""
+        resp = self._client.get(f"/folder/{folder_id}/list")
+        resp.raise_for_status()
+        return resp.json().get("lists", [])
 
     def get_task(self, task_id: str) -> dict[str, Any]:
         resp = self._client.get(f"/task/{task_id}")

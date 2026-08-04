@@ -1,4 +1,4 @@
-from app.tasks.account_context_gather import extract_channel_client_name, gather_rich_context
+from app.tasks.account_context_gather import extract_channel_client_name, gather_atlas_context, gather_rich_context
 
 
 def test_extract_channel_client_name_strips_internal_prefix():
@@ -157,3 +157,77 @@ def test_gather_rich_context_returns_empty_without_card_id_or_slack_match():
     assert result.context == []
     assert result.clickup_ok is True
     assert result.slack_ok is True
+
+
+class _FakeClickUpFolder:
+    """Real shape confirmed against a live folder 2026-08-04: {"lists": [...]},
+    each list's tasks via the existing get_list_tasks shape."""
+
+    def __init__(self, lists=None, tasks_by_list=None, comments_by_task=None, raise_on_folder=False):
+        self._lists = lists or []
+        self._tasks_by_list = tasks_by_list or {}
+        self._comments_by_task = comments_by_task or {}
+        self._raise_on_folder = raise_on_folder
+
+    def get_folder_lists(self, folder_id):
+        if self._raise_on_folder:
+            raise RuntimeError("clickup folder down")
+        return self._lists
+
+    def get_list_tasks(self, list_id, include_closed=True, page=0):
+        return {"tasks": self._tasks_by_list.get(list_id, [])}
+
+    def get_task_comments(self, task_id):
+        return self._comments_by_task.get(task_id, [])
+
+
+def test_gather_atlas_context_walks_folder_lists_tasks_and_comments():
+    clickup = _FakeClickUpFolder(
+        lists=[{"id": "list1", "name": "TODO"}, {"id": "list2", "name": "Weekly CM"}],
+        tasks_by_list={
+            "list1": [{"id": "task1", "name": "Kickoff"}],
+            "list2": [{"id": "task2", "name": "Meta campaign"}, {"id": "task3", "name": "No comments here"}],
+        },
+        comments_by_task={
+            "task1": [{"comment_text": "waiting on domain access"}],
+            "task2": [{"comment_text": "campaign live, watching CPA"}],
+        },
+    )
+    slack = _FakeSlack(messages=[{"text": "quick check-in from the team"}])
+
+    result = gather_atlas_context("folder1", "C0BEN1V1J0H", clickup, slack)
+
+    assert "[ClickUp comment, task task1 (Kickoff)] waiting on domain access" in result.context
+    assert "[ClickUp comment, task task2 (Meta campaign)] campaign live, watching CPA" in result.context
+    assert result.clickup_comment_count == 2
+    assert result.clickup_ok is True
+
+    assert "[Slack #C0BEN1V1J0H] quick check-in from the team" in result.context
+    assert result.slack_channel_matched == "C0BEN1V1J0H"
+    assert result.slack_match_confidence == "atlas_exact_id"
+    assert result.slack_match_score == 1.0
+    assert result.slack_ok is True
+
+
+def test_gather_atlas_context_no_matching_at_all_just_uses_the_ids_directly():
+    # The whole point: no account_name, no slack_channels list, no fuzzy match call.
+    clickup = _FakeClickUpFolder(lists=[])
+    slack = _FakeSlack(messages=[])
+
+    result = gather_atlas_context(None, None, clickup, slack)
+
+    assert result.context == []
+    assert result.clickup_ok is True
+    assert result.slack_ok is True
+    assert result.slack_channel_matched is None
+
+
+def test_gather_atlas_context_is_resilient_to_folder_fetch_failure():
+    clickup = _FakeClickUpFolder(raise_on_folder=True)
+    slack = _FakeSlack()
+
+    result = gather_atlas_context("folder1", None, clickup, slack)
+
+    assert any("ClickUp context fetch failed for folder folder1" in c for c in result.context)
+    assert result.clickup_ok is False
+    assert "clickup folder down" in result.clickup_error
