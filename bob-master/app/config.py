@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # WAF 403s any request missing a User-Agent header — do not drop this.
     ghl_user_agent: str = "AM-QA/1.0"
 
+    # --- Atlas (proprietary internal source-of-truth API for per-client state:
+    # stage, deadlines, projects, staff, sales notes, and exact integration IDs
+    # — replacing fuzzy-match account correlation everywhere else, 2026-08-04) ---
+    atlas_api_key: str
+    atlas_base_url: str = "https://server-production-3d76.up.railway.app"
+
     # --- ClickUp ---
     clickup_api_token: str
     clickup_base_url: str = "https://api.clickup.com/api/v2"

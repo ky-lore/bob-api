@@ -85,6 +85,7 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
     monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("ATLAS_API_KEY", "x")
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
