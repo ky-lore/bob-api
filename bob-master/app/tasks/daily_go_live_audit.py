@@ -728,6 +728,13 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                     live_google_ads_spend[account_name] = {
                         "spend": spend["total_cost"],
                         "enabled_campaigns": spend["enabled_campaign_count"],
+                        "impressions": spend["total_impressions"],
+                        "clicks": spend["total_clicks"],
+                        "conversions": spend["total_conversions"],
+                        # Full list, unlike the Atlas export's compressed enabled-only
+                        # cut (see atlas_report.py) — this is our own internal dashboard,
+                        # Bob wants full per-campaign granularity to drill into here.
+                        "campaigns": spend["campaigns"],
                     }
                     diagnostics["google_ads_live_ok"] = True
                 except Exception as exc:

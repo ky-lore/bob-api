@@ -927,7 +927,21 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
     monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
     _FakeAtlasClient.accounts = [_atlas_account("Acme Co", google_ads_customer_id="1234567890")]
     _FakeGoogleAdsClient.responses = {
-        "1234567890": {"total_cost": 42.5, "enabled_campaign_count": 3, "campaigns": []},
+        "1234567890": {
+            "total_cost": 42.5,
+            "total_impressions": 900,
+            "total_clicks": 40,
+            "total_conversions": 3.0,
+            "enabled_campaign_count": 1,
+            "campaigns": [
+                {"id": "1", "name": "Search", "status": "ENABLED", "channel_type": "SEARCH", "cost": 42.5,
+                 "impressions": 900, "clicks": 40, "ctr": 0.044, "avg_cpc": 1.06, "conversions": 3.0,
+                 "cost_per_conversion": 14.17, "conversions_value": 3.0},
+                {"id": "2", "name": "Old Display", "status": "REMOVED", "channel_type": "DISPLAY", "cost": 0.0,
+                 "impressions": 0, "clicks": 0, "ctr": 0.0, "avg_cpc": 0.0, "conversions": 0.0,
+                 "cost_per_conversion": 0.0, "conversions_value": 0.0},
+            ],
+        },
     }
     _FakeSlack.sent = []
 
@@ -938,7 +952,17 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
         dashboard_data = json.loads(run.dashboard_json)
 
         acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
-        assert acme["ad_spend"]["Google Ads (live)"] == {"spend": 42.5, "enabled_campaigns": 3}
+        live_spend = acme["ad_spend"]["Google Ads (live)"]
+        assert live_spend["spend"] == 42.5
+        assert live_spend["enabled_campaigns"] == 1
+        assert live_spend["impressions"] == 900
+        assert live_spend["clicks"] == 40
+        assert live_spend["conversions"] == 3.0
+        # Full list, including the REMOVED one -- this is the internal
+        # dashboard, not the Atlas export's enabled-only compressed cut.
+        assert len(live_spend["campaigns"]) == 2
+        assert live_spend["campaigns"][0]["name"] == "Search"
+        assert live_spend["campaigns"][1]["status"] == "REMOVED"
 
         diagnostics = json.loads(run.context_gather_json)
         assert diagnostics["Acme Co"]["google_ads_live_ok"] is True
