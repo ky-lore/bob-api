@@ -29,7 +29,10 @@ class _FakeAtlasClient:
                 "isActive": True,
                 "createdAt": created_at,
                 "deadlines": {"goLive": go_live},
-                "integrations": {"clickupFolderId": "folder1", "internalSlackChannelId": None, "googleMccId": None},
+                "integrations": {
+                    "clickupFolderId": "folder1", "internalSlackChannelId": None,
+                    "googleMccId": None, "metaAdAccountId": None,
+                },
             }
         ]
 
@@ -82,6 +85,17 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     monkeypatch.setenv("ATLAS_API_KEY", "x")
+    # GoogleAdsClient()/MetaAdsClient() construct unconditionally regardless
+    # of whether any account has an ID set -- without these, adspend's
+    # Settings() silently falls back to the real repo-root .env.
+    monkeypatch.setenv("GOOGLE_ADS_DEVELOPER_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_ADS_CLIENT_ID", "x")
+    monkeypatch.setenv("GOOGLE_ADS_CLIENT_SECRET", "x")
+    monkeypatch.setenv("GOOGLE_ADS_REFRESH_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID", "1234567890")
+    monkeypatch.setenv("META_ACCESS_TOKEN", "x")
+    from adspend.config import get_settings as get_adspend_settings
+    get_adspend_settings.cache_clear()
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
@@ -114,6 +128,7 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
         assert acme_diagnostics["slack_channel_matched"] is None  # no slack_channel_id on this Atlas account
         assert acme_diagnostics["slack_match_confidence"] is None
         assert acme_diagnostics["google_ads_live_ok"] is None  # no googleMccId on this Atlas account
+        assert acme_diagnostics["meta_ads_live_ok"] is None  # no metaAdAccountId on this Atlas account
 
         # Narrative batch outcome (the Claude call) is in the response body too
         assert len(body["narrative_batches"]) == 1

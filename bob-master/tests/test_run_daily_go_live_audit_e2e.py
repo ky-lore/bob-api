@@ -58,6 +58,7 @@ def _atlas_account(
     clickup_folder_id=None,
     slack_channel_id=None,
     google_ads_customer_id=None,
+    meta_ad_account_id=None,
     is_active=True,
     atlas_id=None,
 ):
@@ -82,6 +83,7 @@ def _atlas_account(
             "clickupFolderId": clickup_folder_id,
             "internalSlackChannelId": slack_channel_id,
             "googleMccId": google_ads_customer_id,
+            "metaAdAccountId": meta_ad_account_id,
         },
     }
 
@@ -108,6 +110,18 @@ class _FakeGoogleAdsClient:
         if customer_id not in _FakeGoogleAdsClient.responses:
             raise RuntimeError(f"adspend error (fake): no customer {customer_id}")
         return _FakeGoogleAdsClient.responses[customer_id]
+
+
+class _FakeMetaAdsClient:
+    """Same class-attribute pattern as _FakeGoogleAdsClient, keyed by
+    ad_account_id."""
+
+    responses: dict = {}
+
+    def get_account_spend(self, ad_account_id, date_range="LAST_7_DAYS"):
+        if ad_account_id not in _FakeMetaAdsClient.responses:
+            raise RuntimeError(f"adspend error (fake): no ad account {ad_account_id}")
+        return _FakeMetaAdsClient.responses[ad_account_id]
 
 
 def _spend(total_cost=0.0, enabled_campaign_count=0, campaigns=None):
@@ -178,6 +192,20 @@ def _setenv_common(monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
     monkeypatch.setenv("ATLAS_API_KEY", "x")
+    # GoogleAdsClient()/MetaAdsClient() are constructed unconditionally at the
+    # top of the gather loop regardless of whether any account actually has a
+    # customer_id/ad_account_id -- without these, adspend.config.Settings()
+    # silently falls back to reading the real repo-root .env (real local
+    # credentials), which happened to mask this gap until it was caught
+    # 2026-08-06 while wiring in Meta.
+    monkeypatch.setenv("GOOGLE_ADS_DEVELOPER_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_ADS_CLIENT_ID", "x")
+    monkeypatch.setenv("GOOGLE_ADS_CLIENT_SECRET", "x")
+    monkeypatch.setenv("GOOGLE_ADS_REFRESH_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID", "1234567890")
+    monkeypatch.setenv("META_ACCESS_TOKEN", "x")
+    from adspend.config import get_settings as get_adspend_settings
+    get_adspend_settings.cache_clear()
 
 
 def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
@@ -945,6 +973,132 @@ def test_is_live_comes_from_atlas_stage_not_spend_in_either_direction(monkeypatc
         # No ad spend at all (website-only) does not make a live-stage account not-live.
         assert by_account["Live No Ads"]["is_live"] is True
         assert by_account["Live No Ads"]["target_status"] == "live"
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_meta_spend_blends_alongside_google_ads_in_spend_by_account(monkeypatch, tmp_path):
+    db_path = tmp_path / "meta_blend.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    monkeypatch.setattr(mod, "MetaAdsClient", _FakeMetaAdsClient)
+    _FakeAtlasClient.accounts = [
+        _atlas_account("Acme Co", stage="live", google_ads_customer_id="1234567890", meta_ad_account_id="act_555")
+    ]
+    _FakeGoogleAdsClient.responses = {"1234567890": _spend(total_cost=42.5, enabled_campaign_count=1)}
+    _FakeMetaAdsClient.responses = {"act_555": _spend(total_cost=17.0, enabled_campaign_count=2)}
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
+        assert acme["ad_spend"]["Google Ads"]["spend"] == 42.5
+        assert acme["ad_spend"]["Meta"]["spend"] == 17.0
+
+        diagnostics = json.loads(run.context_gather_json)
+        assert diagnostics["Acme Co"]["meta_ads_live_ok"] is True
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_meta_pull_failure_is_soft_failed_google_ads_still_shows(monkeypatch, tmp_path):
+    db_path = tmp_path / "meta_fail.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    monkeypatch.setattr(mod, "MetaAdsClient", _FakeMetaAdsClient)
+    _FakeAtlasClient.accounts = [
+        _atlas_account("Acme Co", stage="live", google_ads_customer_id="1234567890", meta_ad_account_id="act_not_covered")
+    ]
+    _FakeGoogleAdsClient.responses = {"1234567890": _spend(total_cost=42.5, enabled_campaign_count=1)}
+    _FakeMetaAdsClient.responses = {}  # act_not_covered has no entry -- forces the error path
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
+        assert acme["ad_spend"]["Google Ads"]["spend"] == 42.5
+        assert "Meta" not in acme["ad_spend"]
+
+        diagnostics = json.loads(run.context_gather_json)
+        assert diagnostics["Acme Co"]["meta_ads_live_ok"] is False
+        assert "act_not_covered" in diagnostics["Acme Co"]["meta_ads_live_error"]
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_should_be_on_but_dark_not_flagged_when_live_via_meta_end_to_end(monkeypatch, tmp_path):
+    """Integration-level version of the same rule already unit-tested in
+    test_ads_off_classification.py: a client spending real money on Meta must
+    not get flagged just because Google is dark."""
+    db_path = tmp_path / "cross_platform.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    monkeypatch.setattr(mod, "MetaAdsClient", _FakeMetaAdsClient)
+    _FakeAtlasClient.accounts = [
+        _atlas_account("Live Via Meta Co", stage="live", google_ads_customer_id="1234567890", meta_ad_account_id="act_555")
+    ]
+    _FakeGoogleAdsClient.responses = {"1234567890": _spend(total_cost=0.0, enabled_campaign_count=1)}
+    _FakeMetaAdsClient.responses = {"act_555": _spend(total_cost=99.0, enabled_campaign_count=1)}
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
+
+        assert [f for f in flags if f.category == FlagCategory.ads_off_should_be_on] == []
+        # Still correctly flags Google's own zero-spend campaign, independently.
+        zero_spend = [f for f in flags if f.category == FlagCategory.ads_off_zero_spend]
+        assert len(zero_spend) == 1
+        assert "Google Ads" in zero_spend[0].message
     finally:
         db.close()
         get_settings.cache_clear()

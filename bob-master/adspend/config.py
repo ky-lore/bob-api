@@ -26,6 +26,19 @@ class Settings(BaseSettings):
     # deprecates v21 later; there's no way to auto-detect the "current" version.
     google_ads_api_version: str = "v21"
 
+    # --- Meta Marketing API (Graph API) — a System User access token, unlike
+    # Google's OAuth refresh flow, doesn't expire/rotate on its own, so there's
+    # no token-minting step here (confirmed against the real token via
+    # /debug_token, 2026-08-06: expires_at=0, permanent). app_id/app_secret
+    # are only used to inspect the token (/debug_token), not for any live call. ---
+    meta_access_token: str
+    meta_app_id: str | None = None
+    meta_app_secret: str | None = None
+    meta_business_manager_id: str | None = None
+    # Confirmed reachable against the real API 2026-08-06 — no version-guess
+    # miss like Google Ads' v18. Bump if Meta deprecates it later.
+    meta_api_version: str = "v21.0"
+
     # --- Atlas (source of truth for the account universe + per-account
     # googleMccId/metaAdAccountId — see ../app/integrations/atlas_client.py for
     # the sibling copy used by the LLM+write service; duplicated here on

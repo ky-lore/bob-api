@@ -59,13 +59,16 @@ or built against real sandboxed ClickUp/Atlas data — see chat history):
     gathering — channel_history() silently fails on a channel the bot hasn't
     joined, exact ID or not. Private channels still need a manual bot invite;
     there's no Slack API for a bot to self-join one.
-  - real Google Ads spend via adspend/ (see adspend/README.md) — a
-    self-contained package mounted at /adspend on this same app (app/main.py)
-    and called in-process here (no self-HTTP hop — it's the same process).
-    Spend/campaign data only now, not is_live (see above). Meta not wired in
-    yet — classify_ads_off already takes an optional meta_ads param so the
-    cross-platform "should be on but dark" logic doesn't need to change
-    again once it lands.
+  - real Google Ads + Meta spend via adspend/ (see adspend/README.md,
+    meta_ads_client.py) — a self-contained package mounted at /adspend on
+    this same app (app/main.py) and called in-process here (no self-HTTP hop
+    — it's the same process). Spend/campaign data only, not is_live (see
+    above) — an account can be Google-only, Meta-only, both, or neither
+    (website-only) with no effect on whether it counts as live. Meta's
+    System User token, as of 2026-08-06, only has actual access granted to
+    5 of the 56 Atlas-mapped Meta ad accounts — the other 51 soft-fail
+    (meta_ads_live_ok=False) until access is broadened in Business Manager,
+    same as any other per-account external-call failure here.
 
 What's intentionally left as TODOs — these require judgment calls this port
 should not guess at:
@@ -85,6 +88,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from adspend.google_ads_client import GoogleAdsClient, filter_relevant_campaigns
+from adspend.meta_ads_client import MetaAdsClient
 from app.config import get_settings
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
@@ -245,6 +249,9 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             # real Atlas data 2026-08-06 (e.g. distinct IDs per client, none
             # matching the shared MCC in adspend's GOOGLE_ADS_LOGIN_CUSTOMER_ID).
             "google_ads_customer_id": integ.get("googleMccId") or None,
+            # Comes pre-formatted with the "act_" prefix already (confirmed
+            # against real Atlas data, 2026-08-06) — no parsing needed.
+            "meta_ad_account_id": integ.get("metaAdAccountId") or None,
             "go_live_deadline": (atlas_account.get("deadlines") or {}).get("goLive") or None,
         }
 
@@ -333,7 +340,9 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     rich_context: dict[str, list[str]] = {}
     context_gather_diagnostics: dict[str, dict] = {}
     google_ads_client = GoogleAdsClient()
+    meta_ads_client = MetaAdsClient()
     live_google_ads_spend: dict[str, dict] = {}
+    live_meta_ads_spend: dict[str, dict] = {}
     try:
         for account_name in all_matched_accounts(account_context):
             ctx = account_context.get(account_name, {})
@@ -382,6 +391,28 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                     diagnostics["google_ads_live_ok"] = False
                     diagnostics["google_ads_live_error"] = str(exc)
 
+            # Real Meta spend (2026-08-06) — same shape/soft-fail contract as
+            # Google above. Atlas's metaAdAccountId comes pre-formatted with
+            # the "act_" prefix already, no parsing needed.
+            meta_ad_account_id = ctx.get("meta_ad_account_id")
+            diagnostics["meta_ads_live_ok"] = None
+            diagnostics["meta_ads_live_error"] = None
+            if meta_ad_account_id:
+                try:
+                    meta_spend = meta_ads_client.get_account_spend(meta_ad_account_id, date_range="LAST_7_DAYS")
+                    live_meta_ads_spend[account_name] = {
+                        "spend": meta_spend["total_cost"],
+                        "enabled_campaigns": meta_spend["enabled_campaign_count"],
+                        "impressions": meta_spend["total_impressions"],
+                        "clicks": meta_spend["total_clicks"],
+                        "conversions": meta_spend["total_conversions"],
+                        "campaigns": filter_relevant_campaigns(meta_spend["campaigns"]),
+                    }
+                    diagnostics["meta_ads_live_ok"] = True
+                except Exception as exc:
+                    diagnostics["meta_ads_live_ok"] = False
+                    diagnostics["meta_ads_live_error"] = str(exc)
+
             context_gather_diagnostics[account_name] = diagnostics
     except Exception as exc:
         notes.append(f"Rich context gather failed, narratives will use flag messages only: {exc}")
@@ -397,22 +428,22 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         ctx["target_status"] = _go_live_target_status(ctx.get("go_live_deadline"), account_name in live_accounts)
 
     # --- "Ads off — who's dark and why" classification, per the reference
-    # dashboard (golive-pipeline-dashboard.pdf) — cross-platform (Google Ads
-    # wired in; Meta plumbing pending, classify_ads_off already takes an
-    # optional meta_ads param) and Atlas-stage-driven throughout: "should be
-    # on but dark" reads Atlas's stage directly and only fires if EVERY
-    # platform this account has data for is dark, so a client live via Meta
-    # never gets flagged for a $0 Google campaign; "verified off" trusts
-    # Atlas's stage=="closed" outright ("assume Atlas will always have
-    # perfect data regarding account status" — Bob, 2026-08-06), no
-    # independent ad-platform re-verification. billing_unsettled is a
-    # placeholder — see ads_off_classification.py. An account with no
-    # googleMccId/metaAdAccountId or a failed pull is skipped for that
-    # platform — we simply don't have data to classify it, not confirmed dark. ---
+    # dashboard (golive-pipeline-dashboard.pdf) — cross-platform (Google Ads +
+    # Meta) and Atlas-stage-driven throughout: "should be on but dark" reads
+    # Atlas's stage directly and only fires if EVERY platform this account
+    # has data for is dark, so a client live via Meta never gets flagged for
+    # a $0 Google campaign; "verified off" trusts Atlas's stage=="closed"
+    # outright ("assume Atlas will always have perfect data regarding
+    # account status" — Bob, 2026-08-06), no independent ad-platform
+    # re-verification. billing_unsettled is a placeholder — see
+    # ads_off_classification.py. An account with no googleMccId/
+    # metaAdAccountId or a failed pull is skipped for that platform — we
+    # simply don't have data to classify it, not confirmed dark. ---
     for account_name in sorted(all_account_names):
         classification = classify_ads_off(
             stage=account_context.get(account_name, {}).get("stage"),
             google_ads=live_google_ads_spend.get(account_name),
+            meta_ads=live_meta_ads_spend.get(account_name),
         )
 
         if classification.should_be_on_but_dark:
@@ -461,11 +492,12 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             )
 
     # --- Ad spend summary per account, for the accounts overview + its LLM
-    # narrative — real Google Ads spend only now (heartbeat dropped entirely,
-    # Meta not wired in yet). ---
-    spend_by_account: dict[str, dict] = {
-        account_name: {"Google Ads": live_spend} for account_name, live_spend in live_google_ads_spend.items()
-    }
+    # narrative — real Google Ads + Meta spend (heartbeat dropped entirely). ---
+    spend_by_account: dict[str, dict] = {}
+    for account_name, live_spend in live_google_ads_spend.items():
+        spend_by_account.setdefault(account_name, {})["Google Ads"] = live_spend
+    for account_name, live_spend in live_meta_ads_spend.items():
+        spend_by_account.setdefault(account_name, {})["Meta"] = live_spend
 
     db.add_all(flags)
     digest_text = build_digest(flags)

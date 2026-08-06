@@ -1,7 +1,7 @@
 """
 Classifies an account into the "Ads off — who's dark and why" buckets from the
 reference dashboard (golive-pipeline-dashboard.pdf). Atlas-only, cross-platform
-(2026-08-06 revision, Meta plumbing pending):
+(2026-08-06 revision — Google Ads + Meta, cross-platform):
   - should_be_on_but_dark: Atlas stage says live/optimizations, but every
     platform this account actually has data for shows $0 spend. Cross-platform
     on purpose (Bob: "a client live via Meta no longer gets flagged for a $0
