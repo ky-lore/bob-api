@@ -38,6 +38,10 @@
     .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
     .badge.live { background: rgba(12,163,12,0.15); color: var(--green); }
     .badge.not-live { background: rgba(102,102,102,0.15); color: var(--muted); }
+    .badge.target-behind { background: rgba(220,38,38,0.15); color: var(--red); margin-left: 0.3rem; }
+    .badge.target-approaching { background: rgba(180,83,9,0.15); color: var(--amber); margin-left: 0.3rem; }
+    .badge.target-on_track { background: rgba(102,102,102,0.15); color: var(--muted); margin-left: 0.3rem; }
+    .badge.target-unknown { background: rgba(102,102,102,0.1); color: var(--muted); margin-left: 0.3rem; }
     .spend { color: var(--muted); font-size: 0.82rem; }
     .spend-line { margin-bottom: 0.35rem; }
     .spend-line:last-child { margin-bottom: 0; }
@@ -79,6 +83,7 @@
         <div class="tile"><div class="n">{{ stat_tiles.accounts_tracked }}</div><div class="label">Accounts tracked</div></div>
         <div class="tile"><div class="n">{{ stat_tiles.live }}</div><div class="label">Live</div></div>
         <div class="tile"><div class="n">{{ stat_tiles.not_live }}</div><div class="label">Not live yet</div></div>
+        <div class="tile"><div class="n">{{ stat_tiles.behind }}</div><div class="label">Behind Atlas go-live target</div></div>
         <div class="tile"><div class="n">{{ stat_tiles.should_be_on_but_dark }}</div><div class="label">Should be on, dark</div></div>
         <div class="tile"><div class="n">{{ stat_tiles.campaigns_on_zero_spend }}</div><div class="label">Campaigns on, $0 spend</div></div>
         <div class="tile"><div class="n">{{ stat_tiles.verified_off }}</div><div class="label">Verified off</div></div>
@@ -100,7 +105,12 @@
             <tr>
               <td>{{ a.account }}</td>
               <td class="day">{{ a.day }}</td>
-              <td><span class="badge {{ 'live' if a.is_live else 'not-live' }}">{{ 'Live' if a.is_live else 'Not live' }}</span></td>
+              <td>
+                <span class="badge {{ 'live' if a.is_live else 'not-live' }}">{{ 'Live' if a.is_live else 'Not live' }}</span>
+                {% if not a.is_live %}
+                  <span class="badge target-{{ a.target_status }}">{{ a.target_status | replace('_', ' ') | title }}</span>
+                {% endif %}
+              </td>
               <td class="spend">
                 {% if a.ad_spend %}
                   {% for platform, spend in a.ad_spend.items() %}
@@ -131,7 +141,7 @@
                     </div>
                   {% endfor %}
                 {% else %}
-                  No heartbeat data
+                  No Google Ads data (no CID on file or fetch failed)
                 {% endif %}
               </td>
               <td>{{ a.status }}</td>

@@ -5,6 +5,9 @@ TestClient(app) here since app.main's lifespan starts a real BackgroundScheduler
 singleton that isn't safe to start more than once per process across the test
 suite. The route function *is* what FastAPI calls per request; calling it
 directly still proves what actually reaches the JSON response body.
+
+ATLAS-ONLY as of 2026-08-06: no more heartbeat/GoogleDriveClient fixture at
+all — see app/tasks/daily_go_live_audit.py's module docstring.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -12,28 +15,12 @@ import app.main as main_mod
 import app.tasks.daily_go_live_audit as audit_mod
 from app.db import get_engine, get_session_factory, init_db
 from app.config import get_settings
-from app.integrations.google_drive import GoogleDriveClient as RealGoogleDriveClient
-
-
-class _FakeGoogleDrive:
-    is_stale = staticmethod(RealGoogleDriveClient.is_stale)
-
-    _HEADER = [
-        "Checked at", "Account name", "CID", "Enabled campaigns", "Enabled LSA",
-        "Spend yesterday (ads)", "Spend yesterday (LSA)", "Spend today (ads)",
-        "Spend today (LSA)", "AM-BUILD spend yest", "Legacy spend yest", "Status", "Flag",
-    ]
-
-    def read_sheet_values(self, file_id, tab):
-        fresh = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        if tab == "Heartbeat":
-            return [self._HEADER, [fresh, "Acme Co", "1", "2", "FALSE", "0", "0", "0", "0", "0", "0", "", ""]]
-        return [self._HEADER]
 
 
 class _FakeAtlasClient:
     def get_all_accounts(self):
         created_at = (datetime.now(timezone.utc) - timedelta(days=15)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        go_live = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         return [
             {
                 "id": "acme-co",
@@ -41,7 +28,8 @@ class _FakeAtlasClient:
                 "stage": "onboarding",
                 "isActive": True,
                 "createdAt": created_at,
-                "integrations": {"clickupFolderId": "folder1", "internalSlackChannelId": None},
+                "deadlines": {"goLive": go_live},
+                "integrations": {"clickupFolderId": "folder1", "internalSlackChannelId": None, "googleMccId": None},
             }
         ]
 
@@ -98,7 +86,6 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(audit_mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(audit_mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(audit_mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(audit_mod, "GHLClient", _FakeGHL)
@@ -126,6 +113,7 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
         assert acme_diagnostics["slack_ok"] is True
         assert acme_diagnostics["slack_channel_matched"] is None  # no slack_channel_id on this Atlas account
         assert acme_diagnostics["slack_match_confidence"] is None
+        assert acme_diagnostics["google_ads_live_ok"] is None  # no googleMccId on this Atlas account
 
         # Narrative batch outcome (the Claude call) is in the response body too
         assert len(body["narrative_batches"]) == 1

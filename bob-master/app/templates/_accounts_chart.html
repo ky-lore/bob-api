@@ -1,15 +1,19 @@
-{# Horizontal bar chart: days-since-signing per account, colored by whether
-   the account is currently live (ads spending) — no package-based threshold
-   anymore (Bob, 2026-07-31: dropped the whole package-clock concept, went
-   fully macro). Color is never the sole carrier of meaning — every bar also
-   gets a direct day-count label and a full aria-label, and the legend below
-   pairs each swatch with its text meaning. #}
+{# Horizontal bar chart: days-since-signing per account, colored by
+   target_status — behind/approaching/on_track against Atlas's own
+   deadlines.goLive for that account (Bob, 2026-08-06), not a recomputed
+   uniform 14 days, and not gated on package/project type at all. "live"
+   once real Google Ads spend confirms it. Color is never the sole carrier
+   of meaning — every bar also gets a direct day-count label and a full
+   aria-label, and the legend below pairs each swatch with its text meaning. #}
 {% if accounts_chart %}
   {% set observed_days = accounts_chart | map(attribute='day') | list %}
   {% set scale_max = ([1] + observed_days) | max %}
   {% set status_text = {
     "live": "live",
-    "not_live": "not live yet",
+    "behind": "behind target",
+    "approaching": "approaching target",
+    "on_track": "on track",
+    "unknown": "no target on file",
   } %}
 
   <div class="card chart-root">
@@ -17,6 +21,7 @@
     <div class="chart-frame">
       {% for item in accounts_chart %}
         {% set width_pct = [(item.day / scale_max * 100), 100] | min | round(2) %}
+        {% set ts = item.target_status or "unknown" %}
         <div class="chart-row">
           <div class="chart-label">{{ item.account }}</div>
           <div class="chart-track"
@@ -24,10 +29,10 @@
                role="button"
                data-account="{{ item.account }}"
                data-day="{{ item.day }}"
-               data-status-text="{{ status_text[item.status] }}"
-               aria-label="{{ item.account }}: {{ item.day }} days, {{ status_text[item.status] }}">
+               data-status-text="{{ status_text[ts] }}"
+               aria-label="{{ item.account }}: {{ item.day }} days, {{ status_text[ts] }}">
             <div class="chart-lane">
-              <div class="chart-bar chart-bar--{{ item.status }}" style="width: {{ width_pct }}%;"></div>
+              <div class="chart-bar chart-bar--{{ ts }}" style="width: {{ width_pct }}%;"></div>
               <span class="chart-value" style="left: calc({{ width_pct }}% + 6px);">{{ item.day }}d</span>
             </div>
           </div>
@@ -37,7 +42,9 @@
 
     <div class="chart-legend">
       <span class="chart-chip"><i class="chart-swatch chart-swatch--live"></i>Live</span>
-      <span class="chart-chip"><i class="chart-swatch chart-swatch--not_live"></i>Not live yet</span>
+      <span class="chart-chip"><i class="chart-swatch chart-swatch--behind"></i>Behind target</span>
+      <span class="chart-chip"><i class="chart-swatch chart-swatch--approaching"></i>Approaching target</span>
+      <span class="chart-chip"><i class="chart-swatch chart-swatch--on_track"></i>On track</span>
     </div>
   </div>
 
@@ -46,12 +53,17 @@
   <style>
     .chart-root {
       --chart-live: #0ca30c;
-      --chart-not-live: #9a9da3;
+      --chart-behind: #dc2626;
+      --chart-approaching: #b45309;
+      --chart-on-track: #9a9da3;
+      --chart-unknown: #c7c9cd;
       --chart-track-bg: #eceae4;
       --chart-value-gutter: 44px;
     }
     @media (prefers-color-scheme: dark) {
-      .chart-root { --chart-not-live: #6b6e73; --chart-track-bg: #2c2c2a; }
+      .chart-root {
+        --chart-on-track: #6b6e73; --chart-unknown: #4a4c50; --chart-track-bg: #2c2c2a;
+      }
     }
 
     .chart-frame { overflow: visible; }
@@ -78,7 +90,10 @@
       border-radius: 0 4px 4px 0;
     }
     .chart-bar--live { background: var(--chart-live); }
-    .chart-bar--not_live { background: var(--chart-not-live); }
+    .chart-bar--behind { background: var(--chart-behind); }
+    .chart-bar--approaching { background: var(--chart-approaching); }
+    .chart-bar--on_track { background: var(--chart-on-track); }
+    .chart-bar--unknown { background: var(--chart-unknown); }
     .chart-value {
       position: absolute; top: 50%; transform: translateY(-50%);
       font-size: 0.75rem; color: var(--muted); white-space: nowrap;
@@ -88,7 +103,9 @@
     .chart-chip { display: inline-flex; align-items: center; gap: 0.4rem; }
     .chart-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
     .chart-swatch--live { background: var(--chart-live); }
-    .chart-swatch--not_live { background: var(--chart-not-live); }
+    .chart-swatch--behind { background: var(--chart-behind); }
+    .chart-swatch--approaching { background: var(--chart-approaching); }
+    .chart-swatch--on_track { background: var(--chart-on-track); }
 
     .chart-tooltip {
       position: fixed; z-index: 50; pointer-events: none;

@@ -1,12 +1,15 @@
 """
 End-to-end test of run_daily_go_live_audit() with the external clients faked
-out, against a real (temp file) SQLite DB — proves the Atlas/heartbeat/ClickUp/
-Slack wiring actually executes correctly at runtime, not just compiles.
+out, against a real (temp file) SQLite DB — proves the Atlas/ClickUp/Slack/
+Google-Ads wiring actually executes correctly at runtime, not just compiles.
 
-Atlas-driven as of 2026-08-04: Atlas is the account universe (stage,
-day-count from createdAt, exact clickupFolderId/internalSlackChannelId).
-Fuzzy matching now only happens once, matching heartbeat sheet account names
-against Atlas's clean companyName — not against ClickUp card titles anymore.
+ATLAS-ONLY as of 2026-08-06: the heartbeat Google Sheets pull and the
+retention-pipeline cross-check are both gone entirely (Bob: "drop the
+heartbeat sheet from any sort of calculations or logic... that shit's
+broken" / "assume Atlas will always have perfect data regarding account
+status"). Atlas is the sole account universe; is_live comes only from real
+Google Ads spend; the go-live target clock compares against Atlas's own
+deadlines.goLive, not a recomputed uniform 14 days.
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -16,7 +19,6 @@ import pytest
 import app.tasks.daily_go_live_audit as mod
 from app.config import get_settings
 from app.db import get_engine, get_session_factory, init_db
-from app.integrations.google_drive import GoogleDriveClient as RealGoogleDriveClient
 from app.models import FlagCategory, RunStatus
 
 
@@ -47,18 +49,12 @@ def _capture_narrative_accounts(monkeypatch):
     return _CAPTURED_NARRATIVE_ACCOUNTS
 
 
-_HEADER = [
-    "Checked at", "Account name", "CID", "Enabled campaigns", "Enabled LSA",
-    "Spend yesterday (ads)", "Spend yesterday (LSA)", "Spend today (ads)",
-    "Spend today (LSA)", "AM-BUILD spend yest", "Legacy spend yest", "Status", "Flag",
-]
-
-
 def _atlas_account(
     company_name,
     *,
     stage="onboarding",
     created_days_ago=15,
+    go_live_days_from_now=30,  # far in the future by default -> "on_track", doesn't affect unrelated tests
     clickup_folder_id=None,
     slack_channel_id=None,
     google_ads_customer_id=None,
@@ -67,14 +63,21 @@ def _atlas_account(
 ):
     """Builds a minimal real-shaped Atlas account record (see
     app/integrations/atlas_client.py's docstring for the confirmed real
-    schema). createdAt uses the "Z" suffix Atlas's real API actually sends."""
+    schema). createdAt/goLive use the "Z" suffix Atlas's real API actually
+    sends. go_live_days_from_now=None omits deadlines.goLive entirely (the
+    "unknown" target_status case)."""
     created_at = (datetime.now(timezone.utc) - timedelta(days=created_days_ago)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    deadlines = {}
+    if go_live_days_from_now is not None:
+        go_live = (datetime.now(timezone.utc) + timedelta(days=go_live_days_from_now)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        deadlines = {"goLive": go_live}
     return {
         "id": atlas_id or company_name.lower().replace(" ", "-"),
         "companyName": company_name,
         "stage": stage,
         "isActive": is_active,
         "createdAt": created_at,
+        "deadlines": deadlines,
         "integrations": {
             "clickupFolderId": clickup_folder_id,
             "internalSlackChannelId": slack_channel_id,
@@ -97,9 +100,7 @@ class _FakeAtlasClient:
 class _FakeGoogleAdsClient:
     """Class-attribute responses keyed by customer_id, reset per test (same
     pattern as _FakeAtlasClient). A customer_id with no entry raises, so a
-    test can exercise the soft-fail path just by not registering one. Method
-    name matches adspend.google_ads_client.GoogleAdsClient exactly -- this is
-    imported and called in-process now, not through a separate HTTP client."""
+    test can exercise the soft-fail path just by not registering one."""
 
     responses: dict = {}
 
@@ -109,18 +110,15 @@ class _FakeGoogleAdsClient:
         return _FakeGoogleAdsClient.responses[customer_id]
 
 
-class _FakeGoogleDrive:
-    # Delegates to the real is_stale — re-validates real freshness logic too,
-    # since it's called directly on the class (GoogleDriveClient.is_stale), not
-    # on an instance, so this needs to be swappable as a whole class.
-    is_stale = staticmethod(RealGoogleDriveClient.is_stale)
-
-    def read_sheet_values(self, file_id, tab):
-        fresh = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        if tab == "Heartbeat":
-            # Acme Co: zero spend everywhere -> not live, no legacy-only flag either.
-            return [_HEADER, [fresh, "Acme Co", "1", "2", "FALSE", "0", "0", "0", "0", "0", "0", "", ""]]
-        return [_HEADER]  # Meta sheet: header only, no accounts
+def _spend(total_cost=0.0, enabled_campaign_count=0, campaigns=None):
+    return {
+        "total_cost": total_cost,
+        "total_impressions": 0,
+        "total_clicks": 0,
+        "total_conversions": 0.0,
+        "enabled_campaign_count": enabled_campaign_count,
+        "campaigns": campaigns or [],
+    }
 
 
 class _FakeClickUp:
@@ -173,222 +171,23 @@ def _no_ghl():
     return type("_G", (), {"recent_closed_won": lambda self, *a, **k: []})()
 
 
-class _FakeGoogleDriveSpellingVariants:
-    """Real bug from the first live run: the same client appears with different
-    spelling/casing on each sheet (e.g. "vera plumbing and drain" on Meta vs
-    "Vera Plumbing and Drain" on Google Ads) and got processed as two separate
-    accounts. Google Ads side shows legacy-only spend; Meta side (different
-    spelling) shows real AM-BUILD spend — cross-platform is_live only works if
-    both rows resolve to the same canonical account."""
-
-    is_stale = staticmethod(RealGoogleDriveClient.is_stale)
-
-    def read_sheet_values(self, file_id, tab):
-        fresh = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        if tab == "Heartbeat":
-            # legacy-only on this platform, spelled with extra whitespace/casing
-            return [_HEADER, [fresh, "vera  plumbing and drain", "1", "2", "FALSE", "0", "0", "0", "0", "0", "40", "", ""]]
-        # Meta: real AM-BUILD spend, differently capitalized -> same client is live overall
-        return [_HEADER, [fresh, "Vera Plumbing and Drain", "2", "1", "FALSE", "0", "0", "0", "0", "60", "0", "", ""]]
-
-
-def test_spelling_variants_across_sheets_dedupe_to_one_account(monkeypatch, tmp_path):
-    # Legacy-only-spend flagging happens in Step 1, entirely before Atlas
-    # correlation -- an empty Atlas universe doesn't affect this assertion.
-    db_path = tmp_path / "dedupe.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+def _setenv_common(monkeypatch):
     monkeypatch.setenv("GHL_API_KEY", "x")
     monkeypatch.setenv("GHL_LOCATION_ID", "x")
     monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
     monkeypatch.setenv("ATLAS_API_KEY", "x")
-    get_settings.cache_clear()
-    get_engine.cache_clear()
-    get_session_factory.cache_clear()
-
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDriveSpellingVariants)
-    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
-    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
-    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
-    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
-    _FakeAtlasClient.accounts = []
-    _FakeSlack.sent = []
-
-    init_db()
-    db = get_session_factory()()
-    try:
-        run = mod.run_daily_go_live_audit(db)
-        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
-        heartbeat_flags = [f for f in flags if f.category == FlagCategory.heartbeat_mismatch]
-
-        # Must NOT be flagged: the client is live via Meta (different spelling),
-        # so the Google-side legacy-only spend shouldn't trigger a false alarm —
-        # only possible if both spellings resolved to the same canonical account.
-        assert heartbeat_flags == []
-    finally:
-        db.close()
-        get_settings.cache_clear()
-        get_engine.cache_clear()
-        get_session_factory.cache_clear()
-
-
-class _FakeGoogleDriveNumericAccountName:
-    """Real examples from the Meta sheet, per GoLive_Audit_Dev_Handover_Brief.md
-    §1: accounts never assigned a name in Meta Business Manager show up with a
-    numeric-only "account name" — must not be silently fuzzy-matched."""
-
-    is_stale = staticmethod(RealGoogleDriveClient.is_stale)
-
-    def read_sheet_values(self, file_id, tab):
-        fresh = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        if tab == "Heartbeat":
-            return [_HEADER]
-        return [_HEADER, [fresh, "106231623122110", "1", "2", "FALSE", "0", "0", "0", "0", "0", "40", "", ""]]
-
-
-def test_numeric_only_account_name_flagged_not_matched(monkeypatch, tmp_path):
-    db_path = tmp_path / "numeric.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
-    get_settings.cache_clear()
-    get_engine.cache_clear()
-    get_session_factory.cache_clear()
-
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDriveNumericAccountName)
-    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
-    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
-    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
-    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
-    _FakeAtlasClient.accounts = []
-    _FakeSlack.sent = []
-
-    init_db()
-    db = get_session_factory()()
-    try:
-        run = mod.run_daily_go_live_audit(db)
-        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
-
-        # Flagged as needing name resolution, not silently dropped or fuzzy-matched
-        unmapped = [f for f in flags if "unmapped account" in f.message]
-        assert len(unmapped) == 1
-        assert unmapped[0].client_name == "106231623122110"
-
-        # And never treated as a real account for the legacy-only-spend check
-        heartbeat_flags = [f for f in flags if f.category == FlagCategory.heartbeat_mismatch]
-        assert heartbeat_flags == []
-    finally:
-        db.close()
-        get_settings.cache_clear()
-        get_engine.cache_clear()
-        get_session_factory.cache_clear()
-
-
-class _FakeGoogleDriveChurnedClient:
-    """A client showing real AM-BUILD spend on the heartbeat — the exact
-    scenario ACCURACY RULES §2 exists for: board/heartbeat says active, but
-    the Retention pipeline says otherwise."""
-
-    is_stale = staticmethod(RealGoogleDriveClient.is_stale)
-
-    def read_sheet_values(self, file_id, tab):
-        fresh = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        if tab == "Heartbeat":
-            return [_HEADER, [fresh, "LG Electric", "1", "2", "FALSE", "0", "0", "0", "0", "500", "0", "", ""]]
-        return [_HEADER]
-
-
-class _FakeClickUpRetentionOnly:
-    """Retention list returns real cards; every other list (Atlas folder
-    walks, web-build sweep) is empty -- isolates the retention check."""
-
-    def get_list_tasks(self, list_id, include_closed=True, page=0):
-        if list_id == "retention-list":
-            return {
-                "tasks": [
-                    {"id": "r1", "name": "[CHURNED] LG Electric", "status": {"status": "churned x"}, "tags": []},
-                    {
-                        "id": "r2",
-                        "name": "📋 TEMPLATE — copy this for every request (do not close)",
-                        "status": {"status": "new requests"},
-                        "tags": [],
-                    },
-                ],
-                "last_page": True,
-            }
-        return {"tasks": [], "last_page": True}
-
-    def get_folder_lists(self, folder_id):
-        return []
-
-    def get_task_comments(self, task_id):
-        return []
-
-
-def test_retention_churned_status_flags_despite_active_heartbeat_spend(monkeypatch, tmp_path):
-    db_path = tmp_path / "retention.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("CLICKUP_RETENTION_LIST_ID", "retention-list")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
-    get_settings.cache_clear()
-    get_engine.cache_clear()
-    get_session_factory.cache_clear()
-
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDriveChurnedClient)
-    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
-    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUpRetentionOnly)
-    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
-    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
-    # LG Electric must be in the Atlas universe -- retention check now
-    # iterates Atlas company names, not raw heartbeat names.
-    _FakeAtlasClient.accounts = [_atlas_account("LG Electric", stage="live")]
-    _FakeSlack.sent = []
-
-    init_db()
-    db = get_session_factory()()
-    try:
-        run = mod.run_daily_go_live_audit(db)
-        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
-
-        churn_flags = [f for f in flags if "CHURNED" in f.message]
-        assert len(churn_flags) == 1
-        assert churn_flags[0].client_name == "LG Electric"
-        assert churn_flags[0].severity.value == "urgent"
-        assert churn_flags[0].evidence_url == "https://app.clickup.com/t/r1"
-
-        # The template card must never surface as if it were a real client
-        assert all("TEMPLATE" not in f.message for f in flags)
-    finally:
-        db.close()
-        get_settings.cache_clear()
-        get_engine.cache_clear()
-        get_session_factory.cache_clear()
 
 
 def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
     db_path = tmp_path / "e2e.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
@@ -407,25 +206,19 @@ def test_run_daily_go_live_audit_end_to_end(monkeypatch, tmp_path):
 
         flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
         new_deal_flags = [f for f in flags if f.category == FlagCategory.new_deal]
-        heartbeat_flags = [f for f in flags if f.category == FlagCategory.heartbeat_mismatch]
 
-        # Acme Co: Atlas account, 15 days old (createdAt), zero heartbeat spend
-        # -> not live -- shows up in accounts_overview regardless (fully macro).
+        # Acme Co: Atlas account, 15 days old (createdAt), no googleMccId ->
+        # no confirmed spend -> not live -- shows up in accounts_overview
+        # regardless (fully macro).
         dashboard_data = json.loads(run.dashboard_json)
         by_account = {a["account"]: a for a in dashboard_data["accounts_overview"]}
         assert by_account["Acme Co"]["is_live"] is False
         assert by_account["Acme Co"]["day"] == 15
 
-        # Zero spend everywhere means no legacy-only-spend flag (nothing to be legacy about)
-        assert heartbeat_flags == []
-
         # GHL sweep still wired and producing a new-deal flag
         assert len(new_deal_flags) == 1
         assert new_deal_flags[0].client_name == "Brand New Client"
 
-        # Slack DM was sent with the assembled digest -- Acme Co isn't in it
-        # (no flag was raised for it; "not live yet" alone isn't alarm-worthy
-        # without the old package clock), but the new-deal flag still is.
         assert len(_FakeSlack.sent) == 1
         assert "Brand New Client" in _FakeSlack.sent[0][1]
     finally:
@@ -451,17 +244,11 @@ class _FakeSlackJoinsNewChannels(_FakeSlack):
 def test_slack_auto_join_runs_before_context_gather_and_is_noted(monkeypatch, tmp_path):
     db_path = tmp_path / "autojoin.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
@@ -502,17 +289,11 @@ class _FakeSlackManyJoinFailures(_FakeSlack):
 def test_slack_auto_join_caps_failure_detail_in_notes(monkeypatch, tmp_path):
     db_path = tmp_path / "autojoin_many_failures.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
@@ -545,17 +326,11 @@ class _FakeSlackJoinFails(_FakeSlack):
 def test_slack_auto_join_failure_does_not_crash_the_run(monkeypatch, tmp_path):
     db_path = tmp_path / "autojoin_fail.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
@@ -585,17 +360,11 @@ def test_full_context_gather_reaches_the_narrative_llm_input(monkeypatch, tmp_pa
     LLM's input for a real matched account."""
     db_path = tmp_path / "rich_context.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
@@ -650,18 +419,12 @@ class _FakeClickUpWithWebBuilds:
 def test_web_build_pipeline_sweep_pulls_stale_builds_into_the_dashboard(monkeypatch, tmp_path):
     db_path = tmp_path / "webbuild.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    _setenv_common(monkeypatch)
     monkeypatch.setenv("CLICKUP_WEB_BUILD_LIST_ID", "web-build-list")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUpWithWebBuilds)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
@@ -704,18 +467,12 @@ class _FakeClickUpWebBuildPullFails:
 def test_web_build_pipeline_pull_failure_does_not_crash_the_run(monkeypatch, tmp_path):
     db_path = tmp_path / "webbuild_fail.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    _setenv_common(monkeypatch)
     monkeypatch.setenv("CLICKUP_WEB_BUILD_LIST_ID", "web-build-list")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUpWebBuildPullFails)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
@@ -746,17 +503,11 @@ class _FakeAtlasClientFails:
 def test_atlas_pull_failure_does_not_crash_the_run(monkeypatch, tmp_path):
     db_path = tmp_path / "atlas_fail.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClientFails)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
@@ -778,63 +529,15 @@ def test_atlas_pull_failure_does_not_crash_the_run(monkeypatch, tmp_path):
         get_session_factory.cache_clear()
 
 
-def test_heartbeat_account_with_no_atlas_match_is_flagged_not_silently_dropped(monkeypatch, tmp_path):
-    """Closes the old TODO: heartbeat data for an account Atlas doesn't know
-    about used to be silently skipped. Now it's flagged instead."""
-    db_path = tmp_path / "no_atlas_match.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
-    get_settings.cache_clear()
-    get_engine.cache_clear()
-    get_session_factory.cache_clear()
-
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
-    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
-    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
-    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
-    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
-    # Atlas has zero accounts at all -- "Acme Co" (from the heartbeat sheet)
-    # cannot match anything.
-    _FakeAtlasClient.accounts = []
-    _FakeSlack.sent = []
-
-    init_db()
-    db = get_session_factory()()
-    try:
-        run = mod.run_daily_go_live_audit(db)
-        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
-
-        unmatched = [f for f in flags if "doesn't match any active Atlas client" in f.message]
-        assert len(unmatched) == 1
-        assert unmatched[0].client_name == "Acme Co"
-        assert unmatched[0].unverified is True
-    finally:
-        db.close()
-        get_settings.cache_clear()
-        get_engine.cache_clear()
-        get_session_factory.cache_clear()
-
-
 def test_debug_max_accounts_caps_the_atlas_universe_to_a_random_subset(monkeypatch, tmp_path):
     db_path = tmp_path / "debug_cap.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     monkeypatch.setenv("DEBUG_MAX_ACCOUNTS", "2")
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
@@ -864,18 +567,12 @@ def test_debug_max_accounts_caps_the_atlas_universe_to_a_random_subset(monkeypat
 def test_debug_max_accounts_none_means_no_cap(monkeypatch, tmp_path):
     db_path = tmp_path / "no_cap.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
@@ -902,21 +599,15 @@ def test_debug_max_accounts_none_means_no_cap(monkeypatch, tmp_path):
         get_session_factory.cache_clear()
 
 
-def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypatch, tmp_path):
+def test_real_google_ads_spend_is_the_sole_spend_source(monkeypatch, tmp_path):
     db_path = tmp_path / "adspend_blend.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
@@ -924,13 +615,10 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
     monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
     _FakeAtlasClient.accounts = [_atlas_account("Acme Co", google_ads_customer_id="1234567890")]
     _FakeGoogleAdsClient.responses = {
-        "1234567890": {
-            "total_cost": 42.5,
-            "total_impressions": 900,
-            "total_clicks": 40,
-            "total_conversions": 3.0,
-            "enabled_campaign_count": 1,
-            "campaigns": [
+        "1234567890": _spend(
+            total_cost=42.5,
+            enabled_campaign_count=1,
+            campaigns=[
                 {"id": "1", "name": "Search", "status": "ENABLED", "channel_type": "SEARCH", "cost": 42.5,
                  "impressions": 900, "clicks": 40, "ctr": 0.044, "avg_cpc": 1.06, "conversions": 3.0,
                  "cost_per_conversion": 14.17, "conversions_value": 3.0},
@@ -944,7 +632,7 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
                  "impressions": 0, "clicks": 0, "ctr": 0.0, "avg_cpc": 0.0, "conversions": 0.0,
                  "cost_per_conversion": 0.0, "conversions_value": 0.0},
             ],
-        },
+        ),
     }
     _FakeSlack.sent = []
 
@@ -955,12 +643,11 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
         dashboard_data = json.loads(run.dashboard_json)
 
         acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
-        live_spend = acme["ad_spend"]["Google Ads (live)"]
+        assert acme["is_live"] is True  # real spend > 0 -- the ONLY is_live signal now
+        assert acme["target_status"] == "live"
+        live_spend = acme["ad_spend"]["Google Ads"]
         assert live_spend["spend"] == 42.5
         assert live_spend["enabled_campaigns"] == 1
-        assert live_spend["impressions"] == 900
-        assert live_spend["clicks"] == 40
-        assert live_spend["conversions"] == 3.0
         # Live + recently-active only -- the long-dead REMOVED campaign with
         # zero activity in the window is dropped (see filter_relevant_campaigns).
         campaign_names = {c["name"] for c in live_spend["campaigns"]}
@@ -976,21 +663,15 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
         get_session_factory.cache_clear()
 
 
-def test_live_google_ads_spend_failure_is_soft_failed_not_run_crashing(monkeypatch, tmp_path):
+def test_google_ads_pull_failure_leaves_account_not_live_and_soft_fails(monkeypatch, tmp_path):
     db_path = tmp_path / "adspend_fail.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    monkeypatch.setenv("GHL_API_KEY", "x")
-    monkeypatch.setenv("GHL_LOCATION_ID", "x")
-    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
-    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    _setenv_common(monkeypatch)
     monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_session_factory.cache_clear()
 
-    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
@@ -1008,7 +689,8 @@ def test_live_google_ads_spend_failure_is_soft_failed_not_run_crashing(monkeypat
         dashboard_data = json.loads(run.dashboard_json)
 
         acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
-        assert "Google Ads (live)" not in acme["ad_spend"]
+        assert "Google Ads" not in acme["ad_spend"]
+        assert acme["is_live"] is False  # no confirmed spend -- can't be live
 
         diagnostics = json.loads(run.context_gather_json)
         assert diagnostics["Acme Co"]["google_ads_live_ok"] is False
@@ -1018,3 +700,203 @@ def test_live_google_ads_spend_failure_is_soft_failed_not_run_crashing(monkeypat
         get_settings.cache_clear()
         get_engine.cache_clear()
         get_session_factory.cache_clear()
+
+
+def test_go_live_target_status_behind_when_past_atlas_deadline(monkeypatch, tmp_path):
+    db_path = tmp_path / "behind.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    # No googleMccId -> not live -> target status is evaluated against the
+    # (already-past) Atlas deadline.
+    _FakeAtlasClient.accounts = [_atlas_account("Behind Co", stage="onboarding", go_live_days_from_now=-5)]
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        behind_co = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Behind Co")
+        assert behind_co["target_status"] == "behind"
+        assert dashboard_data["stat_tiles"]["behind"] == 1
+
+        chart_row = next(r for r in dashboard_data["accounts_chart"] if r["account"] == "Behind Co")
+        assert chart_row["target_status"] == "behind"
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_go_live_target_status_on_track_when_deadline_far_out(monkeypatch, tmp_path):
+    db_path = tmp_path / "on_track.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeAtlasClient.accounts = [_atlas_account("Fresh Co", go_live_days_from_now=30)]
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        fresh_co = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Fresh Co")
+        assert fresh_co["target_status"] == "on_track"
+        assert dashboard_data["stat_tiles"]["behind"] == 0
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_should_be_on_but_dark_flag_from_real_atlas_stage_and_zero_spend(monkeypatch, tmp_path):
+    db_path = tmp_path / "should_be_on.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    _FakeAtlasClient.accounts = [_atlas_account("Dark Co", stage="live", google_ads_customer_id="1112223333")]
+    _FakeGoogleAdsClient.responses = {"1112223333": _spend(total_cost=0.0, enabled_campaign_count=1)}
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
+
+        should_be_on = [f for f in flags if f.category == FlagCategory.ads_off_should_be_on]
+        zero_spend = [f for f in flags if f.category == FlagCategory.ads_off_zero_spend]
+        assert should_be_on and should_be_on[0].client_name == "Dark Co"
+        assert zero_spend and zero_spend[0].client_name == "Dark Co"
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_verified_off_flag_trusts_atlas_stage_closed_directly(monkeypatch, tmp_path):
+    """No cross-check against ad-platform data at all -- 'assume Atlas will
+    always have perfect data regarding account status' (Bob, 2026-08-06)."""
+    db_path = tmp_path / "verified_off.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    # No googleMccId at all -- verified_off must not depend on having spend data.
+    _FakeAtlasClient.accounts = [_atlas_account("Closed Co", stage="closed")]
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
+
+        verified_off = [f for f in flags if f.category == FlagCategory.ads_off_verified_off]
+        assert verified_off and verified_off[0].client_name == "Closed Co"
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_billing_unsettled_flag_is_never_generated_placeholder(monkeypatch, tmp_path):
+    """Bob, 2026-08-06: 'have billing placeholder for now... that'll take a
+    while to reconcile' -- no scenario should ever produce this flag yet."""
+    db_path = tmp_path / "billing_placeholder.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    _FakeAtlasClient.accounts = [_atlas_account("Dark Co", stage="live", google_ads_customer_id="1112223333")]
+    _FakeGoogleAdsClient.responses = {"1112223333": _spend(total_cost=0.0, enabled_campaign_count=1)}
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
+        assert [f for f in flags if f.category == FlagCategory.ads_off_unsettled] == []
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_go_live_target_status_unit_approaching_within_buffer():
+    deadline = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._go_live_target_status(deadline, is_live=False) == "approaching"
+
+
+def test_go_live_target_status_unit_on_track_beyond_buffer():
+    deadline = (datetime.now(timezone.utc) + timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._go_live_target_status(deadline, is_live=False) == "on_track"
+
+
+def test_go_live_target_status_unit_behind_when_past():
+    deadline = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._go_live_target_status(deadline, is_live=False) == "behind"
+
+
+def test_go_live_target_status_unit_live_overrides_deadline_entirely():
+    # Even a long-past deadline doesn't matter once real spend confirms live.
+    deadline = (datetime.now(timezone.utc) - timedelta(days=100)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._go_live_target_status(deadline, is_live=True) == "live"
+
+
+def test_go_live_target_status_unit_unknown_when_no_deadline_on_file():
+    assert mod._go_live_target_status(None, is_live=False) == "unknown"
+
+
+def test_go_live_target_status_unit_unknown_on_unparseable_deadline():
+    assert mod._go_live_target_status("not-a-date", is_live=False) == "unknown"

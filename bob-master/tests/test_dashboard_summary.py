@@ -245,3 +245,37 @@ def test_build_dashboard_json_surfaces_llm_failure_instead_of_swallowing_it(monk
     status = result["accounts_overview"][0]["status"]
     assert "Meta: campaigns enabled, $0 spend" not in status  # never the raw context, even in the message
     assert status == "Day 14, not live yet. Narrative unavailable this run (1 context item(s) gathered, not synthesized)."
+
+
+def test_target_status_flows_into_accounts_chart_and_overview(monkeypatch):
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
+    account_context = {
+        "Behind Co": {"day": 20, "stage": "onboarding", "target_status": "behind"},
+        "Fresh Co": {"day": 2, "stage": "onboarding", "target_status": "on_track"},
+    }
+    result = json.loads(build_dashboard_json([], account_context, {"Behind Co", "Fresh Co"}, set(), set()))
+
+    chart_by_account = {r["account"]: r for r in result["accounts_chart"]}
+    assert chart_by_account["Behind Co"]["target_status"] == "behind"
+    assert chart_by_account["Fresh Co"]["target_status"] == "on_track"
+
+    overview_by_account = {r["account"]: r for r in result["accounts_overview"]}
+    assert overview_by_account["Behind Co"]["target_status"] == "behind"
+
+
+def test_target_status_defaults_to_unknown_when_absent():
+    account_context = {"Acme Co": {"day": 5, "stage": "onboarding"}}
+    result = json.loads(build_dashboard_json([], account_context, {"Acme Co"}, set(), set()))
+    assert result["accounts_chart"][0]["target_status"] == "unknown"
+
+
+def test_behind_stat_tile_counts_only_behind_target_status(monkeypatch):
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
+    account_context = {
+        "Behind Co": {"day": 20, "stage": "onboarding", "target_status": "behind"},
+        "Also Behind Co": {"day": 25, "stage": "onboarding", "target_status": "behind"},
+        "Fresh Co": {"day": 2, "stage": "onboarding", "target_status": "on_track"},
+        "Live Co": {"day": 10, "stage": "live", "target_status": "live"},
+    }
+    result = json.loads(build_dashboard_json([], account_context, set(account_context), set(), set()))
+    assert result["stat_tiles"]["behind"] == 2

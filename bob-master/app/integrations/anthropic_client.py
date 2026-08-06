@@ -61,8 +61,8 @@ _TOOL_SCHEMA = {
 _SYSTEM_PROMPT = (
     "You are synthesizing a one-line status summary for each client account on a marketing "
     "agency's internal go-live tracking dashboard, for management. You'll be given, per account: "
-    "day count since signing, whether it is currently live (running ad spend), its ClickUp card "
-    "stage, ad-spend heartbeat data, and raw context — every ClickUp comment on its card and "
+    "day count since signing, whether it is currently live (running ad spend), its Atlas stage, "
+    "real Google Ads spend data, and raw context — every ClickUp comment on its card and "
     "subtasks, and its Slack channel's message history. Using ALL of that, write ONE concise, "
     "matter-of-fact sentence describing where the account currently stands: if it's live, what's "
     "actually happening operationally (any risk, any open thread worth knowing); if it's not live "

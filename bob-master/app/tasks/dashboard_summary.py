@@ -121,6 +121,7 @@ def build_dashboard_json(
             "stage": a["stage"],
             "is_live": a["is_live"],
             "ad_spend": a["ad_spend"],
+            "target_status": account_context.get(a["account"], {}).get("target_status", "unknown"),
             "status": narratives.get(a["account"]) or _fallback_status(a),
         }
         for a in accounts_for_llm
@@ -134,6 +135,10 @@ def build_dashboard_json(
             "account": account_name,
             "day": ctx.get("day", 0),
             "status": "live" if account_name in live_accounts else "not_live",
+            # behind/approaching/on_track/live/unknown against Atlas's own
+            # deadlines.goLive (see daily_go_live_audit.py's
+            # _go_live_target_status) -- not a recomputed uniform 14 days.
+            "target_status": ctx.get("target_status", "unknown"),
         }
         for account_name, ctx in account_context.items()
     ]
@@ -175,6 +180,9 @@ def build_dashboard_json(
         "accounts_tracked": len(matched_accounts),
         "live": sum(1 for a in matched_accounts if a in live_accounts),
         "not_live": sum(1 for a in matched_accounts if a not in live_accounts),
+        # Past Atlas's own deadlines.goLive for that account, not yet live —
+        # see daily_go_live_audit.py's _go_live_target_status.
+        "behind": sum(1 for a in matched_accounts if account_context.get(a, {}).get("target_status") == "behind"),
         "should_be_on_but_dark": len(should_be_on_but_dark),
         "verified_off": len(verified_off),
         "campaigns_on_zero_spend": len(campaigns_on_zero_spend),

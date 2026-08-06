@@ -71,9 +71,10 @@ def join_public_channels() -> dict:
 
 @router.get("/heartbeat/headers")
 def heartbeat_headers() -> dict:
-    """Debug-only: dumps row 1 (the header row) of both heartbeat sheets, so
-    parse_heartbeat_rows()'s column-matching can be checked against the real
-    sheet without anyone having to go dig through the spreadsheet by hand."""
+    """Debug-only: dumps row 1 (the header row) of both heartbeat sheets.
+    Not used by the pipeline itself (heartbeat data was dropped from all
+    calculations/logic 2026-08-06 — see daily_go_live_audit.py) — kept purely
+    for manual inspection without digging through the spreadsheet by hand."""
     settings = get_settings()
     drive = GoogleDriveClient()
     google_ads_rows = drive.read_sheet_values(
