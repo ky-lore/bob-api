@@ -1,32 +1,46 @@
 # adspend
 
-Standalone ad-spend pull service. Lives in this repo alongside `app/` (the
-LLM+write service) for now, but is deliberately self-contained — its own
-`Settings`, its own thin `AtlasClient`/`GoogleAdsClient` — so it can be lifted
-into its own repo later without untangling imports.
+Ad-spend pull package. Lives in this repo alongside `app/` (the LLM+write
+service) and is deliberately self-contained — its own `Settings`, its own
+thin `AtlasClient`/`GoogleAdsClient` — so it *could* be lifted into its own
+repo/service later without untangling imports. In practice today it's
+mounted at `/adspend` on bob-master's own FastAPI app (see `app/main.py`)
+and called in-process from `app/tasks/daily_go_live_audit.py` — one
+deployment, one base URL, no second Railway service (2026-08-06, reversed
+from the original separate-service plan once it was clear that just added
+a second base URL to manage for no real benefit at this scale).
 
 Reads the account universe + per-account platform IDs from Atlas
 (`integrations.googleMccId`, eventually `metaAdAccountId`), pulls real spend
 from the Google Ads / Meta Marketing APIs, and exposes it over a small REST
-API for any consumer (bob-master's dashboard, or anything else) to read.
+API — reachable at `<bob-master's URL>/adspend/...` for any consumer,
+in-process import for anything living in this repo (see `GoogleAdsClient`
+usage in `daily_go_live_audit.py` — no HTTP hop needed for that, it's the
+same process).
 
-## Endpoints
+## Endpoints (under `/adspend` once mounted)
 
-- `GET /accounts/{customer_id}/spend?date_range=YESTERDAY` — direct pull by
-  Google Ads customer ID, no Atlas involved. Useful for smoke testing.
-- `GET /atlas-accounts/{atlas_id}/spend?date_range=YESTERDAY` — resolves the
-  customer ID via Atlas first.
+- `GET /adspend/accounts/{customer_id}/spend?date_range=YESTERDAY` — direct
+  pull by Google Ads customer ID, no Atlas involved. Useful for smoke testing.
+- `GET /adspend/atlas-accounts/{atlas_id}/spend?date_range=YESTERDAY` —
+  resolves the customer ID via Atlas first.
 - `date_range` — one of `TODAY`, `YESTERDAY`, `LAST_7_DAYS`, `LAST_14_DAYS`,
   `LAST_30_DAYS`, `THIS_MONTH`, `LAST_MONTH` (GAQL's predefined literals).
 
 ## Running locally
 
+Runs automatically as part of bob-master:
+
 ```
-uvicorn adspend.main:app --reload --port 8001
+uvicorn app.main:app --reload
 ```
 
-Reads the same repo-root `.env` as bob-master (each service just needs its
-own vars present — see `.env.example`'s adspend section).
+`adspend`'s own routes are then live at `http://localhost:8000/adspend/...`.
+It can still be run standalone (e.g. to iterate on it in isolation) with
+`uvicorn adspend.main:app --reload --port 8001`. Either way it reads the same
+repo-root `.env` as bob-master (see `.env.example`'s adspend section) — since
+it's one deployment now, its env vars just live in bob-master's Railway
+service, not a separate one.
 
 ## Generating GOOGLE_ADS_REFRESH_TOKEN
 
@@ -61,19 +75,14 @@ this is a copy-the-code-from-the-URL-bar flow rather than an automated one):
    in that same response is short-lived and not needed — `GoogleAdsClient`
    mints its own from the refresh token on demand.
 
-## Deploying as its own Railway service
+## Deploying
 
-Same repo, same `requirements.txt` (adspend's dependencies — fastapi,
-uvicorn, httpx, pydantic-settings — are already in it). Add a **second**
-Railway service pointing at this repo, Root Directory left at the repo root,
-with a custom Start Command:
-
-```
-uvicorn adspend.main:app --host 0.0.0.0 --port $PORT
-```
-
-Set this service's own env vars (`GOOGLE_ADS_*`, `ATLAS_API_KEY`) in Railway
-directly — a second service does not inherit the first service's env vars.
+Nothing separate to do — it deploys whenever bob-master does (same
+`requirements.txt`, same Procfile, same Railway service). Just make sure
+`GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`, `GOOGLE_ADS_CLIENT_SECRET`,
+`GOOGLE_ADS_REFRESH_TOKEN`, and `GOOGLE_ADS_LOGIN_CUSTOMER_ID` are set on
+bob-master's *existing* Railway service alongside everything else (`ATLAS_API_KEY`
+is already there).
 
 ## Open question (flagged, not yet resolved)
 

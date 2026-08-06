@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
+from adspend.main import app as adspend_app
 from app.db import get_db, init_db
 from app.routers import admin, dashboard
 from app.scheduler import start_scheduler
@@ -23,6 +24,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Bob", lifespan=lifespan)
 app.include_router(dashboard.router)
 app.include_router(admin.router)
+# adspend (2026-08-06) mounted under this same deployment rather than run as
+# its own Railway service -- one base URL for every consumer, current and
+# future, instead of managing several. Its code (adspend/) stays a
+# self-contained package regardless (own config, own clients) so it could
+# still be lifted into its own service later if that's ever actually needed.
+app.mount("/adspend", adspend_app)
 
 
 @app.get("/health")

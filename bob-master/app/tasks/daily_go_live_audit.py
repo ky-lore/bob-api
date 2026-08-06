@@ -41,10 +41,12 @@ or built against real sandboxed ClickUp/Atlas data — see chat history):
     gathering — channel_history() silently fails on a channel the bot hasn't
     joined, exact ID or not. Private channels still need a manual bot invite;
     there's no Slack API for a bot to self-join one.
-  - real Google Ads spend (2026-08-06) via the separate adspend service (see
-    adspend/README.md), over HTTP through app/integrations/adspend_client.py
-    — additive alongside the heartbeat number, not a replacement, for any
-    account with a googleMccId on file. Meta not wired in yet.
+  - real Google Ads spend (2026-08-06) via adspend/ (see adspend/README.md) —
+    a self-contained package mounted at /adspend on this same app (app/main.py)
+    rather than deployed as a separate service, and called in-process here
+    (no self-HTTP hop — it's the same process) — additive alongside the
+    heartbeat number, not a replacement, for any account with a googleMccId
+    on file. Meta not wired in yet.
 
 What's intentionally left as TODOs — these require judgment calls this port
 should not guess at (see docs/TASK-INVENTORY.md and the chat history this was
@@ -68,8 +70,8 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from adspend.google_ads_client import GoogleAdsClient
 from app.config import get_settings
-from app.integrations.adspend_client import AdSpendClient
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
 from app.integrations.ghl import GHLClient
@@ -687,7 +689,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     # channel history, no truncation. Deliberately unbounded/inefficient. ---
     rich_context: dict[str, list[str]] = {}
     context_gather_diagnostics: dict[str, dict] = {}
-    adspend_client = AdSpendClient()
+    google_ads_client = GoogleAdsClient()
     live_google_ads_spend: dict[str, dict] = {}
     try:
         for account_name in all_matched_accounts(account_context):
@@ -711,19 +713,18 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 "slack_error": gather_result.slack_error,
             }
 
-            # Real Google Ads spend via the adspend service (2026-08-06),
-            # additive alongside the heartbeat-sourced number below rather
-            # than replacing it — surfacing both side by side is deliberate,
-            # it's exactly what exposes heartbeat-sheet drift/staleness.
-            # Soft-failed like every other per-account external call here: a
-            # bad/missing customer_id or an unreachable adspend service
-            # shouldn't drop the account's other context or the run.
+            # Real Google Ads spend via adspend/ (2026-08-06), additive
+            # alongside the heartbeat-sourced number below rather than
+            # replacing it — surfacing both side by side is deliberate, it's
+            # exactly what exposes heartbeat-sheet drift/staleness. Soft-failed
+            # like every other per-account external call here: a bad/missing
+            # customer_id shouldn't drop the account's other context or the run.
             customer_id = ctx.get("google_ads_customer_id")
             diagnostics["google_ads_live_ok"] = None
             diagnostics["google_ads_live_error"] = None
             if customer_id:
                 try:
-                    spend = adspend_client.get_spend_by_customer_id(customer_id, date_range="LAST_7_DAYS")
+                    spend = google_ads_client.get_account_spend(customer_id, date_range="LAST_7_DAYS")
                     live_google_ads_spend[account_name] = {
                         "spend": spend["total_cost"],
                         "enabled_campaigns": spend["enabled_campaign_count"],

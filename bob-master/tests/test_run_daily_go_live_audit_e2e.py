@@ -94,17 +94,19 @@ class _FakeAtlasClient:
         return _FakeAtlasClient.accounts
 
 
-class _FakeAdSpendClient:
+class _FakeGoogleAdsClient:
     """Class-attribute responses keyed by customer_id, reset per test (same
     pattern as _FakeAtlasClient). A customer_id with no entry raises, so a
-    test can exercise the soft-fail path just by not registering one."""
+    test can exercise the soft-fail path just by not registering one. Method
+    name matches adspend.google_ads_client.GoogleAdsClient exactly -- this is
+    imported and called in-process now, not through a separate HTTP client."""
 
     responses: dict = {}
 
-    def get_spend_by_customer_id(self, customer_id, date_range="LAST_7_DAYS"):
-        if customer_id not in _FakeAdSpendClient.responses:
-            raise RuntimeError(f"adspend service error (fake): no customer {customer_id}")
-        return _FakeAdSpendClient.responses[customer_id]
+    def get_account_spend(self, customer_id, date_range="LAST_7_DAYS"):
+        if customer_id not in _FakeGoogleAdsClient.responses:
+            raise RuntimeError(f"adspend error (fake): no customer {customer_id}")
+        return _FakeGoogleAdsClient.responses[customer_id]
 
 
 class _FakeGoogleDrive:
@@ -922,9 +924,9 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
     monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
-    monkeypatch.setattr(mod, "AdSpendClient", _FakeAdSpendClient)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
     _FakeAtlasClient.accounts = [_atlas_account("Acme Co", google_ads_customer_id="1234567890")]
-    _FakeAdSpendClient.responses = {
+    _FakeGoogleAdsClient.responses = {
         "1234567890": {"total_cost": 42.5, "enabled_campaign_count": 3, "campaigns": []},
     }
     _FakeSlack.sent = []
@@ -966,10 +968,10 @@ def test_live_google_ads_spend_failure_is_soft_failed_not_run_crashing(monkeypat
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
     monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
-    monkeypatch.setattr(mod, "AdSpendClient", _FakeAdSpendClient)
-    # "9999999999" has no entry in _FakeAdSpendClient.responses -- forces the error path.
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    # "9999999999" has no entry in _FakeGoogleAdsClient.responses -- forces the error path.
     _FakeAtlasClient.accounts = [_atlas_account("Acme Co", google_ads_customer_id="9999999999")]
-    _FakeAdSpendClient.responses = {}
+    _FakeGoogleAdsClient.responses = {}
     _FakeSlack.sent = []
 
     init_db()
