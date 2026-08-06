@@ -190,3 +190,17 @@ class GoogleAdsClient:
             "enabled_campaign_count": enabled_count,
             "campaigns": campaigns,
         }
+
+
+def filter_relevant_campaigns(campaigns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Live (ENABLED) campaigns, plus anything with real activity (cost,
+    impressions, or clicks) in the queried date range even if not currently
+    enabled -- e.g. a campaign paused mid-window that still spent money.
+    A cheap proxy for "recently changed" (Bob, 2026-08-06): a true change-log
+    would mean querying Google Ads' separate change_event resource, a real
+    extra API call per account -- this costs nothing extra since the activity
+    numbers are already in the get_account_spend() result. Drops the long
+    tail of years-old REMOVED campaigns with zero activity in range, which is
+    what get_account_spend() returns unfiltered (every campaign resource that
+    ever existed on the account, not just active ones)."""
+    return [c for c in campaigns if c["status"] == "ENABLED" or c["cost"] > 0 or c["impressions"] > 0 or c["clicks"] > 0]

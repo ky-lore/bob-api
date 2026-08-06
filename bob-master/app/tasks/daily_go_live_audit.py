@@ -64,13 +64,14 @@ built from for why):
 from __future__ import annotations
 
 import json
+import random
 import re
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from adspend.google_ads_client import GoogleAdsClient
+from adspend.google_ads_client import GoogleAdsClient, filter_relevant_campaigns
 from app.config import get_settings
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
@@ -385,12 +386,12 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         notes.append(f"Atlas accounts pull failed: {exc}")
 
     # DEBUG cap (Bob, 2026-08-06, temporary — see Settings.debug_max_accounts):
-    # sorted by companyName first so the same accounts show up every run
-    # while debugging, rather than whatever order Atlas happens to return.
+    # random, not sorted-first-N -- an alphabetical slice kept showing the
+    # same handful of accounts every debug run instead of a representative mix.
     if settings.debug_max_accounts is not None and len(atlas_accounts) > settings.debug_max_accounts:
-        atlas_accounts = sorted(atlas_accounts, key=lambda a: a.get("companyName") or "")[: settings.debug_max_accounts]
+        atlas_accounts = random.sample(atlas_accounts, settings.debug_max_accounts)
         notes.append(
-            f"DEBUG: capped to {settings.debug_max_accounts} of the full Atlas account list "
+            f"DEBUG: capped to a random {settings.debug_max_accounts} of the full Atlas account list "
             "(Settings.debug_max_accounts) — not a real run, remove the cap when done debugging"
         )
 
@@ -731,10 +732,10 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                         "impressions": spend["total_impressions"],
                         "clicks": spend["total_clicks"],
                         "conversions": spend["total_conversions"],
-                        # Full list, unlike the Atlas export's compressed enabled-only
-                        # cut (see atlas_report.py) — this is our own internal dashboard,
-                        # Bob wants full per-campaign granularity to drill into here.
-                        "campaigns": spend["campaigns"],
+                        # Live campaigns + anything with activity in the window (see
+                        # filter_relevant_campaigns) -- not the full list, which
+                        # includes every REMOVED campaign the account has ever had.
+                        "campaigns": filter_relevant_campaigns(spend["campaigns"]),
                     }
                     diagnostics["google_ads_live_ok"] = True
                 except Exception as exc:

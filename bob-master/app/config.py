@@ -64,12 +64,13 @@ class Settings(BaseSettings):
     daily_go_live_audit_cron: str = "0 7 * * 1-5"
 
     # --- Debug knob (Bob, 2026-08-06) — TEMPORARY: caps the Atlas account
-    # universe to the first N (by companyName, for reproducibility across
-    # runs) so a full run doesn't take minutes while the context-gather
-    # pipeline is still being tuned. None = no cap. Set to None (or bump the
-    # number) once satisfied; don't leave this at 5 for the real daily cron
-    # run once we're past debugging. ---
-    debug_max_accounts: int | None = 5
+    # universe to a random N so a full run doesn't take minutes while the
+    # context-gather pipeline is still being tuned. Random rather than
+    # sorted-first-N on purpose (Bob, 2026-08-06) — a fixed alphabetical
+    # slice kept showing the same handful of accounts every debug run rather
+    # than a representative real-world mix. None = no cap. Set to None once
+    # satisfied; don't leave this capped for the real daily cron run. ---
+    debug_max_accounts: int | None = 20
 
     # --- Anthropic (narrative synthesis for the dashboard's "what's blocking"
     # column — the original system's dashboard was itself LLM-narrated; stat

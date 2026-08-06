@@ -7,7 +7,7 @@ date-range pagination, and the date_range allow-list.
 import pytest
 
 from adspend.config import get_settings
-from adspend.google_ads_client import GoogleAdsClient
+from adspend.google_ads_client import GoogleAdsClient, filter_relevant_campaigns
 
 
 class _FakeResponse:
@@ -146,3 +146,30 @@ def test_invalid_date_range_is_rejected_before_any_request(monkeypatch):
 
     with pytest.raises(ValueError):
         client.get_account_spend("1234567890", date_range="LAST_QUARTER")
+
+
+def _campaign(status="REMOVED", cost=0.0, impressions=0, clicks=0):
+    return {"id": "1", "name": "x", "status": status, "channel_type": "SEARCH", "cost": cost,
+            "impressions": impressions, "clicks": clicks, "ctr": 0.0, "avg_cpc": 0.0,
+            "conversions": 0.0, "cost_per_conversion": 0.0, "conversions_value": 0.0}
+
+
+def test_filter_relevant_campaigns_keeps_enabled_regardless_of_activity():
+    campaigns = [_campaign(status="ENABLED", cost=0.0, impressions=0, clicks=0)]
+    assert filter_relevant_campaigns(campaigns) == campaigns
+
+
+def test_filter_relevant_campaigns_keeps_inactive_campaigns_with_recent_activity():
+    campaigns = [_campaign(status="PAUSED", cost=12.5)]
+    assert filter_relevant_campaigns(campaigns) == campaigns
+
+    campaigns = [_campaign(status="REMOVED", impressions=5)]
+    assert filter_relevant_campaigns(campaigns) == campaigns
+
+    campaigns = [_campaign(status="PAUSED", clicks=1)]
+    assert filter_relevant_campaigns(campaigns) == campaigns
+
+
+def test_filter_relevant_campaigns_drops_dead_campaigns_with_zero_activity():
+    campaigns = [_campaign(status="REMOVED"), _campaign(status="PAUSED")]
+    assert filter_relevant_campaigns(campaigns) == []

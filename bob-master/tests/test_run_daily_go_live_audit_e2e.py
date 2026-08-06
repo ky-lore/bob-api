@@ -820,7 +820,7 @@ def test_heartbeat_account_with_no_atlas_match_is_flagged_not_silently_dropped(m
         get_session_factory.cache_clear()
 
 
-def test_debug_max_accounts_caps_the_atlas_universe_deterministically(monkeypatch, tmp_path):
+def test_debug_max_accounts_caps_the_atlas_universe_to_a_random_subset(monkeypatch, tmp_path):
     db_path = tmp_path / "debug_cap.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     monkeypatch.setenv("GHL_API_KEY", "x")
@@ -839,13 +839,8 @@ def test_debug_max_accounts_caps_the_atlas_universe_deterministically(monkeypatc
     monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
     monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
-    # 4 accounts in Atlas, capped to 2 -- sorted by companyName: Alpha, Beta kept.
-    _FakeAtlasClient.accounts = [
-        _atlas_account("Delta Co"),
-        _atlas_account("Beta Co"),
-        _atlas_account("Alpha Co"),
-        _atlas_account("Charlie Co"),
-    ]
+    all_names = {"Delta Co", "Beta Co", "Alpha Co", "Charlie Co"}
+    _FakeAtlasClient.accounts = [_atlas_account(n) for n in all_names]
     _FakeSlack.sent = []
 
     init_db()
@@ -854,9 +849,11 @@ def test_debug_max_accounts_caps_the_atlas_universe_deterministically(monkeypatc
         run = mod.run_daily_go_live_audit(db)
         dashboard_data = json.loads(run.dashboard_json)
 
+        # Random, not sorted-first-N -- assert count + membership, not which two.
         accounts = {a["account"] for a in dashboard_data["accounts_overview"]}
-        assert accounts == {"Alpha Co", "Beta Co"}
-        assert "DEBUG: capped to 2" in run.notes
+        assert len(accounts) == 2
+        assert accounts.issubset(all_names)
+        assert "DEBUG: capped to a random 2" in run.notes
     finally:
         db.close()
         get_settings.cache_clear()
@@ -887,12 +884,12 @@ def test_debug_max_accounts_none_means_no_cap(monkeypatch, tmp_path):
     _FakeSlack.sent = []
 
     from app.config import Settings
-    assert Settings.model_fields["debug_max_accounts"].default == 5  # sanity check on the real default
+    assert Settings.model_fields["debug_max_accounts"].default == 20  # sanity check on the real default
 
     init_db()
     db = get_session_factory()()
     try:
-        # Settings default (5) exceeds our 3 fake accounts, so nothing gets capped.
+        # Settings default (20) exceeds our 3 fake accounts, so nothing gets capped.
         run = mod.run_daily_go_live_audit(db)
         dashboard_data = json.loads(run.dashboard_json)
         accounts = {a["account"] for a in dashboard_data["accounts_overview"]}
@@ -937,7 +934,13 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
                 {"id": "1", "name": "Search", "status": "ENABLED", "channel_type": "SEARCH", "cost": 42.5,
                  "impressions": 900, "clicks": 40, "ctr": 0.044, "avg_cpc": 1.06, "conversions": 3.0,
                  "cost_per_conversion": 14.17, "conversions_value": 3.0},
-                {"id": "2", "name": "Old Display", "status": "REMOVED", "channel_type": "DISPLAY", "cost": 0.0,
+                # Paused mid-window but still spent money -- "recently changed"
+                # proxy (see filter_relevant_campaigns), should survive the filter.
+                {"id": "2", "name": "Paused Mid-Window", "status": "PAUSED", "channel_type": "SEARCH", "cost": 5.0,
+                 "impressions": 50, "clicks": 2, "ctr": 0.04, "avg_cpc": 2.5, "conversions": 0.0,
+                 "cost_per_conversion": 0.0, "conversions_value": 0.0},
+                # Long-dead, zero activity in the window -- should be dropped.
+                {"id": "3", "name": "Old Display", "status": "REMOVED", "channel_type": "DISPLAY", "cost": 0.0,
                  "impressions": 0, "clicks": 0, "ctr": 0.0, "avg_cpc": 0.0, "conversions": 0.0,
                  "cost_per_conversion": 0.0, "conversions_value": 0.0},
             ],
@@ -958,11 +961,11 @@ def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypat
         assert live_spend["impressions"] == 900
         assert live_spend["clicks"] == 40
         assert live_spend["conversions"] == 3.0
-        # Full list, including the REMOVED one -- this is the internal
-        # dashboard, not the Atlas export's enabled-only compressed cut.
-        assert len(live_spend["campaigns"]) == 2
-        assert live_spend["campaigns"][0]["name"] == "Search"
-        assert live_spend["campaigns"][1]["status"] == "REMOVED"
+        # Live + recently-active only -- the long-dead REMOVED campaign with
+        # zero activity in the window is dropped (see filter_relevant_campaigns).
+        campaign_names = {c["name"] for c in live_spend["campaigns"]}
+        assert campaign_names == {"Search", "Paused Mid-Window"}
+        assert "Old Display" not in campaign_names
 
         diagnostics = json.loads(run.context_gather_json)
         assert diagnostics["Acme Co"]["google_ads_live_ok"] is True
