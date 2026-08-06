@@ -122,25 +122,45 @@ class GoogleAdsClient:
                 return results
 
     def get_account_spend(self, customer_id: str, date_range: str = "YESTERDAY") -> dict[str, Any]:
-        """Per-campaign spend + enabled-campaign count for one customer ID
-        over date_range — either one of GAQL's predefined literals or any
-        "LAST_N_DAYS" (see _build_date_clause). Cost comes back from the API
-        in micros (1,000,000 = one unit of the account's currency); converted
-        to a plain float here so callers never have to remember that."""
+        """Per-campaign baseline performance for one customer ID over
+        date_range — either one of GAQL's predefined literals or any
+        "LAST_N_DAYS" (see _build_date_clause). Google omits a metric field
+        entirely from the response when its value is zero/undefined
+        (confirmed against real data, 2026-08-06) rather than returning 0, so
+        every field below is read with .get(..., 0) — never assume presence.
+        Micros fields (cost, avg_cpc, cost_per_conversion) are converted to
+        plain currency floats; conversions_value is already in currency
+        units, not micros. Field JSON types are inconsistent (int64 fields
+        like clicks/impressions come back as numeric strings, but
+        cost_per_conversion/average_cpc came back as plain numbers in
+        testing) -- float() on everything handles both."""
         date_clause = _build_date_clause(date_range)
         query = (
-            "SELECT campaign.id, campaign.name, campaign.status, metrics.cost_micros "
+            "SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, "
+            "metrics.cost_micros, metrics.impressions, metrics.clicks, metrics.ctr, "
+            "metrics.average_cpc, metrics.conversions, metrics.cost_per_conversion, metrics.conversions_value "
             f"FROM campaign WHERE {date_clause}"
         )
         rows = self.search(customer_id, query)
 
         campaigns = []
-        total_micros = 0
+        totals = {"cost": 0.0, "impressions": 0, "clicks": 0, "conversions": 0.0, "conversions_value": 0.0}
         enabled_count = 0
         for row in rows:
             campaign = row.get("campaign", {})
-            cost_micros = int(row.get("metrics", {}).get("costMicros", 0))
-            total_micros += cost_micros
+            m = row.get("metrics", {})
+            cost = float(m.get("costMicros", 0)) / 1_000_000
+            impressions = int(float(m.get("impressions", 0)))
+            clicks = int(float(m.get("clicks", 0)))
+            conversions = float(m.get("conversions", 0))
+            conversions_value = float(m.get("conversionsValue", 0))
+
+            totals["cost"] += cost
+            totals["impressions"] += impressions
+            totals["clicks"] += clicks
+            totals["conversions"] += conversions
+            totals["conversions_value"] += conversions_value
+
             status = campaign.get("status")
             if status == "ENABLED":
                 enabled_count += 1
@@ -148,13 +168,25 @@ class GoogleAdsClient:
                 "id": campaign.get("id"),
                 "name": campaign.get("name"),
                 "status": status,
-                "cost": cost_micros / 1_000_000,
+                "channel_type": campaign.get("advertisingChannelType"),
+                "cost": cost,
+                "impressions": impressions,
+                "clicks": clicks,
+                "ctr": float(m.get("ctr", 0)),
+                "avg_cpc": float(m.get("averageCpc", 0)) / 1_000_000,
+                "conversions": conversions,
+                "cost_per_conversion": float(m.get("costPerConversion", 0)) / 1_000_000,
+                "conversions_value": conversions_value,
             })
 
         return {
             "customer_id": _digits_only(customer_id),
             "date_range": date_range,
-            "total_cost": total_micros / 1_000_000,
+            "total_cost": totals["cost"],
+            "total_impressions": totals["impressions"],
+            "total_clicks": totals["clicks"],
+            "total_conversions": totals["conversions"],
+            "total_conversions_value": totals["conversions_value"],
             "enabled_campaign_count": enabled_count,
             "campaigns": campaigns,
         }

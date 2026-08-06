@@ -53,7 +53,15 @@ def test_get_account_spend_sums_cost_and_counts_enabled_campaigns(monkeypatch):
     client = _client(monkeypatch)
     fake = _FakeHttpxClient([{
         "results": [
-            {"campaign": {"id": "1", "name": "Search", "status": "ENABLED"}, "metrics": {"costMicros": "5000000"}},
+            {
+                "campaign": {"id": "1", "name": "Search", "status": "ENABLED", "advertisingChannelType": "SEARCH"},
+                "metrics": {
+                    "costMicros": "5000000", "impressions": "1000", "clicks": "50", "ctr": 0.05,
+                    "averageCpc": 100000, "conversions": 4, "costPerConversion": 1250000, "conversionsValue": 200,
+                },
+            },
+            # Display campaign has NO clicks/ctr/etc in the payload at all -- Google omits zero-valued
+            # fields entirely (confirmed against real data), not just this test being lazy.
             {"campaign": {"id": "2", "name": "Display", "status": "PAUSED"}, "metrics": {"costMicros": "2500000"}},
         ]
     }])
@@ -63,8 +71,22 @@ def test_get_account_spend_sums_cost_and_counts_enabled_campaigns(monkeypatch):
 
     assert result["customer_id"] == "1234567890"
     assert result["total_cost"] == 7.5
+    assert result["total_impressions"] == 1000
+    assert result["total_clicks"] == 50
+    assert result["total_conversions"] == 4
+    assert result["total_conversions_value"] == 200
     assert result["enabled_campaign_count"] == 1
-    assert result["campaigns"][0] == {"id": "1", "name": "Search", "status": "ENABLED", "cost": 5.0}
+    assert result["campaigns"][0] == {
+        "id": "1", "name": "Search", "status": "ENABLED", "channel_type": "SEARCH",
+        "cost": 5.0, "impressions": 1000, "clicks": 50, "ctr": 0.05, "avg_cpc": 0.1,
+        "conversions": 4, "cost_per_conversion": 1.25, "conversions_value": 200,
+    }
+    # Fields absent from the real payload default to 0, not a KeyError.
+    assert result["campaigns"][1] == {
+        "id": "2", "name": "Display", "status": "PAUSED", "channel_type": None,
+        "cost": 2.5, "impressions": 0, "clicks": 0, "ctr": 0.0, "avg_cpc": 0.0,
+        "conversions": 0.0, "cost_per_conversion": 0.0, "conversions_value": 0.0,
+    }
     # login-customer-id header always carries the shared MCC, regardless of the target customer_id
     assert fake.search_requests[0]["headers"]["login-customer-id"] == "3910981944"
 
