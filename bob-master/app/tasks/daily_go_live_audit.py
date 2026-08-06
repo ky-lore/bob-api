@@ -41,6 +41,10 @@ or built against real sandboxed ClickUp/Atlas data — see chat history):
     gathering — channel_history() silently fails on a channel the bot hasn't
     joined, exact ID or not. Private channels still need a manual bot invite;
     there's no Slack API for a bot to self-join one.
+  - real Google Ads spend (2026-08-06) via the separate adspend service (see
+    adspend/README.md), over HTTP through app/integrations/adspend_client.py
+    — additive alongside the heartbeat number, not a replacement, for any
+    account with a googleMccId on file. Meta not wired in yet.
 
 What's intentionally left as TODOs — these require judgment calls this port
 should not guess at (see docs/TASK-INVENTORY.md and the chat history this was
@@ -65,6 +69,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.integrations.adspend_client import AdSpendClient
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
 from app.integrations.ghl import GHLClient
@@ -450,6 +455,11 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             "atlas_id": atlas_account.get("id"),
             "clickup_folder_id": integ.get("clickupFolderId") or None,
             "slack_channel_id": integ.get("internalSlackChannelId") or None,
+            # Despite the field's name, this is the client's own Google Ads
+            # customer ID, not a second per-client MCC — confirmed against
+            # real Atlas data 2026-08-06 (e.g. distinct IDs per client, none
+            # matching the shared MCC in adspend's GOOGLE_ADS_LOGIN_CUSTOMER_ID).
+            "google_ads_customer_id": integ.get("googleMccId") or None,
         }
 
         heartbeat_name = atlas_id_to_heartbeat_name.get(atlas_account.get("id"))
@@ -677,6 +687,8 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     # channel history, no truncation. Deliberately unbounded/inefficient. ---
     rich_context: dict[str, list[str]] = {}
     context_gather_diagnostics: dict[str, dict] = {}
+    adspend_client = AdSpendClient()
+    live_google_ads_spend: dict[str, dict] = {}
     try:
         for account_name in all_matched_accounts(account_context):
             ctx = account_context.get(account_name, {})
@@ -687,7 +699,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 slack,
             )
             rich_context[account_name] = gather_result.context
-            context_gather_diagnostics[account_name] = {
+            diagnostics = {
                 "clickup_ok": gather_result.clickup_ok,
                 "clickup_comment_count": gather_result.clickup_comment_count,
                 "clickup_error": gather_result.clickup_error,
@@ -698,14 +710,39 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 "slack_message_count": gather_result.slack_message_count,
                 "slack_error": gather_result.slack_error,
             }
+
+            # Real Google Ads spend via the adspend service (2026-08-06),
+            # additive alongside the heartbeat-sourced number below rather
+            # than replacing it — surfacing both side by side is deliberate,
+            # it's exactly what exposes heartbeat-sheet drift/staleness.
+            # Soft-failed like every other per-account external call here: a
+            # bad/missing customer_id or an unreachable adspend service
+            # shouldn't drop the account's other context or the run.
+            customer_id = ctx.get("google_ads_customer_id")
+            diagnostics["google_ads_live_ok"] = None
+            diagnostics["google_ads_live_error"] = None
+            if customer_id:
+                try:
+                    spend = adspend_client.get_spend_by_customer_id(customer_id, date_range="LAST_7_DAYS")
+                    live_google_ads_spend[account_name] = {
+                        "spend": spend["total_cost"],
+                        "enabled_campaigns": spend["enabled_campaign_count"],
+                    }
+                    diagnostics["google_ads_live_ok"] = True
+                except Exception as exc:
+                    diagnostics["google_ads_live_ok"] = False
+                    diagnostics["google_ads_live_error"] = str(exc)
+
+            context_gather_diagnostics[account_name] = diagnostics
     except Exception as exc:
         notes.append(f"Rich context gather failed, narratives will use flag messages only: {exc}")
 
     run.context_gather_json = json.dumps(context_gather_diagnostics)
 
     # --- Ad spend summary per account (Google Ads / Meta), for the accounts
-    # overview + its LLM narrative — straight from the heartbeat rows already
-    # pulled in Step 1, no package logic involved. ---
+    # overview + its LLM narrative — heartbeat rows from Step 1 (no package
+    # logic involved), plus real Google Ads spend via adspend where a
+    # googleMccId/customer ID is on file (see live_google_ads_spend above). ---
     spend_by_account: dict[str, dict] = {
         account_name: {
             label: {"spend": row.total_spend, "enabled_campaigns": row.enabled_campaigns}
@@ -713,6 +750,8 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         }
         for account_name, platform_rows in rows_by_account.items()
     }
+    for account_name, live_spend in live_google_ads_spend.items():
+        spend_by_account.setdefault(account_name, {})["Google Ads (live)"] = live_spend
 
     db.add_all(flags)
     digest_text = build_digest(flags)

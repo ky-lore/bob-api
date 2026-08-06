@@ -28,6 +28,15 @@ class Settings(BaseSettings):
     atlas_api_key: str
     atlas_base_url: str = "https://server-production-3d76.up.railway.app"
 
+    # --- adspend (separate service, same repo — see adspend/README.md. Real
+    # Google Ads spend, called over HTTP not imported in-process, on purpose:
+    # this service's whole point is to be reusable outside bob-master too, and
+    # its credentials shouldn't need to live in this service's env at all.
+    # Defaults to localhost because, unlike Atlas, adspend isn't deployed as
+    # its own Railway service yet — update once it is. Soft-failed at the call
+    # site either way, so a stale/unreachable URL just skips the enrichment.) ---
+    adspend_base_url: str = "http://localhost:8001"
+
     # --- ClickUp ---
     clickup_api_token: str
     clickup_base_url: str = "https://api.clickup.com/api/v2"

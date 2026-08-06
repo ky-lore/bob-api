@@ -61,6 +61,7 @@ def _atlas_account(
     created_days_ago=15,
     clickup_folder_id=None,
     slack_channel_id=None,
+    google_ads_customer_id=None,
     is_active=True,
     atlas_id=None,
 ):
@@ -74,7 +75,11 @@ def _atlas_account(
         "stage": stage,
         "isActive": is_active,
         "createdAt": created_at,
-        "integrations": {"clickupFolderId": clickup_folder_id, "internalSlackChannelId": slack_channel_id},
+        "integrations": {
+            "clickupFolderId": clickup_folder_id,
+            "internalSlackChannelId": slack_channel_id,
+            "googleMccId": google_ads_customer_id,
+        },
     }
 
 
@@ -87,6 +92,19 @@ class _FakeAtlasClient:
 
     def get_all_accounts(self):
         return _FakeAtlasClient.accounts
+
+
+class _FakeAdSpendClient:
+    """Class-attribute responses keyed by customer_id, reset per test (same
+    pattern as _FakeAtlasClient). A customer_id with no entry raises, so a
+    test can exercise the soft-fail path just by not registering one."""
+
+    responses: dict = {}
+
+    def get_spend_by_customer_id(self, customer_id, date_range="LAST_7_DAYS"):
+        if customer_id not in _FakeAdSpendClient.responses:
+            raise RuntimeError(f"adspend service error (fake): no customer {customer_id}")
+        return _FakeAdSpendClient.responses[customer_id]
 
 
 class _FakeGoogleDrive:
@@ -878,6 +896,94 @@ def test_debug_max_accounts_none_means_no_cap(monkeypatch, tmp_path):
         accounts = {a["account"] for a in dashboard_data["accounts_overview"]}
         assert accounts == {"Delta Co", "Beta Co", "Alpha Co"}
         assert "DEBUG: capped" not in (run.notes or "")
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_live_google_ads_spend_is_blended_in_alongside_heartbeat_spend(monkeypatch, tmp_path):
+    db_path = tmp_path / "adspend_blend.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "AdSpendClient", _FakeAdSpendClient)
+    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", google_ads_customer_id="1234567890")]
+    _FakeAdSpendClient.responses = {
+        "1234567890": {"total_cost": 42.5, "enabled_campaign_count": 3, "campaigns": []},
+    }
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
+        assert acme["ad_spend"]["Google Ads (live)"] == {"spend": 42.5, "enabled_campaigns": 3}
+
+        diagnostics = json.loads(run.context_gather_json)
+        assert diagnostics["Acme Co"]["google_ads_live_ok"] is True
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_live_google_ads_spend_failure_is_soft_failed_not_run_crashing(monkeypatch, tmp_path):
+    db_path = tmp_path / "adspend_fail.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "AdSpendClient", _FakeAdSpendClient)
+    # "9999999999" has no entry in _FakeAdSpendClient.responses -- forces the error path.
+    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", google_ads_customer_id="9999999999")]
+    _FakeAdSpendClient.responses = {}
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
+        assert "Google Ads (live)" not in acme["ad_spend"]
+
+        diagnostics = json.loads(run.context_gather_json)
+        assert diagnostics["Acme Co"]["google_ads_live_ok"] is False
+        assert "no customer 9999999999" in diagnostics["Acme Co"]["google_ads_live_error"]
     finally:
         db.close()
         get_settings.cache_clear()
