@@ -20,7 +20,11 @@ class Settings(BaseSettings):
     google_ads_client_secret: str
     google_ads_refresh_token: str
     google_ads_login_customer_id: str  # the MCC's customer ID, digits only, no dashes
-    google_ads_api_version: str = "v18"
+    # v18 (originally assumed) 404s -- confirmed against the live API 2026-08-06
+    # that v20 is reachable but rejects this client's query shape, and v21 is
+    # the first version that returns a clean 200. Bump this if Google
+    # deprecates v21 later; there's no way to auto-detect the "current" version.
+    google_ads_api_version: str = "v21"
 
     # --- Atlas (source of truth for the account universe + per-account
     # googleMccId/metaAdAccountId — see ../app/integrations/atlas_client.py for

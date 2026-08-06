@@ -82,7 +82,10 @@ class GoogleAdsClient:
         results: list[dict[str, Any]] = []
         page_token: str | None = None
         while True:
-            body: dict[str, Any] = {"query": query, "pageSize": 10000}
+            # v21 fixes the page size at 10000 rows and 400s if you try to set
+            # it explicitly (confirmed against the real API, 2026-08-06) --
+            # pageToken is the only paging knob left.
+            body: dict[str, Any] = {"query": query}
             if page_token:
                 body["pageToken"] = page_token
             resp = self._client.post(url, headers=headers, json=body)
