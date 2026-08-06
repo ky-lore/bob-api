@@ -114,12 +114,14 @@ class _FakeClickUp:
 
     def get_list_tasks(self, list_id, include_closed=True, page=0):
         if list_id == "list1":
-            return {"tasks": [{"id": "task1", "name": "Acme onboarding"}], "last_page": True}
+            recent = str(int((datetime.now(timezone.utc) - timedelta(days=1)).timestamp() * 1000))
+            return {"tasks": [{"id": "task1", "name": "Acme onboarding", "date_updated": recent}], "last_page": True}
         return {"tasks": [], "last_page": True}
 
     def get_task_comments(self, task_id):
         if task_id == "task1":
-            return [{"comment_text": "Client hasn't sent brand assets yet"}]
+            recent = str(int((datetime.now(timezone.utc) - timedelta(days=1)).timestamp() * 1000))
+            return [{"comment_text": "Client hasn't sent brand assets yet", "date": recent}]
         return []
 
 
@@ -791,6 +793,91 @@ def test_heartbeat_account_with_no_atlas_match_is_flagged_not_silently_dropped(m
         assert len(unmatched) == 1
         assert unmatched[0].client_name == "Acme Co"
         assert unmatched[0].unverified is True
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_debug_max_accounts_caps_the_atlas_universe_deterministically(monkeypatch, tmp_path):
+    db_path = tmp_path / "debug_cap.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    monkeypatch.setenv("DEBUG_MAX_ACCOUNTS", "2")
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    # 4 accounts in Atlas, capped to 2 -- sorted by companyName: Alpha, Beta kept.
+    _FakeAtlasClient.accounts = [
+        _atlas_account("Delta Co"),
+        _atlas_account("Beta Co"),
+        _atlas_account("Alpha Co"),
+        _atlas_account("Charlie Co"),
+    ]
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        accounts = {a["account"] for a in dashboard_data["accounts_overview"]}
+        assert accounts == {"Alpha Co", "Beta Co"}
+        assert "DEBUG: capped to 2" in run.notes
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_debug_max_accounts_none_means_no_cap(monkeypatch, tmp_path):
+    db_path = tmp_path / "no_cap.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("GHL_API_KEY", "x")
+    monkeypatch.setenv("GHL_LOCATION_ID", "x")
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "x")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "x")
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "eyJ9")
+    monkeypatch.setenv("ATLAS_API_KEY", "x")
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "GoogleDriveClient", _FakeGoogleDrive)
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeAtlasClient.accounts = [_atlas_account("Delta Co"), _atlas_account("Beta Co"), _atlas_account("Alpha Co")]
+    _FakeSlack.sent = []
+
+    from app.config import Settings
+    assert Settings.model_fields["debug_max_accounts"].default == 5  # sanity check on the real default
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        # Settings default (5) exceeds our 3 fake accounts, so nothing gets capped.
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+        accounts = {a["account"] for a in dashboard_data["accounts_overview"]}
+        assert accounts == {"Delta Co", "Beta Co", "Alpha Co"}
+        assert "DEBUG: capped" not in (run.notes or "")
     finally:
         db.close()
         get_settings.cache_clear()

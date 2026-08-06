@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # Original cadence per docs/SCHEDULED_TASKS_REGISTRY_SNAPSHOT.md: "0 7 * * 1-5" (weekdays 7:01 AM).
     daily_go_live_audit_cron: str = "0 7 * * 1-5"
 
+    # --- Debug knob (Bob, 2026-08-06) — TEMPORARY: caps the Atlas account
+    # universe to the first N (by companyName, for reproducibility across
+    # runs) so a full run doesn't take minutes while the context-gather
+    # pipeline is still being tuned. None = no cap. Set to None (or bump the
+    # number) once satisfied; don't leave this at 5 for the real daily cron
+    # run once we're past debugging. ---
+    debug_max_accounts: int | None = 5
+
     # --- Anthropic (narrative synthesis for the dashboard's "what's blocking"
     # column — the original system's dashboard was itself LLM-narrated; stat
     # tiles/day-counts stay deterministic Python, only the prose is delegated) ---

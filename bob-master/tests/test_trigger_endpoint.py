@@ -54,11 +54,15 @@ class _FakeClickUp:
 
     def get_list_tasks(self, list_id, include_closed=True, page=0):
         if list_id == "list1":
-            return {"tasks": [{"id": "card1", "name": "Acme onboarding"}], "last_page": True}
+            recent = str(int((datetime.now(timezone.utc) - timedelta(days=1)).timestamp() * 1000))
+            return {"tasks": [{"id": "card1", "name": "Acme onboarding", "date_updated": recent}], "last_page": True}
         return {"tasks": [], "last_page": True}
 
     def get_task_comments(self, task_id):
-        return [{"comment_text": "waiting on client access"}] if task_id == "card1" else []
+        if task_id != "card1":
+            return []
+        recent = str(int((datetime.now(timezone.utc) - timedelta(days=1)).timestamp() * 1000))
+        return [{"comment_text": "waiting on client access", "date": recent}]
 
 
 class _FakeGHL:

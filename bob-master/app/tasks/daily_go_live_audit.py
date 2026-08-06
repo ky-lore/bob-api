@@ -377,6 +377,16 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         atlas_accounts = []
         notes.append(f"Atlas accounts pull failed: {exc}")
 
+    # DEBUG cap (Bob, 2026-08-06, temporary — see Settings.debug_max_accounts):
+    # sorted by companyName first so the same accounts show up every run
+    # while debugging, rather than whatever order Atlas happens to return.
+    if settings.debug_max_accounts is not None and len(atlas_accounts) > settings.debug_max_accounts:
+        atlas_accounts = sorted(atlas_accounts, key=lambda a: a.get("companyName") or "")[: settings.debug_max_accounts]
+        notes.append(
+            f"DEBUG: capped to {settings.debug_max_accounts} of the full Atlas account list "
+            "(Settings.debug_max_accounts) — not a real run, remove the cap when done debugging"
+        )
+
     alias_map = get_alias_map(db)
     atlas_targets = [
         {"id": a["id"], "name": a["companyName"]} for a in atlas_accounts if a.get("id") and a.get("companyName")

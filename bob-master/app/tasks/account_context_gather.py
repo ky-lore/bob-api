@@ -1,7 +1,24 @@
 """
-Full-context gathering for the narrative synthesis. Two parallel paths as of
-2026-08-04, both still deliberately unbounded (no truncation/summarization) —
-full dumps, see how it goes:
+Full-context gathering for the narrative synthesis, windowed to the last
+_CONTEXT_WINDOW_DAYS days (Bob, 2026-08-06) -- the original "no truncation,
+full dumps, see how it goes" approach did exactly that: one production run
+against all ~133 real Atlas accounts showed the ClickUp folder-walk alone
+making 40-90+ comment-fetch calls per account, sequentially, with no
+concurrency, reliably exceeding ClickUp's 100 req/min limit and taking
+minutes per run. The window is applied BEFORE fetching where possible (skip
+a ClickUp task's comment-fetch call entirely if its date_updated is stale),
+not just filtered after the fact -- that's what actually relieves the
+rate-limit pressure, not just trims context volume.
+
+Two parallel paths:
+
+  - gather_rich_context(): the original MVP path (2026-07-31) — fuzzy-matches
+    account name against ClickUp go-live cards / Slack channel names. No
+    longer called by the production pipeline (see daily_go_live_audit.py),
+    kept and tested as the pre-Atlas fallback shape.
+  - gather_atlas_context(): the production path (2026-08-04) — Atlas gives
+    exact per-account clickupFolderId / internalSlackChannelId, no matching
+    at all.
 
   - gather_rich_context(): the original MVP path (2026-07-31) — fuzzy-matches
     account name against ClickUp go-live cards / Slack channel names. Still
@@ -40,12 +57,31 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 from app.integrations.clickup import ClickUpClient
 from app.integrations.slack import SlackClient
 from app.tasks.matching import find_best_match
 
 _INTERNAL_CHANNEL_PREFIX_RE = re.compile(r"^internal-", re.IGNORECASE)
+
+_CONTEXT_WINDOW_DAYS = 7
+
+
+def _context_cutoff() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(days=_CONTEXT_WINDOW_DAYS)
+
+
+def _is_recent_epoch_ms(value: str | int | None, cutoff: datetime) -> bool:
+    """ClickUp's date_updated/date_created/comment date fields are all
+    epoch-millisecond strings (confirmed against real task + comment
+    payloads, 2026-08-06)."""
+    if not value:
+        return False
+    try:
+        return int(value) >= cutoff.timestamp() * 1000
+    except (TypeError, ValueError):
+        return False
 
 # Slack system-event subtypes -- "<@U0BLXKX8LS1> has joined the channel" and
 # friends. Real messages have no "subtype" key at all; these are noise that
@@ -108,9 +144,10 @@ def _add_clickup_context(clickup: ClickUpClient, card_id: str, result: AccountCo
 def _add_channel_messages(slack: SlackClient, channel_id: str, channel_label: str, result: AccountContextResult) -> None:
     """Shared by both the fuzzy-matched and Atlas-exact-ID Slack paths --
     once a channel_id is in hand (found however), pulling+filtering its
-    history is identical."""
+    history is identical. oldest_ts narrows what Slack itself returns (and
+    how much it has to paginate through), not just what's kept after the fact."""
     try:
-        messages = slack.channel_history(channel_id)
+        messages = slack.channel_history(channel_id, oldest_ts=str(_context_cutoff().timestamp()))
     except Exception as exc:
         result.slack_ok = False
         result.slack_error = str(exc)
@@ -166,6 +203,7 @@ def _add_clickup_folder_context(clickup: ClickUpClient, folder_id: str, result: 
     Task), not a single card -- walks every List inside it, every Task inside
     each List, and every comment on each Task. Confirmed shape against a real
     folder 2026-08-04 (Smithco construction: 2 lists, 13 tasks total)."""
+    cutoff = _context_cutoff()
     try:
         lists = clickup.get_folder_lists(folder_id)
     except Exception as exc:
@@ -190,6 +228,13 @@ def _add_clickup_folder_context(clickup: ClickUpClient, folder_id: str, result: 
             task_id = task.get("id")
             if not task_id:
                 continue
+            # Skip the comment-fetch call entirely for a task with no
+            # activity in the window -- this is what actually relieves
+            # ClickUp's rate limit, not just what trims context after the
+            # fact. date_updated moves whenever a comment is added, so a
+            # stale-looking old task with a brand-new comment still passes.
+            if not _is_recent_epoch_ms(task.get("date_updated") or task.get("date_created"), cutoff):
+                continue
             try:
                 comments = clickup.get_task_comments(task_id)
             except Exception as exc:
@@ -198,6 +243,8 @@ def _add_clickup_folder_context(clickup: ClickUpClient, folder_id: str, result: 
                 result.context.append(f"[ClickUp comments fetch failed for task {task_id}: {exc}]")
                 continue
             for comment in comments:
+                if not _is_recent_epoch_ms(comment.get("date"), cutoff):
+                    continue
                 text = (comment.get("comment_text") or "").strip()
                 if text:
                     result.context.append(f"[ClickUp comment, task {task_id} ({task.get('name')})] {text}")

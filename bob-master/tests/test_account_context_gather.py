@@ -1,4 +1,16 @@
+from datetime import datetime, timedelta, timezone
+
 from app.tasks.account_context_gather import extract_channel_client_name, gather_atlas_context, gather_rich_context
+
+
+def _recent_ms(days_ago: float = 0) -> str:
+    """Epoch-ms string within the 7-day context window, matching real ClickUp
+    date_updated/date field format."""
+    return str(int((datetime.now(timezone.utc) - timedelta(days=days_ago)).timestamp() * 1000))
+
+
+def _stale_ms(days_ago: float = 30) -> str:
+    return str(int((datetime.now(timezone.utc) - timedelta(days=days_ago)).timestamp() * 1000))
 
 
 def test_extract_channel_client_name_strips_internal_prefix():
@@ -28,8 +40,10 @@ class _FakeSlack:
     def __init__(self, messages=None, raise_on_history=False):
         self._messages = messages or []
         self._raise_on_history = raise_on_history
+        self.requested_oldest_ts = None
 
-    def channel_history(self, channel_id):
+    def channel_history(self, channel_id, oldest_ts=None):
+        self.requested_oldest_ts = oldest_ts
         if self._raise_on_history:
             raise RuntimeError("slack down")
         return self._messages
@@ -185,12 +199,15 @@ def test_gather_atlas_context_walks_folder_lists_tasks_and_comments():
     clickup = _FakeClickUpFolder(
         lists=[{"id": "list1", "name": "TODO"}, {"id": "list2", "name": "Weekly CM"}],
         tasks_by_list={
-            "list1": [{"id": "task1", "name": "Kickoff"}],
-            "list2": [{"id": "task2", "name": "Meta campaign"}, {"id": "task3", "name": "No comments here"}],
+            "list1": [{"id": "task1", "name": "Kickoff", "date_updated": _recent_ms()}],
+            "list2": [
+                {"id": "task2", "name": "Meta campaign", "date_updated": _recent_ms(2)},
+                {"id": "task3", "name": "No comments here", "date_updated": _recent_ms()},
+            ],
         },
         comments_by_task={
-            "task1": [{"comment_text": "waiting on domain access"}],
-            "task2": [{"comment_text": "campaign live, watching CPA"}],
+            "task1": [{"comment_text": "waiting on domain access", "date": _recent_ms()}],
+            "task2": [{"comment_text": "campaign live, watching CPA", "date": _recent_ms(2)}],
         },
     )
     slack = _FakeSlack(messages=[{"text": "quick check-in from the team"}])
@@ -207,6 +224,73 @@ def test_gather_atlas_context_walks_folder_lists_tasks_and_comments():
     assert result.slack_match_confidence == "atlas_exact_id"
     assert result.slack_match_score == 1.0
     assert result.slack_ok is True
+
+
+def test_gather_atlas_context_skips_stale_tasks_without_fetching_their_comments():
+    # The actual point of the window: a task with no recent activity never
+    # gets its comments fetched at all -- this is what relieves ClickUp's
+    # rate limit, not just what shrinks the final context.
+    fetched_comment_calls = []
+
+    class _TrackingClickUp(_FakeClickUpFolder):
+        def get_task_comments(self, task_id):
+            fetched_comment_calls.append(task_id)
+            return super().get_task_comments(task_id)
+
+    clickup = _TrackingClickUp(
+        lists=[{"id": "list1"}],
+        tasks_by_list={
+            "list1": [
+                {"id": "fresh-task", "name": "Fresh", "date_updated": _recent_ms()},
+                {"id": "stale-task", "name": "Stale", "date_updated": _stale_ms()},
+            ],
+        },
+        comments_by_task={
+            "fresh-task": [{"comment_text": "recent activity", "date": _recent_ms()}],
+            "stale-task": [{"comment_text": "old activity, should never be seen", "date": _stale_ms()}],
+        },
+    )
+    slack = _FakeSlack()
+
+    result = gather_atlas_context("folder1", None, clickup, slack)
+
+    assert fetched_comment_calls == ["fresh-task"]  # stale-task's comments were never even requested
+    assert "recent activity" in " ".join(result.context)
+    assert "should never be seen" not in " ".join(result.context)
+
+
+def test_gather_atlas_context_filters_stale_comments_on_an_otherwise_recent_task():
+    # A task touched recently can still carry old comments mixed with new
+    # ones -- only the ones inside the window belong in the LLM's input.
+    clickup = _FakeClickUpFolder(
+        lists=[{"id": "list1"}],
+        tasks_by_list={"list1": [{"id": "task1", "name": "Ongoing", "date_updated": _recent_ms()}]},
+        comments_by_task={
+            "task1": [
+                {"comment_text": "brand new note", "date": _recent_ms()},
+                {"comment_text": "ancient note", "date": _stale_ms()},
+            ]
+        },
+    )
+    slack = _FakeSlack()
+
+    result = gather_atlas_context("folder1", None, clickup, slack)
+
+    assert any("brand new note" in c for c in result.context)
+    assert not any("ancient note" in c for c in result.context)
+    assert result.clickup_comment_count == 1
+
+
+def test_gather_atlas_context_passes_a_7_day_oldest_ts_to_slack():
+    clickup = _FakeClickUpFolder(lists=[])
+    slack = _FakeSlack(messages=[])
+
+    gather_atlas_context(None, "C123", clickup, slack)
+
+    assert slack.requested_oldest_ts is not None
+    seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+    # within a couple seconds of the expected cutoff -- not exact, just sane
+    assert abs(float(slack.requested_oldest_ts) - seven_days_ago) < 5
 
 
 def test_gather_atlas_context_no_matching_at_all_just_uses_the_ids_directly():
