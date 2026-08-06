@@ -67,3 +67,41 @@ def test_an_account_can_land_in_both_should_be_on_and_zero_spend_buckets_at_once
     result = classify_ads_off(stage="live", google_ads=_google_ads(spend=0.0, enabled_campaigns=2))
     assert result.should_be_on_but_dark is True
     assert result.campaigns_on_zero_spend == ["Google Ads"]
+
+
+def test_should_be_on_but_dark_not_flagged_when_live_via_meta_despite_dark_google():
+    # Bob's exact scenario: "a client live via Meta no longer gets flagged
+    # for a $0 legacy campaign on Google."
+    result = classify_ads_off(
+        stage="live",
+        google_ads=_google_ads(spend=0.0, enabled_campaigns=1),
+        meta_ads=_google_ads(spend=42.0, enabled_campaigns=1),
+    )
+    assert result.should_be_on_but_dark is False
+
+
+def test_should_be_on_but_dark_flagged_when_every_available_platform_is_dark():
+    result = classify_ads_off(
+        stage="live",
+        google_ads=_google_ads(spend=0.0, enabled_campaigns=1),
+        meta_ads=_google_ads(spend=0.0, enabled_campaigns=2),
+    )
+    assert result.should_be_on_but_dark is True
+
+
+def test_campaigns_on_zero_spend_reports_both_platforms_independently():
+    result = classify_ads_off(
+        stage="live",
+        google_ads=_google_ads(spend=0.0, enabled_campaigns=1),
+        meta_ads=_google_ads(spend=0.0, enabled_campaigns=3),
+    )
+    assert set(result.campaigns_on_zero_spend) == {"Google Ads", "Meta"}
+
+
+def test_campaigns_on_zero_spend_only_reports_the_dark_platform():
+    result = classify_ads_off(
+        stage="live",
+        google_ads=_google_ads(spend=0.0, enabled_campaigns=1),
+        meta_ads=_google_ads(spend=42.0, enabled_campaigns=1),
+    )
+    assert result.campaigns_on_zero_spend == ["Google Ads"]

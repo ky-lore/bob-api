@@ -20,9 +20,16 @@ never by name. Same call extends to the retention-pipeline cancel-intent
 cross-check (ClickUp board, fuzzy-matched by name) — dropped for the same
 reason: "assume Atlas will always have perfect data regarding account
 status," so a second, lower-fidelity system re-verifying what Atlas already
-reports (isActive, stage) is no longer worth carrying. `is_live` is no longer
-an Atlas/heartbeat concept at all — it means exactly one thing now: real
-Google Ads spend > 0 in the pull window.
+reports (isActive, stage) is no longer worth carrying.
+
+IS_LIVE FROM ATLAS, NOT SPEND (2026-08-06, revised same day): `is_live` is
+Atlas's own `stage == "live"`, not ad spend on any platform. Bob's reasoning:
+not every client needs Google or Meta spend to be considered live — some
+run one platform, some run both, some are website-only and run neither —
+so spend presence was never a reliable live/not-live signal, and never will
+be once Meta is wired in either. Real spend (Google now, Meta pending) is
+still gathered and shown per account — it's cross-check/context data, not
+what determines is_live.
 
 GO-LIVE TARGET CLOCK (2026-08-06): "behind the 14-day target" no longer means
 a uniform, code-computed 14 days from signing — it's Atlas's own
@@ -55,8 +62,10 @@ or built against real sandboxed ClickUp/Atlas data — see chat history):
   - real Google Ads spend via adspend/ (see adspend/README.md) — a
     self-contained package mounted at /adspend on this same app (app/main.py)
     and called in-process here (no self-HTTP hop — it's the same process).
-    This is now the SOLE source of spend/is_live/campaign data. Meta not
-    wired in yet.
+    Spend/campaign data only now, not is_live (see above). Meta not wired in
+    yet — classify_ads_off already takes an optional meta_ads param so the
+    cross-platform "should be on but dark" logic doesn't need to change
+    again once it lands.
 
 What's intentionally left as TODOs — these require judgment calls this port
 should not guess at:
@@ -110,9 +119,11 @@ def _days_since_atlas_created_at(created_at: str | None) -> int:
 def _go_live_target_status(go_live_deadline: str | None, is_live: bool) -> str:
     """"behind"/"approaching"/"on_track" against Atlas's own deadlines.goLive
     for this account -- not a uniform recomputed 14 days (Bob, 2026-08-06).
-    Package/project type never gates this. "live" once real spend confirms
-    it; "unknown" if Atlas has no deadline on file (shouldn't happen given
-    100% coverage confirmed against real data, but never raise over it)."""
+    Package/project type never gates this. is_live is Atlas's own stage now
+    (2026-08-06), not ad spend -- some clients don't run any ads at all
+    (website-only), so spend was never a reliable live signal. "unknown" if
+    Atlas has no deadline on file (shouldn't happen given 100% coverage
+    confirmed against real data, but never raise over it)."""
     if is_live:
         return "live"
     if not go_live_deadline:
@@ -208,12 +219,20 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
     all_account_names: set[str] = set()
     account_context: dict[str, dict] = {}  # companyName -> {day, stage, atlas_id, clickup_folder_id, slack_channel_id, google_ads_customer_id, go_live_deadline}
+    # is_live comes from Atlas's own stage now (2026-08-06, Bob's explicit
+    # call), NOT from ad spend on either platform -- some clients don't run
+    # Google or Meta at all (website-only), so spend presence was never a
+    # reliable live/not-live signal to begin with. Spend data still gets
+    # gathered and shown per account below; it just no longer gates this.
+    live_accounts: set[str] = set()
 
     for atlas_account in atlas_accounts:
         company_name = atlas_account.get("companyName")
         if not company_name:
             continue
         all_account_names.add(company_name)
+        if (atlas_account.get("stage") or "").lower() == "live":
+            live_accounts.add(company_name)
         integ = atlas_account.get("integrations") or {}
         account_context[company_name] = {
             "day": _days_since_atlas_created_at(atlas_account.get("createdAt")),
@@ -308,14 +327,13 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
         notes.append(f"Slack auto-join-all-channels failed: {exc}")
 
     # --- Full-context gather + real Google Ads spend, per Atlas account
-    # (2026-08-06): both happen together here since is_live now depends
-    # entirely on the Google Ads pull -- there's no heartbeat fallback left.
-    # Deliberately unbounded/inefficient (see account_context_gather.py). ---
+    # (2026-08-06). Deliberately unbounded/inefficient (see
+    # account_context_gather.py). Spend here is informational/cross-check
+    # data only now -- it does not gate live_accounts (see above). ---
     rich_context: dict[str, list[str]] = {}
     context_gather_diagnostics: dict[str, dict] = {}
     google_ads_client = GoogleAdsClient()
     live_google_ads_spend: dict[str, dict] = {}
-    live_accounts: set[str] = set()
     try:
         for account_name in all_matched_accounts(account_context):
             ctx = account_context.get(account_name, {})
@@ -360,8 +378,6 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                         "campaigns": filter_relevant_campaigns(spend["campaigns"]),
                     }
                     diagnostics["google_ads_live_ok"] = True
-                    if spend["total_cost"] > 0:
-                        live_accounts.add(account_name)
                 except Exception as exc:
                     diagnostics["google_ads_live_ok"] = False
                     diagnostics["google_ads_live_error"] = str(exc)
@@ -374,22 +390,25 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
 
     # --- Go-live target status per account (2026-08-06) — see
     # _go_live_target_status: behind/approaching/on_track against Atlas's own
-    # deadlines.goLive, "live" once real spend confirms it. Stored on
-    # account_context alongside day/stage so dashboard_summary.py can read it
-    # the same way. ---
+    # deadlines.goLive, "live" once Atlas's own stage says so (see
+    # live_accounts above). Stored on account_context alongside day/stage so
+    # dashboard_summary.py can read it the same way. ---
     for account_name, ctx in account_context.items():
         ctx["target_status"] = _go_live_target_status(ctx.get("go_live_deadline"), account_name in live_accounts)
 
     # --- "Ads off — who's dark and why" classification, per the reference
-    # dashboard (golive-pipeline-dashboard.pdf) — now single-platform (Google
-    # Ads only, Meta not wired in) and Atlas-stage-driven throughout: "should
-    # be on but dark" reads Atlas's stage directly, "verified off" trusts
+    # dashboard (golive-pipeline-dashboard.pdf) — cross-platform (Google Ads
+    # wired in; Meta plumbing pending, classify_ads_off already takes an
+    # optional meta_ads param) and Atlas-stage-driven throughout: "should be
+    # on but dark" reads Atlas's stage directly and only fires if EVERY
+    # platform this account has data for is dark, so a client live via Meta
+    # never gets flagged for a $0 Google campaign; "verified off" trusts
     # Atlas's stage=="closed" outright ("assume Atlas will always have
     # perfect data regarding account status" — Bob, 2026-08-06), no
     # independent ad-platform re-verification. billing_unsettled is a
     # placeholder — see ads_off_classification.py. An account with no
-    # googleMccId or a failed pull is skipped here (google_ads=None) — we
-    # simply don't have data to classify it, not confirmed dark. ---
+    # googleMccId/metaAdAccountId or a failed pull is skipped for that
+    # platform — we simply don't have data to classify it, not confirmed dark. ---
     for account_name in sorted(all_account_names):
         classification = classify_ads_off(
             stage=account_context.get(account_name, {}).get("stage"),
@@ -403,7 +422,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                     category=FlagCategory.ads_off_should_be_on,
                     severity=FlagSeverity.urgent,
                     client_name=account_name,
-                    message="Atlas stage says live/optimizations but Google Ads is dark — verify account mapping or billing",
+                    message="Atlas stage says live/optimizations but every mapped ad platform is dark — verify account mapping or billing",
                     created_at=datetime.utcnow(),
                 )
             )

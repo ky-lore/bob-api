@@ -599,7 +599,7 @@ def test_debug_max_accounts_none_means_no_cap(monkeypatch, tmp_path):
         get_session_factory.cache_clear()
 
 
-def test_real_google_ads_spend_is_the_sole_spend_source(monkeypatch, tmp_path):
+def test_real_google_ads_spend_is_informational_and_does_not_gate_is_live(monkeypatch, tmp_path):
     db_path = tmp_path / "adspend_blend.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     _setenv_common(monkeypatch)
@@ -613,7 +613,8 @@ def test_real_google_ads_spend_is_the_sole_spend_source(monkeypatch, tmp_path):
     monkeypatch.setattr(mod, "GHLClient", _no_ghl)
     monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
     monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
-    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", google_ads_customer_id="1234567890")]
+    # is_live now comes from Atlas's stage, not this spend -- stage="live" here.
+    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", stage="live", google_ads_customer_id="1234567890")]
     _FakeGoogleAdsClient.responses = {
         "1234567890": _spend(
             total_cost=42.5,
@@ -643,7 +644,7 @@ def test_real_google_ads_spend_is_the_sole_spend_source(monkeypatch, tmp_path):
         dashboard_data = json.loads(run.dashboard_json)
 
         acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
-        assert acme["is_live"] is True  # real spend > 0 -- the ONLY is_live signal now
+        assert acme["is_live"] is True  # from Atlas stage=="live", not from this spend
         assert acme["target_status"] == "live"
         live_spend = acme["ad_spend"]["Google Ads"]
         assert live_spend["spend"] == 42.5
@@ -900,3 +901,52 @@ def test_go_live_target_status_unit_unknown_when_no_deadline_on_file():
 
 def test_go_live_target_status_unit_unknown_on_unparseable_deadline():
     assert mod._go_live_target_status("not-a-date", is_live=False) == "unknown"
+
+
+def test_is_live_comes_from_atlas_stage_not_spend_in_either_direction(monkeypatch, tmp_path):
+    """Bob, 2026-08-06: 'not all clients NEED meta or google spend to be
+    considered live... I want to use Atlas as the source of truth for is
+    live or not.' Real spend must never override Atlas's stage either way:
+    an onboarding account with real spend is still not live; a live-stage
+    account with zero spend (e.g. website-only, or between campaigns) is
+    still live."""
+    db_path = tmp_path / "is_live_from_stage.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    _FakeAtlasClient.accounts = [
+        _atlas_account("Onboarding With Spend", stage="onboarding", google_ads_customer_id="1111111111"),
+        _atlas_account("Live No Ads", stage="live", google_ads_customer_id=None),
+    ]
+    _FakeGoogleAdsClient.responses = {
+        "1111111111": _spend(total_cost=500.0, enabled_campaign_count=2),
+    }
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+        by_account = {a["account"]: a for a in dashboard_data["accounts_overview"]}
+
+        # Real spend ($500!) does not make an onboarding-stage account live.
+        assert by_account["Onboarding With Spend"]["is_live"] is False
+
+        # No ad spend at all (website-only) does not make a live-stage account not-live.
+        assert by_account["Live No Ads"]["is_live"] is True
+        assert by_account["Live No Ads"]["target_status"] == "live"
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
