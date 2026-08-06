@@ -17,7 +17,9 @@ convention, not a typo between the two.
 """
 from __future__ import annotations
 
+import re
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -29,11 +31,34 @@ _API_HOST = "https://googleads.googleapis.com"
 
 # GAQL's predefined date-range literals for `WHERE segments.date DURING <x>` —
 # allow-listed rather than interpolating an arbitrary caller-supplied string
-# straight into the query.
+# straight into the query. Google only predefines 7/14/30 -- anything else
+# (LAST_10_DAYS, etc.) is handled by _LAST_N_DAYS_RE below instead.
 ALLOWED_DATE_RANGES = {
     "TODAY", "YESTERDAY", "LAST_7_DAYS", "LAST_14_DAYS", "LAST_30_DAYS",
     "THIS_MONTH", "LAST_MONTH",
 }
+
+# Accepts any "LAST_N_DAYS" a caller asks for (smoke tests keep wanting
+# different lookbacks -- L7, L14, L10, ...) by translating it to an explicit
+# BETWEEN clause rather than requiring N to be one of Google's predefined
+# literals. Matches Google's own LAST_N_DAYS semantic: N days ending
+# yesterday, not including today (today's spend is still accruing).
+_LAST_N_DAYS_RE = re.compile(r"^LAST_(\d+)_DAYS$")
+
+
+def _build_date_clause(date_range: str) -> str:
+    if date_range in ALLOWED_DATE_RANGES:
+        return f"segments.date DURING {date_range}"
+    match = _LAST_N_DAYS_RE.match(date_range)
+    if not match:
+        raise ValueError(
+            f"date_range must be one of {sorted(ALLOWED_DATE_RANGES)} or match LAST_N_DAYS, got {date_range!r}"
+        )
+    n = int(match.group(1))
+    today = datetime.now(timezone.utc).date()
+    start = today - timedelta(days=n)
+    end = today - timedelta(days=1)
+    return f"segments.date BETWEEN '{start.isoformat()}' AND '{end.isoformat()}'"
 
 
 def _digits_only(customer_id: str) -> str:
@@ -98,15 +123,14 @@ class GoogleAdsClient:
 
     def get_account_spend(self, customer_id: str, date_range: str = "YESTERDAY") -> dict[str, Any]:
         """Per-campaign spend + enabled-campaign count for one customer ID
-        over a GAQL predefined date range. Cost comes back from the API in
-        micros (1,000,000 = one unit of the account's currency); converted to
-        a plain float here so callers never have to remember that."""
-        if date_range not in ALLOWED_DATE_RANGES:
-            raise ValueError(f"date_range must be one of {sorted(ALLOWED_DATE_RANGES)}, got {date_range!r}")
-
+        over date_range — either one of GAQL's predefined literals or any
+        "LAST_N_DAYS" (see _build_date_clause). Cost comes back from the API
+        in micros (1,000,000 = one unit of the account's currency); converted
+        to a plain float here so callers never have to remember that."""
+        date_clause = _build_date_clause(date_range)
         query = (
             "SELECT campaign.id, campaign.name, campaign.status, metrics.cost_micros "
-            f"FROM campaign WHERE segments.date DURING {date_range}"
+            f"FROM campaign WHERE {date_clause}"
         )
         rows = self.search(customer_id, query)
 

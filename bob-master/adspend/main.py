@@ -1,10 +1,9 @@
 """
-adspend — standalone ad-spend pull service (2026-08-06). Deliberately kept
-separate from bob-master's app/ (the LLM+write service) even though both live
-in this one repo for now: this is meant to be reused by other projects later,
-so it has its own config, its own thin clients, and no import dependency on
-app/. Deployed as its own Railway service with Root Directory set to adspend/
-(see Procfile).
+adspend — ad-spend pull package (2026-08-06). Deliberately self-contained
+(own config, own thin clients, no import dependency on app/) even though it's
+mounted at /adspend on bob-master's own FastAPI app rather than deployed
+separately (see app/main.py, adspend/README.md) — that stays a plain
+mount-point decision, not a reason to couple the two codebases.
 
 Two ways in:
   - /accounts/{customer_id}/spend — direct Google Ads customer ID, for smoke
@@ -22,9 +21,16 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from adspend.atlas_client import AtlasClient
-from adspend.google_ads_client import ALLOWED_DATE_RANGES, GoogleAdsClient
+from adspend.google_ads_client import GoogleAdsClient, _build_date_clause
 
 app = FastAPI(title="adspend")
+
+
+def _validate_date_range(date_range: str) -> None:
+    try:
+        _build_date_clause(date_range)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/health")
@@ -34,8 +40,7 @@ def health() -> dict:
 
 @app.get("/accounts/{customer_id}/spend")
 def get_spend_by_customer_id(customer_id: str, date_range: str = "YESTERDAY") -> dict:
-    if date_range not in ALLOWED_DATE_RANGES:
-        raise HTTPException(400, f"date_range must be one of {sorted(ALLOWED_DATE_RANGES)}")
+    _validate_date_range(date_range)
     try:
         return GoogleAdsClient().get_account_spend(customer_id, date_range)
     except Exception as exc:
@@ -44,8 +49,7 @@ def get_spend_by_customer_id(customer_id: str, date_range: str = "YESTERDAY") ->
 
 @app.get("/atlas-accounts/{atlas_id}/spend")
 def get_spend_by_atlas_id(atlas_id: str, date_range: str = "YESTERDAY") -> dict:
-    if date_range not in ALLOWED_DATE_RANGES:
-        raise HTTPException(400, f"date_range must be one of {sorted(ALLOWED_DATE_RANGES)}")
+    _validate_date_range(date_range)
 
     accounts = AtlasClient().get_all_accounts()
     account = next((a for a in accounts if a.get("id") == atlas_id), None)

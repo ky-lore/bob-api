@@ -68,8 +68,8 @@ _INTERNAL_CHANNEL_PREFIX_RE = re.compile(r"^internal-", re.IGNORECASE)
 _CONTEXT_WINDOW_DAYS = 7
 
 
-def _context_cutoff() -> datetime:
-    return datetime.now(timezone.utc) - timedelta(days=_CONTEXT_WINDOW_DAYS)
+def _context_cutoff(window_days: int = _CONTEXT_WINDOW_DAYS) -> datetime:
+    return datetime.now(timezone.utc) - timedelta(days=window_days)
 
 
 def _is_recent_epoch_ms(value: str | int | None, cutoff: datetime) -> bool:
@@ -141,13 +141,15 @@ def _add_clickup_context(clickup: ClickUpClient, card_id: str, result: AccountCo
                 result.clickup_comment_count += 1
 
 
-def _add_channel_messages(slack: SlackClient, channel_id: str, channel_label: str, result: AccountContextResult) -> None:
+def _add_channel_messages(
+    slack: SlackClient, channel_id: str, channel_label: str, result: AccountContextResult, cutoff: datetime
+) -> None:
     """Shared by both the fuzzy-matched and Atlas-exact-ID Slack paths --
     once a channel_id is in hand (found however), pulling+filtering its
     history is identical. oldest_ts narrows what Slack itself returns (and
     how much it has to paginate through), not just what's kept after the fact."""
     try:
-        messages = slack.channel_history(channel_id, oldest_ts=str(_context_cutoff().timestamp()))
+        messages = slack.channel_history(channel_id, oldest_ts=str(cutoff.timestamp()))
     except Exception as exc:
         result.slack_ok = False
         result.slack_error = str(exc)
@@ -179,7 +181,7 @@ def _add_slack_context(
     result.slack_channel_matched = match.card_name
     result.slack_match_confidence = match.confidence
     result.slack_match_score = match.score
-    _add_channel_messages(slack, match.card_id, match.card_name, result)
+    _add_channel_messages(slack, match.card_id, match.card_name, result, _context_cutoff())
 
 
 def gather_rich_context(
@@ -198,12 +200,13 @@ def gather_rich_context(
     return result
 
 
-def _add_clickup_folder_context(clickup: ClickUpClient, folder_id: str, result: AccountContextResult) -> None:
+def _add_clickup_folder_context(
+    clickup: ClickUpClient, folder_id: str, result: AccountContextResult, cutoff: datetime
+) -> None:
     """Atlas's clickupFolderId is a real Folder (Space > Folder > List >
     Task), not a single card -- walks every List inside it, every Task inside
     each List, and every comment on each Task. Confirmed shape against a real
     folder 2026-08-04 (Smithco construction: 2 lists, 13 tasks total)."""
-    cutoff = _context_cutoff()
     try:
         lists = clickup.get_folder_lists(folder_id)
     except Exception as exc:
@@ -256,18 +259,23 @@ def gather_atlas_context(
     slack_channel_id: str | None,
     clickup: ClickUpClient,
     slack: SlackClient,
+    window_days: int = _CONTEXT_WINDOW_DAYS,
 ) -> AccountContextResult:
     """Atlas-exact-ID smoke test path (Bob, 2026-08-04): no fuzzy matching at
     all, no account_name/slack_channels list needed -- both IDs come straight
     from an Atlas account record's `integrations` object. Missing either ID
     just skips that source (ok stays True, counts stay 0), same resilience
-    contract as gather_rich_context."""
+    contract as gather_rich_context. window_days (2026-08-06) overrides the
+    production default of _CONTEXT_WINDOW_DAYS for one-off pulls (smoke tests
+    asking for a different lookback) without needing to monkeypatch the
+    module constant."""
+    cutoff = _context_cutoff(window_days)
     result = AccountContextResult()
     if clickup_folder_id:
-        _add_clickup_folder_context(clickup, clickup_folder_id, result)
+        _add_clickup_folder_context(clickup, clickup_folder_id, result, cutoff)
     if slack_channel_id:
         result.slack_channel_matched = slack_channel_id
         result.slack_match_confidence = "atlas_exact_id"
         result.slack_match_score = 1.0
-        _add_channel_messages(slack, slack_channel_id, slack_channel_id, result)
+        _add_channel_messages(slack, slack_channel_id, slack_channel_id, result, cutoff)
     return result

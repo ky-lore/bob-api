@@ -293,6 +293,16 @@ def test_gather_atlas_context_passes_a_7_day_oldest_ts_to_slack():
     assert abs(float(slack.requested_oldest_ts) - seven_days_ago) < 5
 
 
+def test_gather_atlas_context_window_days_override_changes_the_slack_cutoff():
+    clickup = _FakeClickUpFolder(lists=[])
+    slack = _FakeSlack(messages=[])
+
+    gather_atlas_context(None, "C123", clickup, slack, window_days=10)
+
+    ten_days_ago = (datetime.now(timezone.utc) - timedelta(days=10)).timestamp()
+    assert abs(float(slack.requested_oldest_ts) - ten_days_ago) < 5
+
+
 def test_gather_atlas_context_no_matching_at_all_just_uses_the_ids_directly():
     # The whole point: no account_name, no slack_channels list, no fuzzy match call.
     clickup = _FakeClickUpFolder(lists=[])

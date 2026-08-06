@@ -98,6 +98,26 @@ def test_access_token_is_cached_across_calls_not_re_minted(monkeypatch):
     assert len(fake.token_requests) == 1
 
 
+def test_last_n_days_builds_an_explicit_between_clause(monkeypatch):
+    client = _client(monkeypatch)
+    fake = _FakeHttpxClient([{"results": []}])
+    client._client = fake
+
+    client.get_account_spend("1234567890", date_range="LAST_10_DAYS")
+
+    query = fake.search_requests[0]["json"]["query"]
+    assert "BETWEEN" in query
+    assert "DURING" not in query
+
+
+def test_invalid_last_n_days_shape_is_rejected(monkeypatch):
+    client = _client(monkeypatch)
+    client._client = _FakeHttpxClient([])
+
+    with pytest.raises(ValueError):
+        client.get_account_spend("1234567890", date_range="LAST_DAYS")
+
+
 def test_invalid_date_range_is_rejected_before_any_request(monkeypatch):
     client = _client(monkeypatch)
     client._client = _FakeHttpxClient([])
