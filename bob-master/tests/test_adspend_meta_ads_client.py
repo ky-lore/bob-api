@@ -32,8 +32,8 @@ class _FakeHttpxClient:
         self.insights_payload = insights_payload
         self.requests: list[dict] = []
 
-    def get(self, url, params=None):
-        self.requests.append({"url": url, "params": params})
+    def get(self, url, params=None, headers=None):
+        self.requests.append({"url": url, "params": params, "headers": headers})
         if url.endswith("/campaigns"):
             return _FakeResponse(self.campaigns_payload)
         if url.endswith("/insights"):
@@ -120,7 +120,12 @@ def test_invalid_date_range_is_rejected(monkeypatch):
         client.get_account_spend("act_123", date_range="LAST_QUARTER")
 
 
-def test_access_token_is_attached_to_every_request(monkeypatch):
+def test_access_token_is_sent_via_authorization_header_not_query_param(monkeypatch):
+    # Real bug, 2026-08-10: an access_token query param ends up embedded in
+    # the request URL, and httpx's default HTTPStatusError.__str__ includes
+    # the full URL -- so a query-param token leaks in plaintext into every
+    # error message, which flows into ad_platform_errors/context_gather_json
+    # and gets persisted to the database. The header form never does this.
     client = _client(monkeypatch)
     fake = _FakeHttpxClient(campaigns_payload={"data": []}, insights_payload={"data": []})
     client._client = fake
@@ -128,4 +133,5 @@ def test_access_token_is_attached_to_every_request(monkeypatch):
     client.get_account_spend("act_123")
 
     for r in fake.requests:
-        assert r["params"]["access_token"] == "x"
+        assert r["headers"]["Authorization"] == "Bearer x"
+        assert "access_token" not in (r["params"] or {})

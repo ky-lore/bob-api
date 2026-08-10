@@ -82,8 +82,19 @@ class MetaAdsClient:
         self._client = httpx.Client(timeout=30.0)
 
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        params = {**params, "access_token": self._settings.meta_access_token}
-        resp = self._client.get(f"{_API_HOST}/{self._settings.meta_api_version}/{path}", params=params)
+        """Token goes in the Authorization header, NOT as an access_token
+        query param, despite that being Graph API's other supported auth
+        method — confirmed the hard way, 2026-08-10: httpx's default
+        HTTPStatusError.__str__ includes the full request URL, so a
+        query-param token leaks in plaintext into every error message this
+        raises, which flows straight into ad_platform_errors and
+        context_gather_json and gets persisted to the database. The header
+        never appears in that string."""
+        resp = self._client.get(
+            f"{_API_HOST}/{self._settings.meta_api_version}/{path}",
+            params=params,
+            headers={"Authorization": f"Bearer {self._settings.meta_access_token}"},
+        )
         resp.raise_for_status()
         return resp.json()
 
