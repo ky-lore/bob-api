@@ -720,10 +720,48 @@ def test_google_ads_pull_failure_leaves_account_not_live_and_soft_fails(monkeypa
         acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
         assert "Google Ads" not in acme["ad_spend"]
         assert acme["is_live"] is False  # no confirmed spend -- can't be live
+        # Has a real CID on file, pull failed -- a real problem, distinct from
+        # "no service" (2026-08-10, see dashboard_summary.py's ad_platform_errors).
+        assert "no customer 9999999999" in acme["ad_spend_errors"]["Google Ads"]
 
         diagnostics = json.loads(run.context_gather_json)
         assert diagnostics["Acme Co"]["google_ads_live_ok"] is False
         assert "no customer 9999999999" in diagnostics["Acme Co"]["google_ads_live_error"]
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_account_with_no_platform_ids_at_all_has_no_spend_and_no_errors(monkeypatch, tmp_path):
+    """Confirms the 'no service' case flows through cleanly and distinctly
+    from a real pull failure -- see test_google_ads_pull_failure_leaves_
+    account_not_live_and_soft_fails for the contrasting case."""
+    db_path = tmp_path / "no_service.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeAtlasClient.accounts = [_atlas_account("Website Only Co", stage="live")]
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+        dashboard_data = json.loads(run.dashboard_json)
+
+        acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Website Only Co")
+        assert acme["ad_spend"] == {}
+        assert acme["ad_spend_errors"] == {}
     finally:
         db.close()
         get_settings.cache_clear()
@@ -1052,6 +1090,9 @@ def test_meta_pull_failure_is_soft_failed_google_ads_still_shows(monkeypatch, tm
         acme = next(a for a in dashboard_data["accounts_overview"] if a["account"] == "Acme Co")
         assert acme["ad_spend"]["Google Ads"]["spend"] == 42.5
         assert "Meta" not in acme["ad_spend"]
+        # Real ACT ID on file, pull failed -- flagged distinctly, not "no service".
+        assert "act_not_covered" in acme["ad_spend_errors"]["Meta"]
+        assert "Google Ads" not in acme["ad_spend_errors"]  # Google succeeded, no error for it
 
         diagnostics = json.loads(run.context_gather_json)
         assert diagnostics["Acme Co"]["meta_ads_live_ok"] is False

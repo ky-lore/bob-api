@@ -73,6 +73,7 @@ def build_dashboard_json(
     rich_context: dict[str, list[str]] | None = None,
     spend_by_account: dict[str, dict] | None = None,
     web_builds: list[dict] | None = None,
+    ad_platform_errors: dict[str, dict] | None = None,
 ) -> str:
     """rich_context: optional {account_name: [context strings, ...]} — full
     ClickUp/Slack material (see account_context_gather.py) for that account's
@@ -82,11 +83,20 @@ def build_dashboard_json(
     [{"card_id", "name", "status", "day"}, ...] from the separate Web Build
     Pipeline list (website builds, not client accounts — outside the 90-day
     go-live board window; see daily_go_live_audit.py). Sorted here, oldest
-    first, no threshold/flag logic — still macro, visibility only. Pure merge
-    only; this function does no I/O of its own, per the module docstring."""
+    first, no threshold/flag logic — still macro, visibility only.
+    ad_platform_errors: optional {account_name: {"Google Ads": error_str, ...}}
+    — ONLY for accounts that have a real ID on file but the pull failed
+    (2026-08-10, Bob: "absence of either [CID/ACT ID] means they don't have
+    that service with the agency" — a confirmed, trusted fact now, not an
+    open question). Kept separate from spend_by_account/ad_spend so the
+    template can tell "no service" (no line at all — not noise) apart from
+    "has the ID, pull broke" (a real problem worth flagging) — conflating the
+    two behind one vague "no data" message was the previous behavior. Pure
+    merge only; this function does no I/O of its own, per the module docstring."""
     by_account = _group_flags_by_account(flags)
     rich_context = rich_context or {}
     spend_by_account = spend_by_account or {}
+    ad_platform_errors = ad_platform_errors or {}
     web_builds = sorted(web_builds or [], key=lambda r: r.get("day", 0), reverse=True)
 
     matched_accounts = all_matched_accounts(account_context)
@@ -121,6 +131,7 @@ def build_dashboard_json(
             "stage": a["stage"],
             "is_live": a["is_live"],
             "ad_spend": a["ad_spend"],
+            "ad_spend_errors": ad_platform_errors.get(a["account"], {}),
             "target_status": account_context.get(a["account"], {}).get("target_status", "unknown"),
             "status": narratives.get(a["account"]) or _fallback_status(a),
         }

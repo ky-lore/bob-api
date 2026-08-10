@@ -279,3 +279,24 @@ def test_behind_stat_tile_counts_only_behind_target_status(monkeypatch):
     }
     result = json.loads(build_dashboard_json([], account_context, set(account_context), set(), set()))
     assert result["stat_tiles"]["behind"] == 2
+
+
+def test_ad_platform_errors_flows_into_accounts_overview(monkeypatch):
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
+    account_context = {"Acme Co": {"day": 14, "stage": "onboarding"}}
+    ad_platform_errors = {"Acme Co": {"Google Ads": "Client error 401 Unauthorized"}}
+
+    result = json.loads(
+        build_dashboard_json([], account_context, {"Acme Co"}, set(), set(), None, None, None, ad_platform_errors)
+    )
+
+    assert result["accounts_overview"][0]["ad_spend_errors"] == {"Google Ads": "Client error 401 Unauthorized"}
+
+
+def test_ad_platform_errors_defaults_to_empty_dict_without_breaking_existing_callers(monkeypatch):
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", lambda accounts: ({}, []))
+    account_context = {"Acme Co": {"day": 14, "stage": "onboarding"}}
+
+    # No ad_platform_errors arg at all -- must not raise, must default to {}.
+    result = json.loads(build_dashboard_json([], account_context, {"Acme Co"}, set(), set()))
+    assert result["accounts_overview"][0]["ad_spend_errors"] == {}

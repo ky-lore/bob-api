@@ -45,6 +45,8 @@
     .spend { color: var(--muted); font-size: 0.82rem; }
     .spend-line { margin-bottom: 0.35rem; }
     .spend-line:last-child { margin-bottom: 0; }
+    .spend-line--error { color: var(--red); font-weight: 600; }
+    .spend-none { color: var(--muted); font-style: italic; opacity: 0.7; }
     details.campaign-detail { margin-top: 0.15rem; }
     details.campaign-detail summary { cursor: pointer; color: var(--muted); font-size: 0.78rem; }
     table.campaign-table { margin-top: 0.4rem; font-size: 0.76rem; white-space: normal; }
@@ -112,8 +114,11 @@
                 {% endif %}
               </td>
               <td class="spend">
-                {% if a.ad_spend %}
-                  {% for platform, spend in a.ad_spend.items() %}
+                {% set any_line = false %}
+                {% for platform in ["Google Ads", "Meta"] %}
+                  {% if a.ad_spend and platform in a.ad_spend %}
+                    {% set any_line = true %}
+                    {% set spend = a.ad_spend[platform] %}
                     <div class="spend-line">
                       {{ platform }}: ${{ "%.2f"|format(spend.spend) }} ({{ spend.enabled_campaigns }} campaigns)
                       {% if spend.campaigns %}
@@ -139,9 +144,18 @@
                         </details>
                       {% endif %}
                     </div>
-                  {% endfor %}
-                {% else %}
-                  No Google Ads data (no CID on file or fetch failed)
+                  {% elif a.ad_spend_errors and platform in a.ad_spend_errors %}
+                    {# Has a real CID/ACT ID on file, but the pull itself failed -- a real
+                       problem, shown distinctly from "doesn't have this service" below. #}
+                    {% set any_line = true %}
+                    <div class="spend-line spend-line--error">{{ platform }}: pull failed — verify</div>
+                  {% endif %}
+                {% endfor %}
+                {% if not any_line %}
+                  {# Neither platform has an ID on file at all -- per the confirmed operating
+                     assumption (2026-08-10), this means the client simply doesn't run
+                     Google/Meta ads with us, not an open question. Calm, not a flag. #}
+                  <span class="spend-none">No Google/Meta ad service on file</span>
                 {% endif %}
               </td>
               <td>{{ a.status }}</td>

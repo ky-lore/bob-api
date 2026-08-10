@@ -343,6 +343,13 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     meta_ads_client = MetaAdsClient()
     live_google_ads_spend: dict[str, dict] = {}
     live_meta_ads_spend: dict[str, dict] = {}
+    # Only ever populated when the account HAS a real ID on file but the pull
+    # itself failed -- a genuine problem worth a flagged line on the
+    # dashboard, distinct from "no ID at all" (2026-08-10: Bob's operating
+    # assumption that CID/ACT-ID absence confirms the account simply doesn't
+    # have that service, not an open question anymore -- see
+    # dashboard_summary.py's ad_platform_errors param).
+    ad_platform_errors: dict[str, dict] = {}
     try:
         for account_name in all_matched_accounts(account_context):
             ctx = account_context.get(account_name, {})
@@ -390,6 +397,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 except Exception as exc:
                     diagnostics["google_ads_live_ok"] = False
                     diagnostics["google_ads_live_error"] = str(exc)
+                    ad_platform_errors.setdefault(account_name, {})["Google Ads"] = str(exc)
 
             # Real Meta spend (2026-08-06) — same shape/soft-fail contract as
             # Google above. Atlas's metaAdAccountId comes pre-formatted with
@@ -412,6 +420,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 except Exception as exc:
                     diagnostics["meta_ads_live_ok"] = False
                     diagnostics["meta_ads_live_error"] = str(exc)
+                    ad_platform_errors.setdefault(account_name, {})["Meta"] = str(exc)
 
             context_gather_diagnostics[account_name] = diagnostics
     except Exception as exc:
@@ -512,6 +521,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             rich_context,
             spend_by_account,
             web_builds,
+            ad_platform_errors,
         )
         narrative_error = json.loads(run.dashboard_json).get("narrative_error")
         if narrative_error:
