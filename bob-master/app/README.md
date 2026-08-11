@@ -85,7 +85,10 @@ rows, `digest_text` holds the Slack DM body), `flags` (one row per finding), and
 - `GET/POST /admin/watchlist`, `POST /admin/watchlist/{id}/deactivate` — no auth wired
   in yet. Don't expose this publicly on Railway before adding some — it edits data that
   feeds a daily report to Chris.
-- `POST /tasks/daily-go-live-audit/run` — manual trigger, same code path as the cron.
+- `POST /tasks/daily-go-live-audit/run` — manual trigger, same code path as the cron. Runs on
+  a background thread and returns `{job_id, job_status: "running"}` immediately rather than
+  blocking (a full run over the real account universe can outrun any client/proxy timeout) —
+  poll `GET /tasks/daily-go-live-audit/run/{job_id}` for the result. See `app/tasks/job_tracker.py`.
 - `GET /admin/clickup/{go-live,web-build,retention}-sample`, `GET /admin/sheets/tv-board-feed`,
   `GET /admin/heartbeat/headers` — debug endpoints, real board/sheet data. Use these
   before writing any new correlation logic instead of guessing at structure.

@@ -9,12 +9,28 @@ directly still proves what actually reaches the JSON response body.
 ATLAS-ONLY as of 2026-08-06: no more heartbeat/GoogleDriveClient fixture at
 all — see app/tasks/daily_go_live_audit.py's module docstring.
 """
+import time
 from datetime import datetime, timedelta, timezone
 
 import app.main as main_mod
 import app.tasks.daily_go_live_audit as audit_mod
 from app.db import get_engine, get_session_factory, init_db
 from app.config import get_settings
+
+
+def _wait_for_job(job_id: str, timeout: float = 5.0) -> dict:
+    """Trigger runs on a real background thread (see app/tasks/job_tracker.py) --
+    poll instead of assuming it's done by the time we check. The fakes below
+    do no real I/O, so this finishes in well under a second in practice; the
+    timeout is only a guard against a genuine regression hanging the test."""
+    deadline = time.time() + timeout
+    status_response = main_mod.get_daily_go_live_audit_run_status(job_id)
+    while status_response["job_status"] == "running":
+        if time.time() > deadline:
+            raise TimeoutError(f"job {job_id} still running after {timeout}s")
+        time.sleep(0.01)
+        status_response = main_mod.get_daily_go_live_audit_run_status(job_id)
+    return status_response
 
 
 class _FakeAtlasClient:
@@ -114,9 +130,12 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
     _FakeSlack.sent = []
 
     init_db()
-    db = get_session_factory()()
     try:
-        body = main_mod.trigger_daily_go_live_audit(db=db)
+        trigger_response = main_mod.trigger_daily_go_live_audit()
+        assert trigger_response["job_status"] == "running"
+
+        body = _wait_for_job(trigger_response["job_id"])
+        assert body["job_status"] == "done"
 
         assert set(body.keys()) >= {"run_id", "status", "notes", "context_gather", "narrative_batches", "narrative_error"}
 
@@ -135,7 +154,6 @@ def test_trigger_endpoint_response_body_includes_gather_and_narrative_diagnostic
         assert body["narrative_batches"][0]["ok"] is True
         assert body["narrative_batches"][0]["accounts"] == ["Acme Co"]
     finally:
-        db.close()
         get_settings.cache_clear()
         get_engine.cache_clear()
         get_session_factory.cache_clear()
