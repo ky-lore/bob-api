@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # slice kept showing the same handful of accounts every debug run rather
     # than a representative real-world mix. None = no cap. Set to None once
     # satisfied; don't leave this capped for the real daily cron run. ---
-    debug_max_accounts: int | None = 20
+    debug_max_accounts: int | None = None
 
     # --- Anthropic (narrative synthesis for the dashboard's "what's blocking"
     # column — the original system's dashboard was itself LLM-narrated; stat
