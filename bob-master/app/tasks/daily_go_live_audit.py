@@ -52,9 +52,13 @@ or built against real sandboxed ClickUp/Atlas data — see chat history):
   - Atlas account correlation (stage, day-count, exact Slack/ClickUp IDs,
     go-live deadline) — see app/integrations/atlas_client.py
   - digest assembly from persisted flags, and AuditRun/Flag persistence
-  - full-context gather for EVERY Atlas account (full ClickUp folder — every
-    List's every Task's comments — + full Slack channel history) via exact
-    Atlas IDs — see app/tasks/account_context_gather.py's gather_atlas_context
+  - full-context gather (full ClickUp folder — every List's every Task's
+    comments — + full Slack channel history) via exact Atlas IDs — see
+    app/tasks/account_context_gather.py's gather_atlas_context. Skipped for
+    accounts that don't need active monitoring (see
+    _needs_active_monitoring, 2026-08-11) — an established, long-past-due
+    live account doesn't need this daily; ad spend + ads-off classification
+    still run for it regardless.
   - auto-joins every public Slack channel the bot isn't already in before
     gathering — channel_history() silently fails on a channel the bot hasn't
     joined, exact ID or not. Private channels still need a manual bot invite;
@@ -142,6 +146,42 @@ def _go_live_target_status(go_live_deadline: str | None, is_live: bool) -> str:
     if (deadline - now).days <= _APPROACHING_BUFFER_DAYS:
         return "approaching"
     return "on_track"
+
+
+_STALE_LIVE_MONITORING_WINDOW_DAYS = 14
+
+
+def _needs_active_monitoring(go_live_deadline: str | None, is_live: bool) -> bool:
+    """The full-context gather (ClickUp comments, Slack channel history, LLM
+    narrative synthesis) is the real runtime cost driver on a full-account-
+    universe run (Bob, 2026-08-11: ~20 min across ~137 accounts) -- NOT the
+    ad-spend pulls or ads-off classification, which stay cheap per-account
+    REST calls and keep running for every live account regardless of this
+    check (see the gather loop and classify_ads_off below), since that's
+    exactly what catches an established client's ads silently going dark.
+
+    Not-yet-live accounts always need the full treatment -- that's the whole
+    point of this board. A live account only needs it for a short window
+    right after going live (to catch early post-launch issues); once it's
+    been live more than _STALE_LIVE_MONITORING_WINDOW_DAYS past its Atlas
+    go-live deadline, it's established/stable and this returns False --
+    the caller skips the expensive gather for it AND drops it from the
+    accounts overview/chart/narrative (see build_dashboard_json's
+    account_context param).
+
+    A missing/unparseable deadline never excludes an account -- same
+    never-assume-when-Atlas-data-is-missing posture as
+    _go_live_target_status."""
+    if not is_live:
+        return True
+    if not go_live_deadline:
+        return True
+    try:
+        deadline = datetime.fromisoformat(go_live_deadline.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    now = datetime.now(deadline.tzinfo) if deadline.tzinfo else datetime.now(timezone.utc)
+    return (now - deadline).days <= _STALE_LIVE_MONITORING_WINDOW_DAYS
 
 
 def build_digest(flags: list[Flag]) -> str:
@@ -353,24 +393,32 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     try:
         for account_name in all_matched_accounts(account_context):
             ctx = account_context.get(account_name, {})
-            gather_result = gather_atlas_context(
-                ctx.get("clickup_folder_id"),
-                ctx.get("slack_channel_id"),
-                clickup,
-                slack,
-            )
-            rich_context[account_name] = gather_result.context
+            needs_monitoring = _needs_active_monitoring(ctx.get("go_live_deadline"), account_name in live_accounts)
             diagnostics = {
-                "clickup_ok": gather_result.clickup_ok,
-                "clickup_comment_count": gather_result.clickup_comment_count,
-                "clickup_error": gather_result.clickup_error,
-                "slack_channel_matched": gather_result.slack_channel_matched,
-                "slack_match_confidence": gather_result.slack_match_confidence,
-                "slack_match_score": gather_result.slack_match_score,
-                "slack_ok": gather_result.slack_ok,
-                "slack_message_count": gather_result.slack_message_count,
-                "slack_error": gather_result.slack_error,
+                "full_gather_skipped": not needs_monitoring,
+                "clickup_ok": None, "clickup_comment_count": None, "clickup_error": None,
+                "slack_channel_matched": None, "slack_match_confidence": None, "slack_match_score": None,
+                "slack_ok": None, "slack_message_count": None, "slack_error": None,
             }
+            if needs_monitoring:
+                gather_result = gather_atlas_context(
+                    ctx.get("clickup_folder_id"),
+                    ctx.get("slack_channel_id"),
+                    clickup,
+                    slack,
+                )
+                rich_context[account_name] = gather_result.context
+                diagnostics.update({
+                    "clickup_ok": gather_result.clickup_ok,
+                    "clickup_comment_count": gather_result.clickup_comment_count,
+                    "clickup_error": gather_result.clickup_error,
+                    "slack_channel_matched": gather_result.slack_channel_matched,
+                    "slack_match_confidence": gather_result.slack_match_confidence,
+                    "slack_match_score": gather_result.slack_match_score,
+                    "slack_ok": gather_result.slack_ok,
+                    "slack_message_count": gather_result.slack_message_count,
+                    "slack_error": gather_result.slack_error,
+                })
 
             # Real Google Ads spend via adspend/ — the SOLE spend/is_live
             # source now (2026-08-06, heartbeat dropped entirely). Soft-failed
@@ -508,13 +556,23 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     for account_name, live_spend in live_meta_ads_spend.items():
         spend_by_account.setdefault(account_name, {})["Meta"] = live_spend
 
+    # --- Accounts overview/chart only cover the active-monitoring subset
+    # (see _needs_active_monitoring) -- an established, long-past-due-live
+    # account is dropped from these (and from the LLM narrative call) but
+    # still fully covered by the ads-off classification above, which reads
+    # live_google_ads_spend/live_meta_ads_spend directly, not this dict. ---
+    active_account_context = {
+        name: ctx for name, ctx in account_context.items()
+        if _needs_active_monitoring(ctx.get("go_live_deadline"), name in live_accounts)
+    }
+
     db.add_all(flags)
     digest_text = build_digest(flags)
     run.digest_text = digest_text
     try:
         run.dashboard_json = build_dashboard_json(
             flags,
-            account_context,
+            active_account_context,
             all_account_names,
             live_accounts,
             previous_live_accounts,

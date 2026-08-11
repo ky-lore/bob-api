@@ -1145,3 +1145,96 @@ def test_should_be_on_but_dark_not_flagged_when_live_via_meta_end_to_end(monkeyp
         get_settings.cache_clear()
         get_engine.cache_clear()
         get_session_factory.cache_clear()
+
+
+def test_needs_active_monitoring_unit_not_live_always_true():
+    deadline = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._needs_active_monitoring(deadline, is_live=False) is True
+
+
+def test_needs_active_monitoring_unit_freshly_live_within_window():
+    deadline = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._needs_active_monitoring(deadline, is_live=True) is True
+
+
+def test_needs_active_monitoring_unit_stale_live_past_window():
+    deadline = (datetime.now(timezone.utc) - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._needs_active_monitoring(deadline, is_live=True) is False
+
+
+def test_needs_active_monitoring_unit_never_excludes_on_missing_deadline():
+    assert mod._needs_active_monitoring(None, is_live=True) is True
+
+
+def test_needs_active_monitoring_unit_never_excludes_on_unparseable_deadline():
+    assert mod._needs_active_monitoring("not-a-date", is_live=True) is True
+
+
+def test_stale_live_account_skips_full_gather_but_still_gets_ads_off_classification(monkeypatch, tmp_path):
+    """The actual efficiency change (Bob, 2026-08-11): an established,
+    long-past-due-live account shouldn't cost a ClickUp/Slack/LLM gather
+    every day, but ad spend + ads-off classification (the cheap REST calls)
+    must keep running for it regardless -- that's what catches a stable
+    client's ads silently going dark."""
+    db_path = tmp_path / "stale_live.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    _FakeAtlasClient.accounts = [
+        # Live 60 days past its go-live deadline -- well outside the 14-day
+        # monitoring window. $0 spend so should_be_on_but_dark still fires.
+        _atlas_account(
+            "Stale Live Co", stage="live", go_live_days_from_now=-60,
+            clickup_folder_id="folder1", google_ads_customer_id="1112223333",
+        ),
+        # Live only 5 days past its go-live deadline -- still inside the
+        # window, gets the full treatment ("freshly live" monitoring).
+        _atlas_account(
+            "Fresh Live Co", stage="live", go_live_days_from_now=-5,
+            clickup_folder_id="folder1",
+        ),
+        # Never excluded regardless of day count -- not live yet.
+        _atlas_account("Pending Co", stage="onboarding", clickup_folder_id="folder1"),
+    ]
+    _FakeGoogleAdsClient.responses = {"1112223333": _spend(total_cost=0.0, enabled_campaign_count=1)}
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+
+        context_gather = json.loads(run.context_gather_json)
+        assert context_gather["Stale Live Co"]["full_gather_skipped"] is True
+        assert context_gather["Stale Live Co"]["clickup_ok"] is None
+        assert context_gather["Fresh Live Co"]["full_gather_skipped"] is False
+        assert context_gather["Fresh Live Co"]["clickup_ok"] is True
+        assert context_gather["Pending Co"]["full_gather_skipped"] is False
+
+        dashboard_data = json.loads(run.dashboard_json)
+        overview_accounts = {a["account"] for a in dashboard_data["accounts_overview"]}
+        chart_accounts = {a["account"] for a in dashboard_data["accounts_chart"]}
+        assert "Stale Live Co" not in overview_accounts
+        assert "Stale Live Co" not in chart_accounts
+        assert overview_accounts == {"Fresh Live Co", "Pending Co"}
+        assert chart_accounts == {"Fresh Live Co", "Pending Co"}
+
+        # Ads-off classification is unaffected by the overview/chart filter --
+        # it reads live_google_ads_spend directly, not account_context.
+        flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
+        should_be_on = [f for f in flags if f.category == FlagCategory.ads_off_should_be_on]
+        assert should_be_on and should_be_on[0].client_name == "Stale Live Co"
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()

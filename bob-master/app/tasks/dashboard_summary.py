@@ -10,11 +10,21 @@ branching (marketing 14d/21d, website 10d, custom-ETA, SEO-same-week, etc.)
 entirely — Bob was explicit he's done with that granularity for now and wants
 the full-account macro picture first, drilling down into specifics later.
 
+Narrowed to the ACTIVE subset (Bob, 2026-08-11): the caller
+(daily_go_live_audit.py) now pre-filters account_context to accounts that
+still need active monitoring — not-yet-live, or live within
+_STALE_LIVE_MONITORING_WINDOW_DAYS of their go-live deadline — before calling
+this function, dropping the expensive per-account context gather + LLM call
+for established, long-past-due-live accounts. This module has no idea that
+filtering happened; it just macro-covers whatever account_context it's given.
+
   - stat_tiles: simple deterministic counts (tracked / live / not-live, plus
-    the ads-off buckets, unchanged)
-  - accounts_overview: every matched account, oldest-signed first, each with
-    an LLM narrative synthesized over its full context — the one section that
-    gets narrative prose
+    the ads-off buckets) — over the active subset only; the ads-off buckets
+    themselves are unaffected since they're built from Flag rows covering
+    every live account, filtered or not
+  - accounts_overview: every ACTIVE matched account, oldest-signed first,
+    each with an LLM narrative synthesized over its full context — the one
+    section that gets narrative prose
   - accounts_chart: day count per account, colored live vs not-live
   - ads_off: the 4 sub-buckets from ads_off_classification.py (unchanged —
     already package-agnostic)
