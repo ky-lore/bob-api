@@ -9,15 +9,17 @@ transparent detail view underneath — not part of the reference dashboard, but
 useful for us as developers.
 """
 import json
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import AuditRun, FlagCategory
+from app.integrations.anthropic_client import NO_ACTION_NEEDED
+from app.models import ActionItemCheckoff, AuditRun, FlagCategory
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -86,12 +88,27 @@ def _grouped_sections(run: AuditRun | None) -> list[tuple[str, list]]:
     return sections
 
 
-def _dashboard_context(run: AuditRun | None, history: list[AuditRun]) -> dict:
+def _checked_action_items(db: Session, run: AuditRun | None) -> set[str]:
+    """Account names with a checked-off recommended action for this specific
+    run -- see ActionItemCheckoff's docstring for why this is scoped per-run,
+    not carried across days."""
+    if not run:
+        return set()
+    rows = db.query(ActionItemCheckoff.account_name).filter_by(run_id=run.id).all()
+    return {r[0] for r in rows}
+
+
+def _dashboard_context(db: Session, run: AuditRun | None, history: list[AuditRun]) -> dict:
     dashboard_data = _parse_dashboard_json(run)
+    checked = _checked_action_items(db, run)
+    dashboard_data["accounts_overview"] = [
+        {**a, "action_checked": a["account"] in checked} for a in dashboard_data["accounts_overview"]
+    ]
     return {
         "run": run,
         "history": history,
         "sections": _grouped_sections(run),
+        "no_action_needed": NO_ACTION_NEEDED,
         **dashboard_data,
     }
 
@@ -101,11 +118,36 @@ def _dashboard_context(run: AuditRun | None, history: list[AuditRun]) -> dict:
 def latest_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     latest = db.query(AuditRun).order_by(AuditRun.run_date.desc()).first()
     history = db.query(AuditRun).order_by(AuditRun.run_date.desc()).limit(30).all()
-    return templates.TemplateResponse(request, "dashboard.html", _dashboard_context(latest, history))
+    return templates.TemplateResponse(request, "dashboard.html", _dashboard_context(db, latest, history))
 
 
 @router.get("/dashboard/{run_date}", response_class=HTMLResponse)
 def dashboard_for_date(run_date: date, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     run = db.query(AuditRun).filter_by(run_date=run_date).first()
     history = db.query(AuditRun).order_by(AuditRun.run_date.desc()).limit(30).all()
-    return templates.TemplateResponse(request, "dashboard.html", _dashboard_context(run, history))
+    return templates.TemplateResponse(request, "dashboard.html", _dashboard_context(db, run, history))
+
+
+class _ActionItemToggleRequest(BaseModel):
+    run_id: int
+    account_name: str
+
+
+@router.post("/dashboard/action-items/toggle")
+def toggle_action_item(payload: _ActionItemToggleRequest, db: Session = Depends(get_db)) -> dict:
+    """Checks/unchecks one account's recommended action for one run. No auth
+    yet (see admin.py) -- anyone with the dashboard URL can toggle this, same
+    trust level as the rest of this app's admin endpoints today. Existence
+    of a row = checked (see ActionItemCheckoff), so unchecking just deletes it."""
+    existing = (
+        db.query(ActionItemCheckoff)
+        .filter_by(run_id=payload.run_id, account_name=payload.account_name)
+        .first()
+    )
+    if existing:
+        db.delete(existing)
+        db.commit()
+        return {"checked": False}
+    db.add(ActionItemCheckoff(run_id=payload.run_id, account_name=payload.account_name, checked_at=datetime.utcnow()))
+    db.commit()
+    return {"checked": True}

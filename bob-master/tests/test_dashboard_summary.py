@@ -184,7 +184,7 @@ def test_narrative_batches_are_surfaced_in_the_result(monkeypatch):
     fake_batches = [{"batch_index": 0, "accounts": ["Acme Co"], "narrated_count": 1, "ok": True, "error": None}]
     monkeypatch.setattr(
         "app.tasks.dashboard_summary.synthesize_account_narratives",
-        lambda accounts: ({"Acme Co": "narrative"}, fake_batches),
+        lambda accounts: ({"Acme Co": {"status": "narrative", "recommended_action": "No action needed"}}, fake_batches),
     )
 
     account_context = {"Acme Co": {"day": 14, "stage": "onboarding", "card_id": "card1"}}
@@ -245,6 +245,33 @@ def test_build_dashboard_json_surfaces_llm_failure_instead_of_swallowing_it(monk
     status = result["accounts_overview"][0]["status"]
     assert "Meta: campaigns enabled, $0 spend" not in status  # never the raw context, even in the message
     assert status == "Day 14, not live yet. Narrative unavailable this run (1 context item(s) gathered, not synthesized)."
+
+
+def test_recommended_action_flows_from_narratives_into_the_overview(monkeypatch):
+    monkeypatch.setattr(
+        "app.tasks.dashboard_summary.synthesize_account_narratives",
+        lambda accounts: (
+            {"Acme Co": {"status": "On track.", "recommended_action": "Chase missing brand assets."}},
+            [],
+        ),
+    )
+    account_context = {"Acme Co": {"day": 5, "stage": "onboarding", "card_id": "card1"}}
+    result = json.loads(build_dashboard_json([], account_context, {"Acme Co"}, set(), set()))
+
+    assert result["accounts_overview"][0]["recommended_action"] == "Chase missing brand assets."
+
+
+def test_recommended_action_falls_back_cleanly_when_narrative_synthesis_fails(monkeypatch):
+    def _raise(accounts):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("app.tasks.dashboard_summary.synthesize_account_narratives", _raise)
+    account_context = {"Acme Co": {"day": 5, "stage": "onboarding", "card_id": "card1"}}
+    result = json.loads(build_dashboard_json([], account_context, {"Acme Co"}, set(), set()))
+
+    action = result["accounts_overview"][0]["recommended_action"]
+    assert action  # never blank
+    assert "narrative synthesis failed" in action.lower()
 
 
 def test_target_status_flows_into_accounts_chart_and_overview(monkeypatch):

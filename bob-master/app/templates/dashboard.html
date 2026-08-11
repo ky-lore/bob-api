@@ -70,6 +70,10 @@
     .spend-line:last-child { margin-bottom: 0; }
     .spend-line--error { color: var(--red); font-weight: 600; }
     .spend-none { color: var(--muted); font-style: italic; opacity: 0.7; }
+    .action-item-label { display: flex; align-items: flex-start; gap: 0.4rem; cursor: pointer; font-size: 0.88rem; }
+    .action-item-checkbox { margin-top: 0.15rem; flex: 0 0 auto; cursor: pointer; }
+    .action-item-text { flex: 1; }
+    .action-item-label--checked .action-item-text { color: var(--muted); text-decoration: line-through; }
     details.campaign-detail { margin-top: 0.15rem; }
     details.campaign-detail summary { cursor: pointer; color: var(--muted); font-size: 0.78rem; }
     table.campaign-table { margin-top: 0.4rem; font-size: 0.76rem; white-space: normal; }
@@ -113,6 +117,40 @@
     })();
   </script>
 
+  <script>
+    (function () {
+      document.querySelectorAll(".action-item-checkbox").forEach(function (checkbox) {
+        checkbox.addEventListener("change", function () {
+          var label = checkbox.closest(".action-item-label");
+          var wasChecked = !checkbox.checked;  // optimistic; revert on failure
+          checkbox.disabled = true;
+          fetch("/dashboard/action-items/toggle", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              run_id: parseInt(checkbox.dataset.runId, 10),
+              account_name: checkbox.dataset.account,
+            }),
+          })
+            .then(function (res) {
+              if (!res.ok) throw new Error("toggle failed: " + res.status);
+              return res.json();
+            })
+            .then(function (data) {
+              checkbox.checked = data.checked;
+              label.classList.toggle("action-item-label--checked", data.checked);
+            })
+            .catch(function () {
+              checkbox.checked = wasChecked;
+            })
+            .finally(function () {
+              checkbox.disabled = false;
+            });
+        });
+      });
+    })();
+  </script>
+
   <nav>
     {% for h in history %}
       <a href="/dashboard/{{ h.run_date }}" class="{{ 'current' if run and h.run_date == run.run_date else '' }}">{{ h.run_date }}</a>
@@ -148,7 +186,7 @@
         <summary><h2>🚀 Accounts overview — {{ accounts_overview|length }} accounts (oldest first)</h2><span class="chevron">▼</span></summary>
         <div class="card-body">
         <table>
-          <tr><th>Account</th><th>Day</th><th>Status</th><th>Ad spend</th><th>Where they stand</th></tr>
+          <tr><th>Account</th><th>Day</th><th>Status</th><th>Ad spend</th><th>Where they stand</th><th>Recommended action</th></tr>
           {% for a in accounts_overview %}
             <tr>
               <td>{{ a.account }}{% if a.day == 0 %}<span class="new-badge" title="Signed today">🆕</span>{% endif %}</td>
@@ -205,6 +243,22 @@
                 {% endif %}
               </td>
               <td>{{ a.status }}</td>
+              <td class="action-item">
+                {% if a.recommended_action == no_action_needed %}
+                  <span class="spend-none">{{ no_action_needed }}</span>
+                {% else %}
+                  <label class="action-item-label {{ 'action-item-label--checked' if a.action_checked else '' }}">
+                    <input
+                      type="checkbox"
+                      class="action-item-checkbox"
+                      data-run-id="{{ run.id }}"
+                      data-account="{{ a.account }}"
+                      {{ 'checked' if a.action_checked else '' }}
+                    >
+                    <span class="action-item-text">{{ a.recommended_action }}</span>
+                  </label>
+                {% endif %}
+              </td>
             </tr>
           {% endfor %}
         </table>

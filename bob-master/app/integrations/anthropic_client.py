@@ -33,9 +33,10 @@ import anthropic
 from app.config import get_settings
 
 _TOOL_NAME = "submit_narratives"
+NO_ACTION_NEEDED = "No action needed"
 _TOOL_SCHEMA = {
     "name": _TOOL_NAME,
-    "description": "Submit the synthesized status narrative for each account.",
+    "description": "Submit the synthesized status narrative and recommended action for each account.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -49,8 +50,21 @@ _TOOL_SCHEMA = {
                             "type": "string",
                             "description": "One concise, matter-of-fact sentence. No fluff, no greeting.",
                         },
+                        "recommended_action": {
+                            "type": "string",
+                            "description": (
+                                "One concrete next step or check-in for the team, based on what's "
+                                "missing or stalled in the given context -- e.g. a specific follow-up "
+                                "to send, an overdue check-in call, a piece of missing info to chase "
+                                "(no ClickUp/Slack activity in a while, an unanswered question, a "
+                                "missing ad account ID that should be there by now). Must be something "
+                                "someone could actually go do today, not a restatement of the status. "
+                                f"Say exactly '{NO_ACTION_NEEDED}' if the account is on track and "
+                                "nothing is missing -- never invent an action just to fill this field."
+                            ),
+                        },
                     },
-                    "required": ["account", "status"],
+                    "required": ["account", "status", "recommended_action"],
                 },
             }
         },
@@ -63,17 +77,20 @@ _TOOL_SCHEMA = {
 }
 
 _SYSTEM_PROMPT = (
-    "You are synthesizing a one-line status summary for each client account on a marketing "
-    "agency's internal go-live tracking dashboard, for management. You'll be given, per account: "
-    "day count since signing, whether it is currently live (running ad spend), its Atlas stage, "
-    "real Google Ads spend data, and raw context — every ClickUp comment on its card and "
-    "subtasks, and its Slack channel's message history. Using ALL of that, write ONE concise, "
-    "matter-of-fact sentence describing where the account currently stands: if it's live, what's "
-    "actually happening operationally (any risk, any open thread worth knowing); if it's not live "
-    "yet, what's blocking it. Do not invent facts not present in the input. If the input signals "
-    "conflict with each other, say so plainly instead of picking a side — never silently resolve a "
-    "conflict. No greetings, no preamble, no markdown. You MUST produce one entry per account "
-    "given, even if it's a short restatement of the input."
+    "You are synthesizing two things per client account for a marketing agency's internal go-live "
+    "tracking dashboard, for management. You'll be given, per account: day count since signing, "
+    "whether it is currently live (running ad spend), its Atlas stage, real Google Ads spend data, "
+    "and raw context — every ClickUp comment on its card and subtasks, and its Slack channel's "
+    "message history. Using ALL of that, produce for EACH account: "
+    "(1) status: ONE concise, matter-of-fact sentence describing where the account currently "
+    "stands: if it's live, what's actually happening operationally (any risk, any open thread worth "
+    "knowing); if it's not live yet, what's blocking it. "
+    f"(2) recommended_action: ONE concrete next step someone could go do today, or exactly "
+    f"'{NO_ACTION_NEEDED}' if nothing is missing or stalled — see the tool schema for what counts. "
+    "Do not invent facts not present in the input. If the input signals conflict with each other, "
+    "say so plainly instead of picking a side — never silently resolve a conflict. No greetings, no "
+    "preamble, no markdown. You MUST produce one entry per account given, even if it's a short "
+    "restatement of the input."
 )
 
 # Small on purpose (Bob, 2026-08-11): this only ever runs on an unattended
@@ -210,13 +227,16 @@ def _run_in_batches(
 
 def synthesize_account_narratives(
     accounts: list[dict[str, Any]],
-) -> tuple[dict[str, str], list[dict[str, Any]]]:
+) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
     """accounts: list of {"account": str, "day": int, "stage": str, "is_live": bool,
     "context": [str, ...]} where context is the already-gathered ClickUp/Slack
     material for that account (see account_context_gather.py).
 
     Returns (narratives, batch_results) — narratives is {account_name:
-    narrative_sentence}. See _run_in_batches for the batching contract."""
+    {"status": str, "recommended_action": str}} (2026-08-11: added
+    recommended_action alongside status, same shape as
+    synthesize_account_reports below). See _run_in_batches for the batching
+    contract."""
     return _run_in_batches(accounts, _synthesize_batch)
 
 
@@ -262,10 +282,13 @@ def _coerce_list(value: Any, key: str | None = None) -> list:
     return []
 
 
-def _synthesize_batch(accounts: list[dict[str, Any]]) -> dict[str, str]:
+def _synthesize_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
     settings = get_settings()
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    max_tokens = min(_MAX_TOKENS_CAP, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * len(accounts)))
+    # Two fields per account (status + recommended_action, added 2026-08-11) --
+    # same doubled budget as _synthesize_report_batch, same reasoning: don't
+    # re-trigger the max_tokens incident this module's docstring warns about.
+    max_tokens = min(_MAX_TOKENS_CAP, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * 2 * len(accounts)))
 
     response = client.messages.create(
         model=settings.anthropic_model,
@@ -279,7 +302,14 @@ def _synthesize_batch(accounts: list[dict[str, Any]]) -> dict[str, str]:
     for block in response.content:
         if block.type == "tool_use" and block.name == _TOOL_NAME:
             narratives = _coerce_list(block.input.get("narratives", []), key="narratives")
-            result = {n["account"]: n["status"] for n in narratives if isinstance(n, dict) and n.get("account")}
+            result = {
+                n["account"]: {
+                    "status": n.get("status", ""),
+                    "recommended_action": n.get("recommended_action") or NO_ACTION_NEEDED,
+                }
+                for n in narratives
+                if isinstance(n, dict) and n.get("account")
+            }
             if not result:
                 raise RuntimeError(
                     f"zero usable narratives (stop_reason={response.stop_reason}, "

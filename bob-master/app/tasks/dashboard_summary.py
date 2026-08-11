@@ -65,6 +65,12 @@ def _fallback_status(a: dict) -> str:
     return f"{base} No additional context gathered."
 
 
+def _fallback_action(a: dict) -> str:
+    """Same reasoning as _fallback_status -- never blank, and never claim
+    there's nothing to do when synthesis simply didn't run this batch."""
+    return "Recommended action unavailable this run (narrative synthesis failed for this batch)."
+
+
 def all_matched_accounts(account_context: dict[str, dict]) -> list[str]:
     """Every account with a matched go-live-list card — live or not, whatever
     package (package is no longer tracked at all — see module docstring).
@@ -143,7 +149,8 @@ def build_dashboard_json(
             "ad_spend": a["ad_spend"],
             "ad_spend_errors": ad_platform_errors.get(a["account"], {}),
             "target_status": account_context.get(a["account"], {}).get("target_status", "unknown"),
-            "status": narratives.get(a["account"]) or _fallback_status(a),
+            "status": (narratives.get(a["account"]) or {}).get("status") or _fallback_status(a),
+            "recommended_action": (narratives.get(a["account"]) or {}).get("recommended_action") or _fallback_action(a),
         }
         for a in accounts_for_llm
     ]

@@ -2,7 +2,7 @@ import enum
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -93,6 +93,28 @@ class Flag(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
 
     run: Mapped[AuditRun] = relationship(back_populates="flags")
+
+
+class ActionItemCheckoff(Base):
+    """A checked-off LLM-recommended action item for one account on one run
+    (Bob, 2026-08-11). Scoped to (run_id, account_name), not a stable
+    cross-day identity -- the recommended action itself is freshly generated
+    by the LLM every run and its wording can drift day to day even for the
+    same underlying issue, so there's no fuzzy-matching attempt to carry a
+    checkmark forward (this codebase deliberately dropped all fuzzy-matching
+    with the Atlas migration, see daily_go_live_audit.py's module docstring).
+    Existence of a row = checked; there's nothing to un-delete, so unchecking
+    just deletes the row. No login yet (see admin.py), so this is
+    unattributed -- anyone with the dashboard URL can toggle it."""
+
+    __tablename__ = "action_item_checkoffs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("audit_runs.id"))
+    account_name: Mapped[str] = mapped_column(String(255))
+    checked_at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (UniqueConstraint("run_id", "account_name", name="uq_action_item_checkoff_run_account"),)
 
 
 class ManagedClientEntry(Base):

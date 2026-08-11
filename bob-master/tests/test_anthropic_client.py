@@ -152,12 +152,12 @@ def test_coerce_list_passes_through_a_real_list_unchanged():
 def test_synthesize_batch_handles_narratives_double_encoded_as_a_json_string(monkeypatch):
     # Real bug, 2026-08-06: Claude occasionally returns {"narratives": "[...]"}
     # instead of {"narratives": [...]} -- a JSON string, not a native array.
-    payload = json.dumps([{"account": "Acme Co", "status": "doing fine"}])
+    payload = json.dumps([{"account": "Acme Co", "status": "doing fine", "recommended_action": "Follow up"}])
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._TOOL_NAME, {"narratives": payload}))
 
     result = anthropic_client._synthesize_batch([{"account": "Acme Co", "day": 1, "stage": "live", "context": []}])
 
-    assert result == {"Acme Co": "doing fine"}
+    assert result == {"Acme Co": {"status": "doing fine", "recommended_action": "Follow up"}}
 
 
 def test_synthesize_report_batch_handles_reports_double_encoded_as_a_json_string(monkeypatch):
