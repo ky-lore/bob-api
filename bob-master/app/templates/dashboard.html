@@ -2,39 +2,62 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Go-Live Priority List</title>
+  <title>Go-Live Pipeline Dashboard</title>
   <style>
     :root {
       --bg: #f5f6f8; --card-bg: #ffffff; --text: #1a1a1a; --muted: #666;
       --border: #e5e7eb; --red: #dc2626; --amber: #b45309; --green: #16a34a;
     }
     @media (prefers-color-scheme: dark) {
-      :root { --bg: #16171a; --card-bg: #202227; --text: #e8e8e8; --muted: #9a9a9a; --border: #34363b; }
+      :root:not([data-theme="light"]) { --bg: #16171a; --card-bg: #202227; --text: #e8e8e8; --muted: #9a9a9a; --border: #34363b; }
     }
+    :root[data-theme="dark"] { --bg: #16171a; --card-bg: #202227; --text: #e8e8e8; --muted: #9a9a9a; --border: #34363b; }
     * { box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 1000px; margin: 0 auto; padding: 2rem 1.25rem 4rem;
            background: var(--bg); color: var(--text); }
+    .header-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
     h1 { margin: 0 0 0.15rem; font-size: 1.5rem; }
     .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 1rem; }
+    .theme-toggle {
+      flex: 0 0 auto; background: var(--card-bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: 8px; padding: 0.4rem 0.7rem; font-size: 0.82rem; cursor: pointer;
+    }
     nav { margin-bottom: 1.5rem; overflow-x: auto; white-space: nowrap; }
     nav a { margin-right: 0.75rem; text-decoration: none; color: var(--muted); font-size: 0.85rem; }
     nav a.current { font-weight: 600; color: var(--text); }
     .empty { color: var(--muted); font-style: italic; }
+    .footnote { color: var(--muted); font-size: 0.78rem; font-style: italic; margin-top: 0.6rem; }
 
     .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.75rem; margin-bottom: 1.5rem; }
     .tile { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; }
-    .tile .n { font-size: 1.6rem; font-weight: 700; }
+    .tile .n { font-size: 1.6rem; font-weight: 700; color: var(--text); }
+    .tile .n.n--red { color: var(--red); }
+    .tile .n.n--amber { color: var(--amber); }
+    .tile .n.n--green { color: var(--green); }
     .tile .label { color: var(--muted); font-size: 0.8rem; margin-top: 0.15rem; }
 
     .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1.5rem; }
     .card h2 { font-size: 0.95rem; margin: 0 0 0.75rem; }
+    details.card { padding: 0; }
+    details.card > summary { list-style: none; padding: 1rem 1.25rem; cursor: pointer; display: flex; justify-content: space-between; align-items: baseline; }
+    details.card > summary::-webkit-details-marker { display: none; }
+    details.card > summary h2 { margin: 0; }
+    details.card > summary .chevron { color: var(--muted); font-size: 0.8rem; transition: transform 0.15s; }
+    details.card[open] > summary .chevron { transform: rotate(180deg); }
+    details.card > .card-body { padding: 0 1.25rem 1rem; }
+    details.card > .card-body h3 { font-size: 0.85rem; margin: 1rem 0 0.5rem; }
+    details.card > .card-body h3:first-child { margin-top: 0; }
 
     table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
     th { text-align: left; color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase;
          letter-spacing: 0.03em; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); }
     td { padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
     tr:last-child td { border-bottom: none; }
-    .day { font-weight: 700; }
+    .day { font-weight: 700; color: var(--text); }
+    .day.day--behind { color: var(--red); }
+    .day.day--approaching { color: var(--amber); }
+    .day.day--live { color: var(--green); }
+    .new-badge { font-size: 0.75rem; margin-left: 0.25rem; }
     .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
     .badge.live { background: rgba(12,163,12,0.15); color: var(--green); }
     .badge.not-live { background: rgba(102,102,102,0.15); color: var(--muted); }
@@ -66,10 +89,29 @@
   </style>
 </head>
 <body>
-  <h1>Go-Live Priority List</h1>
-  <div class="subtitle">
-    {% if run %}Advanced Marketers — data as of {{ run.run_date }} · status: {{ run.status.value }}{% if run.notes %} · {{ run.notes }}{% endif %}{% else %}No audit run recorded yet{% endif %}
+  <div class="header-row">
+    <div>
+      <h1>Go-Live Pipeline Dashboard</h1>
+      <div class="subtitle">
+        {% if run %}Advanced Marketers — data as of {{ run.run_date }}{% if new_deals %} (incl. {{ new_deals|length }} new deal{{ 's' if new_deals|length != 1 else '' }} today){% endif %} · status: {{ run.status.value }}{% if run.notes %} · {{ run.notes }}{% endif %}{% else %}No audit run recorded yet{% endif %}
+      </div>
+    </div>
+    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">🌓 Toggle theme</button>
   </div>
+
+  <script>
+    (function () {
+      var stored = localStorage.getItem("bob-theme");
+      if (stored) document.documentElement.setAttribute("data-theme", stored);
+      document.getElementById("theme-toggle").addEventListener("click", function () {
+        var current = document.documentElement.getAttribute("data-theme")
+          || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        var next = current === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", next);
+        localStorage.setItem("bob-theme", next);
+      });
+    })();
+  </script>
 
   <nav>
     {% for h in history %}
@@ -83,12 +125,15 @@
     {% if stat_tiles %}
       <div class="tiles">
         <div class="tile"><div class="n">{{ stat_tiles.accounts_tracked }}</div><div class="label">Accounts tracked</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.live }}</div><div class="label">Live</div></div>
+        <div class="tile"><div class="n n--green">{{ stat_tiles.live }}</div><div class="label">Live</div></div>
         <div class="tile"><div class="n">{{ stat_tiles.not_live }}</div><div class="label">Not live yet</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.behind }}</div><div class="label">Behind Atlas go-live target</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.should_be_on_but_dark }}</div><div class="label">Should be on, dark</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.campaigns_on_zero_spend }}</div><div class="label">Campaigns on, $0 spend</div></div>
-        <div class="tile"><div class="n">{{ stat_tiles.verified_off }}</div><div class="label">Verified off</div></div>
+        <div class="tile"><div class="n n--red">{{ stat_tiles.behind }}</div><div class="label">Behind Atlas go-live target</div></div>
+        <div class="tile"><div class="n n--red">{{ stat_tiles.should_be_on_but_dark }}</div><div class="label">Should be on, dark</div></div>
+        <div class="tile"><div class="n n--amber">{{ stat_tiles.campaigns_on_zero_spend }}</div><div class="label">Campaigns on, $0 spend</div></div>
+        <div class="tile"><div class="n n--green">{{ stat_tiles.verified_off }}</div><div class="label">Verified off</div></div>
+        {% if web_builds %}
+          <div class="tile"><div class="n">{{ web_builds|length }}</div><div class="label">Website-lane builds (no ads clock)</div></div>
+        {% endif %}
       </div>
     {% endif %}
 
@@ -99,14 +144,15 @@
     {% include "_accounts_chart.html" %}
 
     {% if accounts_overview %}
-      <div class="card">
-        <h2>Accounts overview — {{ accounts_overview|length }} accounts (oldest first)</h2>
+      <details class="card" open>
+        <summary><h2>🚀 Accounts overview — {{ accounts_overview|length }} accounts (oldest first)</h2><span class="chevron">▼</span></summary>
+        <div class="card-body">
         <table>
           <tr><th>Account</th><th>Day</th><th>Status</th><th>Ad spend</th><th>Where they stand</th></tr>
           {% for a in accounts_overview %}
             <tr>
-              <td>{{ a.account }}</td>
-              <td class="day">{{ a.day }}</td>
+              <td>{{ a.account }}{% if a.day == 0 %}<span class="new-badge" title="Signed today">🆕</span>{% endif %}</td>
+              <td class="day {{ 'day--live' if a.is_live else 'day--' + a.target_status if a.target_status in ('behind', 'approaching') else '' }}">{{ a.day }}</td>
               <td>
                 <span class="badge {{ 'live' if a.is_live else 'not-live' }}">{{ 'Live' if a.is_live else 'Not live' }}</span>
                 {% if not a.is_live %}
@@ -162,50 +208,58 @@
             </tr>
           {% endfor %}
         </table>
-      </div>
+        </div>
+      </details>
     {% else %}
       <p class="empty">No accounts matched to the go-live board yet.</p>
     {% endif %}
 
     {% if went_live %}
-      <div class="card">
-        <h2>✅ Went live since last run</h2>
+      <details class="card" open>
+        <summary><h2>✅ Went live since last run</h2><span class="chevron">▼</span></summary>
+        <div class="card-body">
         <ul>{% for r in went_live %}<li>{{ r.account }}</li>{% endfor %}</ul>
-      </div>
+        </div>
+      </details>
     {% endif %}
 
     {% if new_deals %}
-      <div class="card">
-        <h2>🆕 New deals</h2>
+      <details class="card" open>
+        <summary><h2>🆕 New deals</h2><span class="chevron">▼</span></summary>
+        <div class="card-body">
         <ul>{% for r in new_deals %}<li><strong>{{ r.account }}</strong> — {{ r.note }}</li>{% endfor %}</ul>
-      </div>
+        </div>
+      </details>
     {% endif %}
 
     {% if ads_off and (ads_off.should_be_on_but_dark or ads_off.campaigns_on_zero_spend or ads_off.unsettled or ads_off.verified_off) %}
-      <div class="card">
-        <h2>Ads off</h2>
+      <details class="card" open>
+        <summary><h2>🔌 Ads off — who's dark and why</h2><span class="chevron">▼</span></summary>
+        <div class="card-body">
         {% if ads_off.should_be_on_but_dark %}
-          <h3>Should be on but dark</h3>
+          <h3>🔴 Should be on but dark</h3>
           <ul>{% for r in ads_off.should_be_on_but_dark %}<li><strong>{{ r.account }}</strong> — {{ r.detail }}</li>{% endfor %}</ul>
         {% endif %}
         {% if ads_off.campaigns_on_zero_spend %}
-          <h3>Campaigns on, $0 spend</h3>
+          <h3>🟠 Campaigns on, $0 spend</h3>
           <ul>{% for r in ads_off.campaigns_on_zero_spend %}<li><strong>{{ r.account }}</strong> ({{ r.platform }}) — {{ r.note }}</li>{% endfor %}</ul>
         {% endif %}
         {% if ads_off.unsettled %}
-          <h3>Unsettled</h3>
+          <h3>💳 Unsettled</h3>
           <ul>{% for r in ads_off.unsettled %}<li><strong>{{ r.account }}</strong> — {{ r.note }}</li>{% endfor %}</ul>
         {% endif %}
         {% if ads_off.verified_off %}
-          <h3>Verified off</h3>
+          <h3>✅ Verified off</h3>
           <ul>{% for r in ads_off.verified_off %}<li><strong>{{ r.account }}</strong> — {{ r.note }}</li>{% endfor %}</ul>
         {% endif %}
-      </div>
+        </div>
+      </details>
     {% endif %}
 
     {% if web_builds %}
-      <div class="card">
-        <h2>Web builds — {{ web_builds|length }} (oldest first)</h2>
+      <details class="card" open>
+        <summary><h2>Web builds — {{ web_builds|length }} (oldest first)</h2><span class="chevron">▼</span></summary>
+        <div class="card-body">
         <table>
           <tr><th>Card</th><th>Day</th><th>Status</th></tr>
           {% for b in web_builds %}
@@ -216,7 +270,8 @@
             </tr>
           {% endfor %}
         </table>
-      </div>
+        </div>
+      </details>
     {% endif %}
 
     {% for title, items in sections %}
@@ -232,6 +287,8 @@
         </ul>
       </section>
     {% endfor %}
+
+    <p class="footnote">Day = days since the account was created in Atlas.</p>
   {% endif %}
 </body>
 </html>

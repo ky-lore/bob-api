@@ -16,8 +16,9 @@
     "unknown": "no target on file",
   } %}
 
-  <div class="card chart-root">
-    <h2>Days since signing</h2>
+  <details class="card chart-root" open>
+    <summary><h2>⏰ Days since signing</h2><span class="chevron">▼</span></summary>
+    <div class="card-body">
     <div class="chart-frame">
       {% for item in accounts_chart %}
         {% set width_pct = [(item.day / scale_max * 100), 100] | min | round(2) %}
@@ -46,7 +47,8 @@
       <span class="chart-chip"><i class="chart-swatch chart-swatch--approaching"></i>Approaching target</span>
       <span class="chart-chip"><i class="chart-swatch chart-swatch--on_track"></i>On track</span>
     </div>
-  </div>
+    </div>
+  </details>
 
   <div class="chart-tooltip" id="chart-tooltip" role="tooltip" hidden></div>
 
