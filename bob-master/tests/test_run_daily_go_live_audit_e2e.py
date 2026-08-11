@@ -609,12 +609,12 @@ def test_debug_max_accounts_none_means_no_cap(monkeypatch, tmp_path):
     _FakeSlack.sent = []
 
     from app.config import Settings
-    assert Settings.model_fields["debug_max_accounts"].default == 20  # sanity check on the real default
+    assert Settings.model_fields["debug_max_accounts"].default is None  # sanity check on the real default
 
     init_db()
     db = get_session_factory()()
     try:
-        # Settings default (20) exceeds our 3 fake accounts, so nothing gets capped.
+        # Settings default (None) means no cap at all, so nothing gets capped.
         run = mod.run_daily_go_live_audit(db)
         dashboard_data = json.loads(run.dashboard_json)
         accounts = {a["account"] for a in dashboard_data["accounts_overview"]}

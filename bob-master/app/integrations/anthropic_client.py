@@ -56,6 +56,10 @@ _TOOL_SCHEMA = {
         },
         "required": ["narratives"],
     },
+    # This tool schema is identical on every batch call in a run -- cache it
+    # (Bob, 2026-08-11) so only the per-batch account data is billed as fresh
+    # input on batches after the first.
+    "cache_control": {"type": "ephemeral"},
 }
 
 _SYSTEM_PROMPT = (
@@ -72,7 +76,12 @@ _SYSTEM_PROMPT = (
     "given, even if it's a short restatement of the input."
 )
 
-_BATCH_SIZE = 20
+# Small on purpose (Bob, 2026-08-11): this only ever runs on an unattended
+# daily cron, so there's no reason to trade reliability for wall-clock time.
+# A smaller batch gives each account more of the shared max_tokens budget
+# and means a bad batch (see module docstring re: the max_tokens incident)
+# only costs a handful of accounts their narrative instead of ~20.
+_BATCH_SIZE = 5
 _TOKENS_PER_ACCOUNT = 150
 _MIN_TOKENS = 512
 _MAX_TOKENS_CAP = 4096
@@ -114,6 +123,9 @@ _REPORT_TOOL_SCHEMA = {
         },
         "required": ["reports"],
     },
+    # Same rationale as _TOOL_SCHEMA's cache_control -- identical on every
+    # batch call within a run.
+    "cache_control": {"type": "ephemeral"},
 }
 
 _REPORT_SYSTEM_PROMPT = (
@@ -258,7 +270,7 @@ def _synthesize_batch(accounts: list[dict[str, Any]]) -> dict[str, str]:
     response = client.messages.create(
         model=settings.anthropic_model,
         max_tokens=max_tokens,
-        system=_SYSTEM_PROMPT,
+        system=[{"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         tools=[_TOOL_SCHEMA],
         tool_choice={"type": "tool", "name": _TOOL_NAME},
         messages=[{"role": "user", "content": json.dumps(accounts, indent=2)}],
@@ -292,7 +304,7 @@ def _synthesize_report_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[s
     response = client.messages.create(
         model=settings.anthropic_model,
         max_tokens=max_tokens,
-        system=_REPORT_SYSTEM_PROMPT,
+        system=[{"type": "text", "text": _REPORT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
         tools=[_REPORT_TOOL_SCHEMA],
         tool_choice={"type": "tool", "name": _REPORT_TOOL_NAME},
         messages=[{"role": "user", "content": json.dumps(accounts, indent=2)}],
