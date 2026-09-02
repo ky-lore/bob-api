@@ -40,3 +40,12 @@ class AtlasClient:
         resp = self._client.get("/api/accounts")
         resp.raise_for_status()
         return resp.json().get("accounts", [])
+
+    def post_campaigns(self, atlas_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Pushes one platform's campaign summary for one account INTO Atlas
+        (2026-09-02) -- the reverse direction of get_all_accounts. One call
+        per (account, platform); see app/tasks/atlas_campaign_push.py for the
+        payload shape (sample provided by Atlas's team)."""
+        resp = self._client.post(f"/api/accounts/{atlas_id}/campaigns", json=payload)
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
