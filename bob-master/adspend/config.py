@@ -22,9 +22,12 @@ class Settings(BaseSettings):
     google_ads_login_customer_id: str  # the MCC's customer ID, digits only, no dashes
     # v18 (originally assumed) 404s -- confirmed against the live API 2026-08-06
     # that v20 is reachable but rejects this client's query shape, and v21 is
-    # the first version that returns a clean 200. Bump this if Google
-    # deprecates v21 later; there's no way to auto-detect the "current" version.
-    google_ads_api_version: str = "v21"
+    # the first version that returns a clean 200. UPDATE 2026-09-02: v21 (and
+    # v20) now 404 outright -- Google sunset them. Confirmed live against the
+    # real API that v22/v23/v24 all return clean 200s; bumped to v24 (longest
+    # runway before its own sunset). Bump this again when it's inevitably
+    # deprecated too; there's no way to auto-detect the "current" version.
+    google_ads_api_version: str = "v24"
 
     # --- Meta Marketing API (Graph API) — a System User access token, unlike
     # Google's OAuth refresh flow, doesn't expire/rotate on its own, so there's
