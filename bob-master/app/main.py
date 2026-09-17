@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 
 from adspend.main import app as adspend_app
 from app.db import get_session_factory, init_db
-from app.routers import admin, atlas_campaign_push, atlas_report, dashboard
+from app.routers import admin, atlas_campaign_push, atlas_report, dashboard, zoom_call_sync
 from app.scheduler import start_scheduler
 from app.tasks.daily_go_live_audit import run_daily_go_live_audit
 from app.tasks.job_tracker import get_job, start_job
@@ -25,6 +25,7 @@ app.include_router(dashboard.router)
 app.include_router(admin.router)
 app.include_router(atlas_report.router)
 app.include_router(atlas_campaign_push.router)
+app.include_router(zoom_call_sync.router)
 # adspend (2026-08-06) mounted under this same deployment rather than run as
 # its own Railway service -- one base URL for every consumer, current and
 # future, instead of managing several. Its code (adspend/) stays a

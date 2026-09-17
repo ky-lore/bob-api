@@ -2,7 +2,7 @@ import enum
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -115,6 +115,36 @@ class ActionItemCheckoff(Base):
     checked_at: Mapped[datetime] = mapped_column(DateTime)
 
     __table_args__ = (UniqueConstraint("run_id", "account_name", name="uq_action_item_checkoff_run_account"),)
+
+
+class ZoomCallRecord(Base):
+    """One row per Zoom cloud recording that had a transcript, pulled by the
+    daily Zoom call sync (2026-09-17) -- see app/tasks/zoom_call_sync.py.
+
+    meeting_uuid is Zoom's own unique meeting-instance identifier (unlike
+    meeting_number/id, which repeats across a recurring/PMI meeting's
+    instances) -- the natural dedup key, so a day's sync just skips any uuid
+    already present rather than needing a separate watermark/state table.
+
+    matched_account_name/match_confidence come from fuzzy-matching the
+    meeting topic against Atlas company names (see
+    app/tasks/account_name_matching.py) -- Zoom has no Atlas ID field to
+    join on directly. Always stored, even at low confidence (unlike the
+    ClickUp folder re-bridge's upload CSV, nothing here gets bulk-applied
+    anywhere automatically, so there's no reason to throw away a low-
+    confidence guess -- a human or a later query can filter on confidence)."""
+
+    __tablename__ = "zoom_call_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    meeting_uuid: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    host_email: Mapped[str] = mapped_column(String(255))
+    topic: Mapped[str] = mapped_column(Text)
+    start_time: Mapped[datetime] = mapped_column(DateTime)
+    matched_account_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    match_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    transcript_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    pulled_at: Mapped[datetime] = mapped_column(DateTime)
 
 
 class ManagedClientEntry(Base):

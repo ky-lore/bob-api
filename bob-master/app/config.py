@@ -78,6 +78,18 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     anthropic_model: str = "claude-sonnet-5"
 
+    # --- Zoom (Server-to-Server OAuth app, 2026-09-17 — account-wide read
+    # access to meetings/recordings/transcripts across every user, not just
+    # whoever happens to authorize a personal connection. Optional/no
+    # default, unlike the required integrations above: this is a brand-new,
+    # not-yet-proven integration that nothing else depends on yet — making
+    # it required would force every test and deploy to carry these env vars
+    # before there's any real caller. ZoomClient itself raises a clear error
+    # if used without them; see app/integrations/zoom_client.py.) ---
+    zoom_account_id: str | None = None
+    zoom_client_id: str | None = None
+    zoom_client_secret: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
