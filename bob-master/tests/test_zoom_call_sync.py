@@ -72,7 +72,7 @@ def _setup(monkeypatch):
 
 def test_new_transcript_is_stored_and_matched_to_atlas_account(monkeypatch, tmp_path):
     _setup(monkeypatch)
-    _FakeAtlasClient.accounts = [{"companyName": "Acme Co", "isActive": True}]
+    _FakeAtlasClient.accounts = [{"id": "acme-1", "companyName": "Acme Co", "isActive": True}]
     _FakeZoomClient.users = [{"email": "tim@x.com"}]
     _FakeZoomClient.recordings_by_email = {
         "tim@x.com": [_recording("uuid-1", "AM x Acme Co | Weekly Meeting", transcript_url="https://z/dl/1")],
@@ -87,7 +87,8 @@ def test_new_transcript_is_stored_and_matched_to_atlas_account(monkeypatch, tmp_
     assert result["user_errors"] == []
 
     row = db.query(ZoomCallRecord).filter_by(meeting_uuid="uuid-1").first()
-    assert row.matched_account_name == "Acme Co"
+    assert row.atlas_account_id == "acme-1"
+    assert row.matched_company_name == "Acme Co"
     assert row.transcript_text == "WEBVTT\n\nhello"
     assert row.host_email == "tim@x.com"
 
@@ -119,7 +120,7 @@ def test_already_stored_meeting_uuid_is_not_reprocessed(monkeypatch, tmp_path):
     db.add(ZoomCallRecord(
         meeting_uuid="uuid-1", host_email="tim@x.com", topic="AM x Acme Co",
         start_time=datetime(2026, 9, 16, 20, 0, tzinfo=timezone.utc),
-        matched_account_name=None, match_confidence=None, transcript_text="already here",
+        atlas_account_id=None, matched_company_name=None, match_confidence=None, transcript_text="already here",
         pulled_at=datetime.now(timezone.utc),
     ))
     db.commit()
@@ -133,7 +134,7 @@ def test_already_stored_meeting_uuid_is_not_reprocessed(monkeypatch, tmp_path):
 
 def test_low_confidence_match_is_not_stored_as_a_real_match(monkeypatch, tmp_path):
     _setup(monkeypatch)
-    _FakeAtlasClient.accounts = [{"companyName": "Drain Force Plumbing", "isActive": True}]
+    _FakeAtlasClient.accounts = [{"id": "df-1", "companyName": "Drain Force Plumbing", "isActive": True}]
     _FakeZoomClient.users = [{"email": "tim@x.com"}]
     _FakeZoomClient.recordings_by_email = {
         "tim@x.com": [_recording("uuid-1", "Mariachi Corazon de Maria", transcript_url="https://z/dl/1")],
@@ -146,13 +147,14 @@ def test_low_confidence_match_is_not_stored_as_a_real_match(monkeypatch, tmp_pat
     assert result["new_records"] == 1
     assert result["matched"] == 0
     row = db.query(ZoomCallRecord).first()
-    assert row.matched_account_name is None
+    assert row.atlas_account_id is None
+    assert row.matched_company_name is None
     assert row.match_confidence is None
 
 
 def test_recordings_pull_failure_for_one_user_does_not_block_others(monkeypatch, tmp_path):
     _setup(monkeypatch)
-    _FakeAtlasClient.accounts = [{"companyName": "Acme Co", "isActive": True}]
+    _FakeAtlasClient.accounts = [{"id": "acme-1", "companyName": "Acme Co", "isActive": True}]
     _FakeZoomClient.users = [{"email": "broken@x.com"}, {"email": "tim@x.com"}]
     _FakeZoomClient.fail_recordings_for_email = "broken@x.com"
     _FakeZoomClient.recordings_by_email = {
@@ -187,7 +189,7 @@ def test_transcript_download_failure_is_soft_failed(monkeypatch, tmp_path):
 
 def test_inactive_atlas_accounts_are_excluded_from_matching(monkeypatch, tmp_path):
     _setup(monkeypatch)
-    _FakeAtlasClient.accounts = [{"companyName": "Acme Co", "isActive": False}]
+    _FakeAtlasClient.accounts = [{"id": "acme-1", "companyName": "Acme Co", "isActive": False}]
     _FakeZoomClient.users = [{"email": "tim@x.com"}]
     _FakeZoomClient.recordings_by_email = {
         "tim@x.com": [_recording("uuid-1", "AM x Acme Co", transcript_url="https://z/dl/1")],
@@ -198,4 +200,4 @@ def test_inactive_atlas_accounts_are_excluded_from_matching(monkeypatch, tmp_pat
     result = mod.sync_zoom_calls(db, target_date=date(2026, 9, 16))
 
     assert result["matched"] == 0
-    assert db.query(ZoomCallRecord).first().matched_account_name is None
+    assert db.query(ZoomCallRecord).first().atlas_account_id is None

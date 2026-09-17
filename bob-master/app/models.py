@@ -126,13 +126,25 @@ class ZoomCallRecord(Base):
     instances) -- the natural dedup key, so a day's sync just skips any uuid
     already present rather than needing a separate watermark/state table.
 
-    matched_account_name/match_confidence come from fuzzy-matching the
-    meeting topic against Atlas company names (see
-    app/tasks/account_name_matching.py) -- Zoom has no Atlas ID field to
-    join on directly. Always stored, even at low confidence (unlike the
-    ClickUp folder re-bridge's upload CSV, nothing here gets bulk-applied
-    anywhere automatically, so there's no reason to throw away a low-
-    confidence guess -- a human or a later query can filter on confidence)."""
+    atlas_account_id/match_confidence come from fuzzy-matching the meeting
+    topic against Atlas company names (see app/tasks/account_name_matching.py)
+    -- Zoom has no Atlas ID field to join on directly. atlas_account_id is
+    Atlas's own permanent account id (2026-09-17, "Atlas remains the holy
+    grail source of truth" -- not a second copy of identity bob-master
+    maintains itself); matched_company_name is a denormalized label
+    snapshotted at match time, purely so a row reads clearly without a
+    join back to Atlas -- same convention as Flag.client_name elsewhere in
+    this file, not a second source of truth for the name. No separate
+    "accounts" table: this Postgres has never had one (every account
+    reference elsewhere in this file, e.g. Flag.client_name, is a plain
+    string too), and Atlas is external to it anyway -- a plain indexed
+    atlas_account_id column gets the same "drill into one account's
+    transcripts by date" query pattern a nested table would, without
+    needing to maintain a redundant local copy of Atlas's account list.
+    Always stored, even at low confidence (unlike the ClickUp folder
+    re-bridge's upload CSV, nothing here gets bulk-applied anywhere
+    automatically, so there's no reason to throw away a low-confidence
+    guess -- a human or a later query can filter on confidence)."""
 
     __tablename__ = "zoom_call_records"
 
@@ -141,7 +153,8 @@ class ZoomCallRecord(Base):
     host_email: Mapped[str] = mapped_column(String(255))
     topic: Mapped[str] = mapped_column(Text)
     start_time: Mapped[datetime] = mapped_column(DateTime)
-    matched_account_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    atlas_account_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    matched_company_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     match_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     transcript_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     pulled_at: Mapped[datetime] = mapped_column(DateTime)

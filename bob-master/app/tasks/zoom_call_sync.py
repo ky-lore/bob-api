@@ -32,7 +32,7 @@ from app.tasks.account_name_matching import best_match, normalize
 # Same bar as the ClickUp folder re-bridge's "confirmed, no human review
 # needed" tier (0.82) -- deliberately NOT its lower 0.55 "worth a human
 # glance" tier, since nothing here surfaces a review list; whatever clears
-# this gets written straight into matched_account_name and could get trusted
+# this gets written straight into atlas_account_id and could get trusted
 # downstream. Confirmed necessary against real data, 2026-09-17: an
 # "Introduction" call topic (no real company name in it at all) scored 0.65
 # against an unrelated company purely from short-string character overlap --
@@ -53,6 +53,10 @@ def sync_zoom_calls(db: Session, target_date: date | None = None) -> dict[str, A
     account_norms = {
         a["companyName"]: normalize(a["companyName"]) for a in atlas_accounts if a.get("companyName")
     }
+    # best_match resolves to a company NAME (that's what it's normalized
+    # against) -- this looks the matched name back up to Atlas's real,
+    # permanent account id, which is what actually gets stored.
+    atlas_id_by_name = {a["companyName"]: a.get("id") for a in atlas_accounts if a.get("companyName")}
 
     existing_uuids = {row[0] for row in db.query(ZoomCallRecord.meeting_uuid).all()}
 
@@ -101,7 +105,8 @@ def sync_zoom_calls(db: Session, target_date: date | None = None) -> dict[str, A
                 host_email=email,
                 topic=topic,
                 start_time=datetime.fromisoformat(rec["start_time"].replace("Z", "+00:00")),
-                matched_account_name=match_name,
+                atlas_account_id=atlas_id_by_name.get(match_name) if match_name else None,
+                matched_company_name=match_name,
                 match_confidence=confidence if match_name else None,
                 transcript_text=transcript_text,
                 pulled_at=datetime.now(timezone.utc),
