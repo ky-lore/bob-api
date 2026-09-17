@@ -80,3 +80,44 @@ def test_unknown_job_id_returns_404():
     client = TestClient(app)
     resp = client.get("/tasks/zoom-call-sync/run/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_backfill_trigger_defaults_to_30_days_and_polls_at_the_same_route(monkeypatch):
+    captured = {}
+
+    def _fake(db, days=30):
+        captured["days"] = days
+        return {"from_date": "2026-08-18", "to_date": "2026-09-16", "chunks": 2, "new_records": 40, "matched": 22, "skipped_no_transcript": 5, "user_errors": []}
+
+    monkeypatch.setattr(router_mod, "backfill_zoom_calls", _fake)
+    _stub_session_factory(monkeypatch)
+    client = TestClient(app)
+
+    trigger_response = client.post("/tasks/zoom-call-sync/backfill").json()
+    assert trigger_response["job_status"] == "running"
+
+    # Same poll route as the daily sync -- job_tracker doesn't care which
+    # task produced the job_id.
+    body = _wait_for_job(client, trigger_response["job_id"])
+
+    assert captured["days"] == 30
+    assert body["job_status"] == "done"
+    assert body["chunks"] == 2
+    assert body["new_records"] == 40
+
+
+def test_backfill_trigger_passes_through_an_explicit_days_value(monkeypatch):
+    captured = {}
+
+    def _fake(db, days=30):
+        captured["days"] = days
+        return {"from_date": "x", "to_date": "y", "chunks": 1, "new_records": 0, "matched": 0, "skipped_no_transcript": 0, "user_errors": []}
+
+    monkeypatch.setattr(router_mod, "backfill_zoom_calls", _fake)
+    _stub_session_factory(monkeypatch)
+    client = TestClient(app)
+
+    trigger_response = client.post("/tasks/zoom-call-sync/backfill", params={"days": 7}).json()
+    _wait_for_job(client, trigger_response["job_id"])
+
+    assert captured["days"] == 7

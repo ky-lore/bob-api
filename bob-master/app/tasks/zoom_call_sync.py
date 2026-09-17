@@ -10,7 +10,9 @@ company names, and store one ZoomCallRecord per new transcript.
 Deliberately per-day, not incremental-since-last-sync: at this volume (26
 users, one date-range call each) a full day's pull is cheap regardless, and
 "yesterday" is a simpler, more obviously-correct unit to reason about and
-re-run than a rolling watermark.
+re-run than a rolling watermark. backfill_zoom_calls() below covers the
+"populate the past month" one-off case, chunked to survive Zoom's silent
+range-clamping (see _MAX_RANGE_DAYS).
 
 Meetings with a recording but no TRANSCRIPT file are skipped entirely --
 nothing useful to store yet. Not wired into the scheduler yet; manually
@@ -41,25 +43,29 @@ from app.tasks.account_name_matching import best_match, normalize
 # hair-trigger cutoff.
 _MIN_MATCH_CONFIDENCE = 0.82
 
+# Zoom's /users/{userId}/recordings silently CLAMPS a wider request down to
+# this span ending at `to` -- confirmed against the real API, 2026-09-17:
+# asking for 2026-07-01 -> 2026-09-17 (78 days) silently returned only
+# 2026-08-17 -> 2026-09-17 (31 days), no error, no warning. A backfill wider
+# than this MUST be chunked, or the older portion silently vanishes while
+# looking like a successful, complete pull.
+_MAX_RANGE_DAYS = 30
 
-def sync_zoom_calls(db: Session, target_date: date | None = None) -> dict[str, Any]:
-    """Returns {"target_date", "new_records", "matched", "skipped_no_transcript",
-    "user_errors": [{"email", "error"}, ...]}."""
-    target_date = target_date or (datetime.now(timezone.utc).date() - timedelta(days=1))
-    from_date = to_date = target_date.isoformat()
 
-    zoom = ZoomClient()
-    atlas_accounts = [a for a in AtlasClient().get_all_accounts() if a.get("isActive")]
-    account_norms = {
-        a["companyName"]: normalize(a["companyName"]) for a in atlas_accounts if a.get("companyName")
-    }
-    # best_match resolves to a company NAME (that's what it's normalized
-    # against) -- this looks the matched name back up to Atlas's real,
-    # permanent account id, which is what actually gets stored.
-    atlas_id_by_name = {a["companyName"]: a.get("id") for a in atlas_accounts if a.get("companyName")}
-
-    existing_uuids = {row[0] for row in db.query(ZoomCallRecord.meeting_uuid).all()}
-
+def _process_recordings_in_range(
+    db: Session,
+    zoom: ZoomClient,
+    account_norms: dict[str, str],
+    atlas_id_by_name: dict[str, str | None],
+    existing_uuids: set[str],
+    from_date: str,
+    to_date: str,
+) -> dict[str, Any]:
+    """Shared core: pull every user's recordings in [from_date, to_date]
+    (already <= _MAX_RANGE_DAYS -- callers are responsible for chunking),
+    dedupe/match/store. existing_uuids is mutated in place so a caller
+    chunking multiple ranges never double-processes a meeting that happens
+    to surface in more than one chunk."""
     new_records = 0
     matched = 0
     skipped_no_transcript = 0
@@ -116,9 +122,78 @@ def sync_zoom_calls(db: Session, target_date: date | None = None) -> dict[str, A
 
     db.commit()
     return {
-        "target_date": target_date.isoformat(),
         "new_records": new_records,
         "matched": matched,
         "skipped_no_transcript": skipped_no_transcript,
         "user_errors": user_errors,
+    }
+
+
+def _atlas_lookups() -> tuple[dict[str, str], dict[str, str | None]]:
+    atlas_accounts = [a for a in AtlasClient().get_all_accounts() if a.get("isActive")]
+    account_norms = {
+        a["companyName"]: normalize(a["companyName"]) for a in atlas_accounts if a.get("companyName")
+    }
+    # best_match resolves to a company NAME (that's what it's normalized
+    # against) -- this looks the matched name back up to Atlas's real,
+    # permanent account id, which is what actually gets stored.
+    atlas_id_by_name = {a["companyName"]: a.get("id") for a in atlas_accounts if a.get("companyName")}
+    return account_norms, atlas_id_by_name
+
+
+def sync_zoom_calls(db: Session, target_date: date | None = None) -> dict[str, Any]:
+    """Daily sync -- one day, always well under _MAX_RANGE_DAYS. Returns
+    {"target_date", "new_records", "matched", "skipped_no_transcript",
+    "user_errors": [{"email", "error"}, ...]}."""
+    target_date = target_date or (datetime.now(timezone.utc).date() - timedelta(days=1))
+    date_str = target_date.isoformat()
+
+    zoom = ZoomClient()
+    account_norms, atlas_id_by_name = _atlas_lookups()
+    existing_uuids = {row[0] for row in db.query(ZoomCallRecord.meeting_uuid).all()}
+
+    result = _process_recordings_in_range(
+        db, zoom, account_norms, atlas_id_by_name, existing_uuids, date_str, date_str
+    )
+    return {"target_date": date_str, **result}
+
+
+def backfill_zoom_calls(db: Session, days: int = 30) -> dict[str, Any]:
+    """One-off (or occasional catch-up) wide pull, e.g. "populate the past
+    month" -- chunks the requested window into <= _MAX_RANGE_DAYS spans so
+    Zoom's silent clamping (see _MAX_RANGE_DAYS) can't quietly drop the
+    older portion of the range. Reuses sync_zoom_calls's exact per-recording
+    logic via _process_recordings_in_range, just called once per chunk
+    instead of once for a single day. Returns the same shape as
+    sync_zoom_calls plus "from_date"/"to_date" for the overall window and
+    "chunks" (how many sub-requests it took)."""
+    today = datetime.now(timezone.utc).date()
+    overall_start = today - timedelta(days=days)
+    overall_end = today - timedelta(days=1)
+
+    zoom = ZoomClient()
+    account_norms, atlas_id_by_name = _atlas_lookups()
+    existing_uuids = {row[0] for row in db.query(ZoomCallRecord.meeting_uuid).all()}
+
+    totals = {"new_records": 0, "matched": 0, "skipped_no_transcript": 0, "user_errors": []}
+    chunk_start = overall_start
+    chunk_count = 0
+    while chunk_start <= overall_end:
+        chunk_end = min(chunk_start + timedelta(days=_MAX_RANGE_DAYS - 1), overall_end)
+        chunk_result = _process_recordings_in_range(
+            db, zoom, account_norms, atlas_id_by_name, existing_uuids,
+            chunk_start.isoformat(), chunk_end.isoformat(),
+        )
+        totals["new_records"] += chunk_result["new_records"]
+        totals["matched"] += chunk_result["matched"]
+        totals["skipped_no_transcript"] += chunk_result["skipped_no_transcript"]
+        totals["user_errors"].extend(chunk_result["user_errors"])
+        chunk_count += 1
+        chunk_start = chunk_end + timedelta(days=1)
+
+    return {
+        "from_date": overall_start.isoformat(),
+        "to_date": overall_end.isoformat(),
+        "chunks": chunk_count,
+        **totals,
     }

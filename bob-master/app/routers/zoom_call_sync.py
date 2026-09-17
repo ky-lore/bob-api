@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.db import get_session_factory
 from app.tasks.job_tracker import get_job, start_job
-from app.tasks.zoom_call_sync import sync_zoom_calls
+from app.tasks.zoom_call_sync import backfill_zoom_calls, sync_zoom_calls
 
 router = APIRouter()
 
@@ -24,11 +24,30 @@ def _run_sync(target_date: date | None) -> dict:
         db.close()
 
 
+def _run_backfill(days: int) -> dict:
+    db = get_session_factory()()
+    try:
+        return backfill_zoom_calls(db, days=days)
+    finally:
+        db.close()
+
+
 @router.post("/tasks/zoom-call-sync/run")
 def trigger_zoom_call_sync(
     target_date: date | None = Query(default=None, description="Defaults to yesterday (UTC)"),
 ) -> dict:
     job_id = start_job(lambda: _run_sync(target_date))
+    return {"job_id": job_id, "job_status": "running"}
+
+
+@router.post("/tasks/zoom-call-sync/backfill")
+def trigger_zoom_call_backfill(
+    days: int = Query(default=30, description="How many days back to pull, chunked safely under Zoom's silent ~1-month range clamp"),
+) -> dict:
+    """One-off wide pull (e.g. "populate the past month") -- polls at the
+    same GET .../run/{job_id} route below, job_tracker doesn't care which
+    task produced a given job_id."""
+    job_id = start_job(lambda: _run_backfill(days))
     return {"job_id": job_id, "job_status": "running"}
 
 
