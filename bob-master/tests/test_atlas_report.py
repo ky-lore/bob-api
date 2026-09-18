@@ -309,3 +309,29 @@ def test_zoom_transcript_outside_the_window_is_excluded(monkeypatch, db_session)
     records, _ = mod.build_atlas_report(db=db_session)
 
     assert records[0]["zoom_call_count"] == 0
+
+
+def test_run_and_store_atlas_report_persists_a_queryable_row(monkeypatch, db_session):
+    import json
+
+    from app.models import AtlasReportRun
+
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Persisted Co", atlas_id="persisted-1")]
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts: ({"Persisted Co": {"health": "needs_attention", "status": "x", "recent_work": "y"}}, []),
+    )
+
+    run = mod.run_and_store_atlas_report(db_session, limit=5)
+
+    assert run.id is not None
+    assert run.limit_used == 5
+    data = json.loads(run.report_json)
+    assert data["count"] == 1
+    assert data["accounts"][0]["company_name"] == "Persisted Co"
+    assert data["accounts"][0]["health"] == "needs_attention"
+
+    # Actually queryable back out, not just returned in-memory.
+    stored = db_session.query(AtlasReportRun).filter_by(id=run.id).one()
+    assert json.loads(stored.report_json)["accounts"][0]["company_name"] == "Persisted Co"

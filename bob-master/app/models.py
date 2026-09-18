@@ -176,3 +176,30 @@ class ManagedClientEntry(Base):
     created_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class AtlasReportRun(Base):
+    """One row per app/tasks/atlas_report.py run (2026-09-18) -- the
+    persistent counterpart to job_tracker's in-memory status, same
+    "job_tracker answers is-it-running, the DB row is the real durable
+    result" split AuditRun already established for the daily audit (see
+    job_tracker.py's docstring). Needed because a full ~148-account run
+    takes well past Railway's ~300s gateway timeout on a synchronous
+    request, AND because job_tracker itself doesn't survive a redeploy
+    (confirmed the hard way with the daily audit, 2026-09-18) -- without
+    this row, a slow run that outlives a redeploy would leave nothing to
+    show for it. GET .../latest always serves this table directly, never
+    job_tracker, so the last completed run stays visible regardless of
+    process restarts.
+
+    report_json is the same {"count", "accounts", "narrative_batches"} shape
+    build_atlas_report's caller already returns over HTTP -- stored verbatim
+    rather than normalized into columns, since nothing here needs to query
+    inside it yet (see AuditRun.dashboard_json for the same convention)."""
+
+    __tablename__ = "atlas_report_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    limit_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    report_json: Mapped[str] = mapped_column(Text)

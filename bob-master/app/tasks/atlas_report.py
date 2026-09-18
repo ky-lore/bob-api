@@ -28,6 +28,7 @@ history is real, but it's not what Atlas wants to display.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -39,7 +40,7 @@ from app.integrations.anthropic_client import synthesize_account_reports
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
 from app.integrations.slack import SlackClient
-from app.models import ZoomCallRecord
+from app.models import AtlasReportRun, ZoomCallRecord
 from app.tasks.account_context_gather import gather_atlas_context
 from app.tasks.daily_go_live_audit import _days_since_atlas_created_at
 from app.tasks.zoom_call_sync import format_transcript_for_context
@@ -230,3 +231,23 @@ def build_atlas_report(
         record["recent_work"] = report.get("recent_work")
 
     return records, batch_results
+
+
+def run_and_store_atlas_report(db: Session, limit: int | None = None) -> AtlasReportRun:
+    """Runs build_atlas_report and persists the result as a new AtlasReportRun
+    row (2026-09-18) -- the durable counterpart to the manual-trigger
+    endpoint's job_tracker status, same split AuditRun already has for the
+    daily audit. Always inserts a new row rather than upserting one "latest"
+    row, same append-only convention as AuditRun -- cheap to keep every run's
+    history (see AtlasReportRun's docstring), and GET .../latest just orders
+    by run_at desc."""
+    records, batch_results = build_atlas_report(db=db, limit=limit)
+    run = AtlasReportRun(
+        run_at=datetime.now(timezone.utc),
+        limit_used=limit,
+        report_json=json.dumps({"count": len(records), "accounts": records, "narrative_batches": batch_results}),
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
