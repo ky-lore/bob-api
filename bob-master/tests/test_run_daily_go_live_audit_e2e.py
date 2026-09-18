@@ -19,7 +19,7 @@ import pytest
 import app.tasks.daily_go_live_audit as mod
 from app.config import get_settings
 from app.db import get_engine, get_session_factory, init_db
-from app.models import FlagCategory, RunStatus
+from app.models import FlagCategory, RunStatus, ZoomCallRecord
 
 
 @pytest.fixture(autouse=True)
@@ -412,6 +412,97 @@ def test_full_context_gather_reaches_the_narrative_llm_input(monkeypatch, tmp_pa
         assert acme["account"] == "Acme Co"
         assert any("Client hasn't sent brand assets yet" in c for c in acme["context"])
         assert any("launching soon, just waiting on assets" in c for c in acme["context"])
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_zoom_transcripts_reach_the_narrative_llm_input(monkeypatch, tmp_path, _capture_narrative_accounts):
+    """Proves the Zoom blend end-to-end: a stored ZoomCallRecord for this
+    account's real Atlas id shows up in the LLM's context, formatted (not
+    raw VTT) and tagged with topic/date -- see zoom_call_sync.py's
+    format_transcript_for_context and daily_go_live_audit.py's gather loop."""
+    db_path = tmp_path / "zoom_context.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", atlas_id="acme-co-zoom-test", stage="onboarding")]
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        db.add(ZoomCallRecord(
+            meeting_uuid="zoom-uuid-1", host_email="tim@x.com",
+            topic="AM x Acme Co | Weekly Meeting",
+            start_time=datetime.now(timezone.utc) - timedelta(days=2),
+            atlas_account_id="acme-co-zoom-test", matched_company_name="Acme Co", match_confidence=1.0,
+            transcript_text="WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nMak Rogers: The client wants a full site rebuild.",
+            pulled_at=datetime.now(timezone.utc),
+        ))
+        db.commit()
+
+        mod.run_daily_go_live_audit(db)
+
+        assert len(_capture_narrative_accounts) == 1
+        acme = _capture_narrative_accounts[0]
+        zoom_entries = [c for c in acme["context"] if c.startswith("[Zoom call,")]
+        assert len(zoom_entries) == 1
+        assert "AM x Acme Co | Weekly Meeting" in zoom_entries[0]
+        assert "Mak Rogers: The client wants a full site rebuild." in zoom_entries[0]
+        assert "00:00:01.000" not in zoom_entries[0]  # timestamps stripped, not raw VTT
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_zoom_context_is_capped_to_the_most_recent_calls(monkeypatch, tmp_path, _capture_narrative_accounts):
+    db_path = tmp_path / "zoom_context_cap.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _FakeGHL)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", atlas_id="acme-co-zoom-test", stage="onboarding")]
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        for i in range(5):
+            db.add(ZoomCallRecord(
+                meeting_uuid=f"zoom-uuid-{i}", host_email="tim@x.com", topic=f"Call {i}",
+                start_time=datetime.now(timezone.utc) - timedelta(days=i),
+                atlas_account_id="acme-co-zoom-test", matched_company_name="Acme Co", match_confidence=1.0,
+                transcript_text=f"WEBVTT\n\nSpeaker: call number {i}", pulled_at=datetime.now(timezone.utc),
+            ))
+        db.commit()
+
+        mod.run_daily_go_live_audit(db)
+
+        acme = _capture_narrative_accounts[0]
+        zoom_entries = [c for c in acme["context"] if c.startswith("[Zoom call,")]
+        # Most recent _ZOOM_CONTEXT_CALL_LIMIT (2) only, not all 5.
+        assert len(zoom_entries) == mod._ZOOM_CONTEXT_CALL_LIMIT
+        assert any("Call 0" in c for c in zoom_entries)  # most recent (day 0)
+        assert any("Call 1" in c for c in zoom_entries)  # second most recent (day 1)
+        assert not any("Call 4" in c for c in zoom_entries)  # oldest, excluded
     finally:
         db.close()
         get_settings.cache_clear()

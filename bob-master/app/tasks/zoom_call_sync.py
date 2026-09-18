@@ -43,6 +43,33 @@ from app.tasks.account_name_matching import best_match, normalize
 # hair-trigger cutoff.
 _MIN_MATCH_CONFIDENCE = 0.82
 
+# Per-transcript cap for the LLM blend (daily_go_live_audit.py), NOT for
+# storage -- the full raw VTT always stays in ZoomCallRecord.transcript_text
+# regardless. Real transcripts run 50-90k+ characters; dumping even one
+# raw into a single account's narrative-batch context would dwarf every
+# other context source combined and risks re-triggering the exact
+# stop_reason=max_tokens failure anthropic_client.py's docstring already
+# warns about. 4000 chars (~1-2 pages of actual dialogue) keeps a couple of
+# recent calls' worth of signal without dominating the batch.
+_TRANSCRIPT_CONTEXT_CHAR_LIMIT = 4000
+
+
+def format_transcript_for_context(vtt_text: str, max_chars: int = _TRANSCRIPT_CONTEXT_CHAR_LIMIT) -> str:
+    """Strips WEBVTT cue numbers and timestamp lines down to plain
+    "Speaker: text" lines -- raw VTT spends a big chunk of any character
+    budget on cue numbering/timestamps, not actual spoken content -- then
+    truncates to max_chars. Presentation-only; never mutates what's stored."""
+    lines = []
+    for line in vtt_text.splitlines():
+        line = line.strip()
+        if not line or line == "WEBVTT" or line.isdigit() or "-->" in line:
+            continue
+        lines.append(line)
+    plain = "\n".join(lines)
+    if len(plain) > max_chars:
+        plain = plain[:max_chars].rsplit(" ", 1)[0] + "…"
+    return plain
+
 # Zoom's /users/{userId}/recordings silently CLAMPS a wider request down to
 # this span ending at `to` -- confirmed against the real API, 2026-09-17:
 # asking for 2026-07-01 -> 2026-09-17 (78 days) silently returned only

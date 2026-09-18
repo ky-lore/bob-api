@@ -98,16 +98,22 @@ from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
 from app.integrations.ghl import GHLClient
 from app.integrations.slack import SlackClient
-from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, RunStatus
+from app.models import AuditRun, Flag, FlagCategory, FlagSeverity, RunStatus, ZoomCallRecord
 from app.tasks.account_context_gather import gather_atlas_context
 from app.tasks.ads_off_classification import classify_ads_off
 from app.tasks.clickup_correlation import resolve_day_count
 from app.tasks.dashboard_summary import all_matched_accounts, build_dashboard_json
+from app.tasks.zoom_call_sync import format_transcript_for_context
 
 # An account not yet live, within this many days of its Atlas goLive deadline,
 # is "approaching" rather than "on_track" or "behind" -- a starting heuristic
 # (Bob hasn't specified an exact buffer), easy to tune later.
 _APPROACHING_BUFFER_DAYS = 3
+
+# How many of an account's most recent Zoom calls feed the LLM blend --
+# see format_transcript_for_context for the per-call character cap. Two
+# recent calls is enough to catch a trend without ballooning the batch.
+_ZOOM_CONTEXT_CALL_LIMIT = 2
 
 
 def _days_since_atlas_created_at(created_at: str | None) -> int:
@@ -405,6 +411,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                 "clickup_ok": None, "clickup_comment_count": None, "clickup_error": None,
                 "slack_channel_matched": None, "slack_match_confidence": None, "slack_match_score": None,
                 "slack_ok": None, "slack_message_count": None, "slack_error": None,
+                "zoom_call_count": None,
             }
             if needs_monitoring:
                 gather_result = gather_atlas_context(
@@ -425,6 +432,33 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
                     "slack_message_count": gather_result.slack_message_count,
                     "slack_error": gather_result.slack_error,
                 })
+
+                # Zoom call transcripts (2026-09-18) -- pre-fetched daily by
+                # zoom_call_sync.py into Postgres, so this is a local query,
+                # not a live external call like ClickUp/Slack above. Most
+                # recent _ZOOM_CONTEXT_CALL_LIMIT calls only, each capped to
+                # format_transcript_for_context's char limit -- a full raw
+                # transcript (50-90k+ chars) would dwarf every other context
+                # source combined for a single account. Keyed on Atlas's own
+                # account id (see ZoomCallRecord docstring), not a name
+                # string -- no re-matching needed at blend time.
+                atlas_id = ctx.get("atlas_id")
+                zoom_calls = []
+                if atlas_id:
+                    zoom_calls = (
+                        db.query(ZoomCallRecord)
+                        .filter_by(atlas_account_id=atlas_id)
+                        .order_by(ZoomCallRecord.start_time.desc())
+                        .limit(_ZOOM_CONTEXT_CALL_LIMIT)
+                        .all()
+                    )
+                diagnostics["zoom_call_count"] = len(zoom_calls)
+                for call in zoom_calls:
+                    call_date = call.start_time.date().isoformat()
+                    formatted = format_transcript_for_context(call.transcript_text or "")
+                    rich_context.setdefault(account_name, []).append(
+                        f"[Zoom call, {call.topic}, {call_date}] {formatted}"
+                    )
 
             # Real Google Ads spend via adspend/ — the SOLE spend/is_live
             # source now (2026-08-06, heartbeat dropped entirely). Soft-failed

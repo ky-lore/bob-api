@@ -301,3 +301,28 @@ def test_backfill_aggregates_stats_and_errors_across_chunks(monkeypatch, tmp_pat
 
     assert result["chunks"] == 2
     assert len(result["user_errors"]) == 2  # one failure per chunk for this user
+
+
+# --- format_transcript_for_context -------------------------------------------
+
+def test_format_transcript_strips_cue_numbers_and_timestamps():
+    vtt = (
+        "WEBVTT\n\n"
+        "1\n00:01:30.320 --> 00:01:32.719\nMak Rogers: Hello, how are you?\n\n"
+        "2\n00:01:32.720 --> 00:01:34.070\nRaymundo: Hi, this is me.\n"
+    )
+    result = mod.format_transcript_for_context(vtt)
+    assert result == "Mak Rogers: Hello, how are you?\nRaymundo: Hi, this is me."
+
+
+def test_format_transcript_truncates_to_max_chars_on_a_word_boundary():
+    vtt = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\n" + ("word " * 2000)
+    result = mod.format_transcript_for_context(vtt, max_chars=20)
+    assert len(result) <= 21  # 20 chars + the ellipsis char
+    assert result.endswith("…")
+    assert not result[:-1].endswith(" ")  # broke on a word boundary, not mid-word
+
+
+def test_format_transcript_leaves_short_text_untouched():
+    vtt = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:02.000\nShort call."
+    assert mod.format_transcript_for_context(vtt) == "Short call."
