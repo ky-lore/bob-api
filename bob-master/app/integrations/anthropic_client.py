@@ -104,6 +104,8 @@ _MIN_TOKENS = 512
 _MAX_TOKENS_CAP = 4096
 
 _REPORT_TOOL_NAME = "submit_account_reports"
+_HEALTH_VALUES = ["on_track", "needs_attention", "at_risk"]
+
 _REPORT_TOOL_SCHEMA = {
     "name": _REPORT_TOOL_NAME,
     "description": "Submit the synthesized status + recent-work summary for each account.",
@@ -116,6 +118,20 @@ _REPORT_TOOL_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "account": {"type": "string"},
+                        "health": {
+                            "type": "string",
+                            "enum": _HEALTH_VALUES,
+                            "description": (
+                                "A single at-a-glance read on this account's relationship health this "
+                                "week, for an exec scanning many accounts at once. 'at_risk': explicit "
+                                "churn/cancellation talk, an angry/escalated client, a payment/billing "
+                                "standoff, or a serious unresolved complaint. 'needs_attention': a real "
+                                "blocker, an overdue reply, a stalled deliverable, or a client who sounds "
+                                "frustrated but hasn't escalated. 'on_track': everything else, including "
+                                "quiet accounts with no bad signals. Judge from the actual tone/content of "
+                                "the context given, not just presence of a Slack/ClickUp thread."
+                            ),
+                        },
                         "status": {
                             "type": "string",
                             "description": (
@@ -127,14 +143,15 @@ _REPORT_TOOL_SCHEMA = {
                             "type": "string",
                             "description": (
                                 "One to two concise sentences summarizing the concrete work/activity "
-                                "reported in the given ClickUp comments and Slack messages -- what the "
-                                "team has actually been doing on this account recently (builds, fixes, "
-                                "calls, campaign changes, blockers worked). Say 'No recent activity "
-                                "reported' if the context has nothing to summarize -- never invent activity."
+                                "reported in the given ClickUp comments, Slack messages, and call "
+                                "transcripts -- what the team has actually been doing on this account "
+                                "recently (builds, fixes, calls, campaign changes, blockers worked). Say "
+                                "'No recent activity reported' if the context has nothing to summarize -- "
+                                "never invent activity."
                             ),
                         },
                     },
-                    "required": ["account", "status", "recent_work"],
+                    "required": ["account", "health", "status", "recent_work"],
                 },
             }
         },
@@ -146,15 +163,19 @@ _REPORT_TOOL_SCHEMA = {
 }
 
 _REPORT_SYSTEM_PROMPT = (
-    "You are synthesizing two things per client account for an internal reporting feed consumed by "
-    "another system (Atlas, the agency's master account database), not read directly by a person on a "
-    "dashboard. You'll be given, per account: day count since signing, whether it is currently live "
-    "(running ad spend), its stage, and raw context — ClickUp comments and Slack channel messages. Using "
+    "You are synthesizing a weekly per-account report for a marketing agency, read by two different "
+    "consumers of the SAME data: Atlas (the agency's master account database, machine consumption) and "
+    "execs skimming many accounts at once for anything that needs their attention. Write for the exec "
+    "reader — plain, scannable, no jargon — and it works for both. You'll be given, per account: day "
+    "count since signing, whether it is currently live (running ad spend), its stage, and raw context — "
+    "ClickUp comments, Slack channel messages, and call transcripts, all from roughly the past week. Using "
     "that, produce for EACH account: "
-    "(1) status: one concise, matter-of-fact sentence on where the account currently stands — if live, "
+    "(1) health: 'on_track' / 'needs_attention' / 'at_risk' — see the tool schema for the exact bar for "
+    "each. Err toward 'on_track' when the context is thin or quiet; don't invent risk that isn't there. "
+    "(2) status: one concise, matter-of-fact sentence on where the account currently stands — if live, "
     "what's actually happening operationally (any risk, any open thread worth knowing); if not live, "
     "what's blocking it. "
-    "(2) recent_work: one to two concise sentences summarizing the concrete work/activity actually "
+    "(3) recent_work: one to two concise sentences summarizing the concrete work/activity actually "
     "reported in the given context — what the team has been doing (builds, fixes, calls, campaign "
     "changes, blockers worked), distinct from the status judgment. Say 'No recent activity reported' if "
     "there's nothing to summarize. "
@@ -244,11 +265,13 @@ def synthesize_account_reports(
     accounts: list[dict[str, Any]],
 ) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
     """Same input shape as synthesize_account_narratives. Returns (reports,
-    batch_results) — reports is {account_name: {"status": str, "recent_work":
-    str}}, for consumers that want the "what's actually been happening"
-    summary as a distinct field rather than folded into one status sentence
-    (built for app/tasks/atlas_report.py, 2026-08-06). See _run_in_batches for
-    the batching contract."""
+    batch_results) — reports is {account_name: {"health": str, "status": str,
+    "recent_work": str}} ("health" added 2026-09-18, one of _HEALTH_VALUES,
+    for the exec-facing skim of app/tasks/atlas_report.py's output), for
+    consumers that want the "what's actually been happening" summary as a
+    distinct field rather than folded into one status sentence (built for
+    app/tasks/atlas_report.py, 2026-08-06). See _run_in_batches for the
+    batching contract."""
     return _run_in_batches(accounts, _synthesize_report_batch)
 
 
@@ -326,10 +349,12 @@ def _synthesize_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[str, str
 def _synthesize_report_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
     settings = get_settings()
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    # Two fields per account now instead of one -- double the per-account
-    # token allowance so this doesn't inherit the max_tokens incident this
-    # module's docstring warns about.
-    max_tokens = min(_MAX_TOKENS_CAP, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * 2 * len(accounts)))
+    # Three fields per account now (health/status/recent_work) -- triple the
+    # per-account token allowance so this doesn't inherit the max_tokens
+    # incident this module's docstring warns about. health itself is a cheap
+    # one-word enum; the multiplier is really still paying for status +
+    # recent_work, same as before.
+    max_tokens = min(_MAX_TOKENS_CAP, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * 3 * len(accounts)))
 
     response = client.messages.create(
         model=settings.anthropic_model,
@@ -344,7 +369,11 @@ def _synthesize_report_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[s
         if block.type == "tool_use" and block.name == _REPORT_TOOL_NAME:
             reports = _coerce_list(block.input.get("reports", []), key="reports")
             result = {
-                r["account"]: {"status": r.get("status", ""), "recent_work": r.get("recent_work", "")}
+                r["account"]: {
+                    "health": r.get("health") if r.get("health") in _HEALTH_VALUES else "on_track",
+                    "status": r.get("status", ""),
+                    "recent_work": r.get("recent_work", ""),
+                }
                 for r in reports
                 if isinstance(r, dict) and r.get("account")
             }

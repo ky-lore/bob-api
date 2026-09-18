@@ -161,33 +161,53 @@ def test_synthesize_batch_handles_narratives_double_encoded_as_a_json_string(mon
 
 
 def test_synthesize_report_batch_handles_reports_double_encoded_as_a_json_string(monkeypatch):
-    payload = json.dumps([{"account": "Acme Co", "status": "doing fine", "recent_work": "shipped a fix"}])
+    payload = json.dumps(
+        [{"account": "Acme Co", "health": "at_risk", "status": "doing fine", "recent_work": "shipped a fix"}]
+    )
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": payload}))
 
     result = anthropic_client._synthesize_report_batch(
         [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
     )
 
-    assert result == {"Acme Co": {"status": "doing fine", "recent_work": "shipped a fix"}}
+    assert result == {"Acme Co": {"health": "at_risk", "status": "doing fine", "recent_work": "shipped a fix"}}
 
 
 def test_synthesize_report_batch_handles_a_self_nested_stringified_object(monkeypatch):
-    inner = {"reports": [{"account": "Acme Co", "status": "doing fine", "recent_work": "shipped a fix"}]}
+    inner = {
+        "reports": [{"account": "Acme Co", "health": "needs_attention", "status": "doing fine", "recent_work": "shipped a fix"}]
+    }
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": json.dumps(inner)}))
 
     result = anthropic_client._synthesize_report_batch(
         [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
     )
 
-    assert result == {"Acme Co": {"status": "doing fine", "recent_work": "shipped a fix"}}
+    assert result == {"Acme Co": {"health": "needs_attention", "status": "doing fine", "recent_work": "shipped a fix"}}
 
 
 def test_synthesize_report_batch_still_works_with_a_normal_native_array(monkeypatch):
-    reports = [{"account": "Acme Co", "status": "doing fine", "recent_work": "shipped a fix"}]
+    reports = [{"account": "Acme Co", "health": "on_track", "status": "doing fine", "recent_work": "shipped a fix"}]
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
 
     result = anthropic_client._synthesize_report_batch(
         [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
     )
 
-    assert result == {"Acme Co": {"status": "doing fine", "recent_work": "shipped a fix"}}
+    assert result == {"Acme Co": {"health": "on_track", "status": "doing fine", "recent_work": "shipped a fix"}}
+
+
+def test_synthesize_report_batch_defaults_health_to_on_track_when_missing_or_invalid(monkeypatch):
+    reports = [{"account": "Missing Health Co", "status": "doing fine", "recent_work": "shipped a fix"}]
+    _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
+    result = anthropic_client._synthesize_report_batch(
+        [{"account": "Missing Health Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
+    )
+    assert result["Missing Health Co"]["health"] == "on_track"
+
+    reports = [{"account": "Bad Health Co", "health": "somewhat_ok", "status": "doing fine", "recent_work": "x"}]
+    _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
+    result = anthropic_client._synthesize_report_batch(
+        [{"account": "Bad Health Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
+    )
+    assert result["Bad Health Co"]["health"] == "on_track"
