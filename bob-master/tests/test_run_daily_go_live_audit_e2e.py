@@ -81,7 +81,7 @@ def _atlas_account(
         "deadlines": deadlines,
         "integrations": {
             "clickupFolderId": clickup_folder_id,
-            "internalSlackChannelId": slack_channel_id,
+            "slackChannelId": slack_channel_id,
             "googleMccId": google_ads_customer_id,
             "metaAdAccountId": meta_ad_account_id,
         },

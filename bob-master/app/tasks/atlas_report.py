@@ -73,7 +73,7 @@ def build_atlas_report(
             continue
         integ = account.get("integrations") or {}
         folder_id = integ.get("clickupFolderId") or None
-        channel_id = integ.get("internalSlackChannelId") or None
+        channel_id = integ.get("slackChannelId") or None  # not internalSlackChannelId, see daily_go_live_audit.py
         customer_id = integ.get("googleMccId") or None
 
         ctx_result = gather_atlas_context(folder_id, channel_id, clickup, slack, window_days=context_window_days)

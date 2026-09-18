@@ -283,7 +283,13 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
             "stage": atlas_account.get("stage") or "unknown",
             "atlas_id": atlas_account.get("id"),
             "clickup_folder_id": integ.get("clickupFolderId") or None,
-            "slack_channel_id": integ.get("internalSlackChannelId") or None,
+            # slackChannelId, NOT internalSlackChannelId (2026-09-18): Atlas's
+            # two-Slack-field split (see atlas_client.py) is no longer how the
+            # real data is populated -- confirmed against a fresh pull,
+            # internalSlackChannelId is 0/148 populated, slackChannelId is
+            # 132/148 and (after a bulk bot-invite into the private channels
+            # it points at, see chat history) actually readable.
+            "slack_channel_id": integ.get("slackChannelId") or None,
             # Despite the field's name, this is the client's own Google Ads
             # customer ID, not a second per-client MCC — confirmed against
             # real Atlas data 2026-08-06 (e.g. distinct IDs per client, none

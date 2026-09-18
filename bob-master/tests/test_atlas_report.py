@@ -19,7 +19,7 @@ def _atlas_account(company_name, *, atlas_id=None, google_ads_customer_id=None, 
         "createdAt": created_at,
         "integrations": {
             "clickupFolderId": clickup_folder_id,
-            "internalSlackChannelId": slack_channel_id,
+            "slackChannelId": slack_channel_id,
             "googleMccId": google_ads_customer_id,
         },
     }

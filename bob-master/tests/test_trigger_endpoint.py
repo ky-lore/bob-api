@@ -46,7 +46,7 @@ class _FakeAtlasClient:
                 "createdAt": created_at,
                 "deadlines": {"goLive": go_live},
                 "integrations": {
-                    "clickupFolderId": "folder1", "internalSlackChannelId": None,
+                    "clickupFolderId": "folder1", "slackChannelId": None,
                     "googleMccId": None, "metaAdAccountId": None,
                 },
             }
