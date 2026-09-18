@@ -1,0 +1,267 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Account Pulse</title>
+<style>
+  :root {
+    --bg: #f5f3ee;
+    --surface: #ffffff;
+    --surface-raised: #fbfaf6;
+    --ink: #201d17;
+    --ink-muted: #726b58;
+    --ink-faint: #a49b84;
+    --border: #e7e2d3;
+    --border-strong: #d8d2bd;
+    --accent: #3e4c6d;
+
+    --good: #2e7d5b;
+    --good-bg: #e3f1e9;
+    --good-border: #c3e0cf;
+    --warn: #93611a;
+    --warn-bg: #f5ecd7;
+    --warn-border: #e6d3a3;
+    --risk: #ad392f;
+    --risk-bg: #f8e4e1;
+    --risk-border: #eec3bd;
+
+    --font-display: Iowan Old Style, Palatino Linotype, Palatino, Georgia, serif;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16140f; --surface: #1f1c15; --surface-raised: #241f17;
+      --ink: #f1ecdf; --ink-muted: #a89d84; --ink-faint: #766c58;
+      --border: #34301f; --border-strong: #423c26; --accent: #97a9cd;
+      --good: #7ecba1; --good-bg: #1c2b21; --good-border: #2c4536;
+      --warn: #e0ac54; --warn-bg: #2e2717; --warn-border: #4a3c1f;
+      --risk: #ea8a80; --risk-bg: #322019; --risk-border: #4e2c23;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #16140f; --surface: #1f1c15; --surface-raised: #241f17;
+    --ink: #f1ecdf; --ink-muted: #a89d84; --ink-faint: #766c58;
+    --border: #34301f; --border-strong: #423c26; --accent: #97a9cd;
+    --good: #7ecba1; --good-bg: #1c2b21; --good-border: #2c4536;
+    --warn: #e0ac54; --warn-bg: #2e2717; --warn-border: #4a3c1f;
+    --risk: #ea8a80; --risk-bg: #322019; --risk-border: #4e2c23;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--font-body);
+    font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased;
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+  .page { max-width: 860px; margin: 0 auto; padding: 40px 24px 96px; }
+
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 22px; }
+  nav.runs { overflow-x: auto; white-space: nowrap; }
+  nav.runs a { margin-right: 14px; text-decoration: none; color: var(--ink-muted); font-size: 12.5px; font-family: var(--font-mono); }
+  nav.runs a.current { font-weight: 600; color: var(--ink); }
+  .theme-toggle {
+    flex: 0 0 auto; background: var(--surface); border: 1px solid var(--border); color: var(--ink);
+    border-radius: 8px; padding: 6px 11px; font-size: 12.5px; cursor: pointer;
+  }
+
+  .masthead { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--accent); font-weight: 600;
+  }
+  h1 { font-family: var(--font-display); font-weight: 500; font-size: 34px; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+  .dek { color: var(--ink-muted); font-size: 15px; max-width: 62ch; margin: 2px 0 0; }
+
+  .pulse-strip {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border);
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 28px 0 36px;
+  }
+  .pulse-cell { background: var(--surface); padding: 18px 20px; display: flex; flex-direction: column; gap: 4px; }
+  .pulse-count { font-family: var(--font-display); font-size: 30px; font-variant-numeric: tabular-nums; line-height: 1; }
+  .pulse-label { font-size: 12.5px; color: var(--ink-muted); display: flex; align-items: center; gap: 6px; }
+  .pulse-swatch { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .pulse-cell.risk .pulse-count { color: var(--risk); }
+  .pulse-cell.warn .pulse-count { color: var(--warn); }
+  .pulse-cell.good .pulse-count { color: var(--good); }
+  .pulse-cell.risk .pulse-swatch { background: var(--risk); }
+  .pulse-cell.warn .pulse-swatch { background: var(--warn); }
+  .pulse-cell.good .pulse-swatch { background: var(--good); }
+
+  .section-label {
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--ink-faint); margin: 0 0 14px 2px;
+  }
+
+  .roster { display: flex; flex-direction: column; gap: 14px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px 22px; border-left: 3px solid var(--border-strong);
+  }
+  .card.health-at_risk { border-left-color: var(--risk); }
+  .card.health-needs_attention { border-left-color: var(--warn); }
+  .card.health-on_track { border-left-color: var(--good); }
+
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
+  .card-id h3 { font-family: var(--font-display); font-size: 18px; font-weight: 500; margin: 0 0 3px; }
+  .card-meta { font-size: 12.5px; color: var(--ink-muted); display: flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; flex-wrap: wrap; }
+  .card-meta .sep { color: var(--ink-faint); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 2px; }
+  .dot-live { background: var(--good); }
+  .dot-dark { background: var(--ink-faint); }
+
+  .health-chip {
+    flex: none; font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; padding: 4px 10px;
+    border-radius: 100px; white-space: nowrap; border: 1px solid transparent;
+  }
+  .health-chip-at_risk { background: var(--risk-bg); color: var(--risk); border-color: var(--risk-border); }
+  .health-chip-needs_attention { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+  .health-chip-on_track { background: var(--good-bg); color: var(--good); border-color: var(--good-border); }
+
+  .status { font-size: 15px; margin: 0 0 8px; text-wrap: pretty; }
+  .recent-work { font-size: 13.5px; color: var(--ink-muted); margin: 0 0 16px; text-wrap: pretty; }
+  .recent-work-label {
+    font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--ink-faint); margin-right: 8px; vertical-align: 1px;
+  }
+
+  .card-foot {
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px;
+    padding-top: 14px; border-top: 1px solid var(--border);
+  }
+  .metrics { display: flex; gap: 22px; flex-wrap: wrap; }
+  .metric { display: flex; flex-direction: column; gap: 2px; }
+  .metric-value { font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 600; }
+  .metric-empty .metric-value { color: var(--ink-faint); font-weight: 400; }
+  .metric-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); }
+  .platform-line { font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .chip-zoom { font-size: 11px; color: var(--accent); }
+
+  .empty { color: var(--ink-muted); font-style: italic; padding: 40px 0; text-align: center; }
+
+  footer.colophon {
+    margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 12px;
+    color: var(--ink-faint); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+
+  @media (max-width: 640px) {
+    .pulse-strip { grid-template-columns: 1fr; }
+    h1 { font-size: 27px; }
+    .card { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="toolbar">
+    <nav class="runs">
+      {% for h in history %}
+        <a href="/reports/atlas-account-status/pulse/{{ h.id }}" class="{{ 'current' if run and h.id == run.id else '' }}">{{ h.run_at.strftime('%b %-d, %-I:%M%p') }}</a>
+      {% endfor %}
+    </nav>
+    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">🌓 Toggle theme</button>
+  </div>
+
+  <div class="masthead">
+    <span class="eyebrow">Advanced Marketers · Internal</span>
+    <h1>Account Pulse</h1>
+    <p class="dek">Every account's status, this week's work, and ad spend, synthesized from ClickUp, Slack, Zoom, Google Ads, and Meta &mdash; scanned in seconds, not read report by report.</p>
+  </div>
+
+  {% if not run %}
+    <p class="empty">No report run yet &mdash; POST /reports/atlas-account-status/run to generate one.</p>
+  {% else %}
+    <div class="pulse-strip">
+      <div class="pulse-cell risk">
+        <span class="pulse-count">{{ health_counts.at_risk }}</span>
+        <span class="pulse-label"><span class="pulse-swatch"></span>At risk</span>
+      </div>
+      <div class="pulse-cell warn">
+        <span class="pulse-count">{{ health_counts.needs_attention }}</span>
+        <span class="pulse-label"><span class="pulse-swatch"></span>Needs attention</span>
+      </div>
+      <div class="pulse-cell good">
+        <span class="pulse-count">{{ health_counts.on_track }}</span>
+        <span class="pulse-label"><span class="pulse-swatch"></span>On track</span>
+      </div>
+    </div>
+
+    <p class="section-label">{{ accounts|length }} accounts · sorted by urgency</p>
+
+    <div class="roster">
+      {% for a in accounts %}
+        <article class="card health-{{ a.health }}">
+          <header class="card-head">
+            <div class="card-id">
+              <h3>{{ a.company_name }}</h3>
+              <div class="card-meta">
+                <span class="dot dot-{{ 'live' if a.is_live else 'dark' }}"></span>{{ 'Live' if a.is_live else 'Not live' }}
+                <span class="sep">·</span>Day {{ a.day }}
+                {% if a.stage_bit %}<span class="sep">·</span>{{ a.stage_bit }}{% endif %}
+              </div>
+            </div>
+            <span class="health-chip health-chip-{{ a.health }}">{{ a.health_label }}</span>
+          </header>
+
+          <p class="status">{{ a.status or '—' }}</p>
+          <p class="recent-work"><span class="recent-work-label">This week</span>{{ a.recent_work or 'No recent activity reported.' }}</p>
+
+          <footer class="card-foot">
+            <div class="metrics">
+              {% if a.has_spend %}
+                <div class="metric">
+                  <span class="metric-value">{{ a.spend_total_display }}</span>
+                  <span class="metric-label">spend this wk</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-value">{{ a.spend_conversions_display }}</span>
+                  <span class="metric-label">conversions</span>
+                </div>
+                <div class="metric">
+                  <span class="metric-value">{{ a.spend_cpc_display }}</span>
+                  <span class="metric-label">cost / conv.</span>
+                </div>
+              {% else %}
+                <div class="metric metric-empty">
+                  <span class="metric-value">—</span>
+                  <span class="metric-label">no spend data</span>
+                </div>
+              {% endif %}
+            </div>
+            <div class="platform-line">
+              {{ a.platform_line }}
+              {%- if a.zoom_call_count %} &nbsp;<span class="chip-zoom">{{ a.zoom_call_count }} call transcript{{ 's' if a.zoom_call_count != 1 else '' }} this wk</span>{% endif -%}
+            </div>
+          </footer>
+        </article>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <footer class="colophon">
+    <span>Source: /reports/atlas-account-status · window: last 7 days</span>
+    <span>{% if run %}Pulled {{ run.run_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}</span>
+  </footer>
+</div>
+
+<script>
+  (function () {
+    var stored = localStorage.getItem("bob-theme");
+    if (stored) document.documentElement.setAttribute("data-theme", stored);
+    document.getElementById("theme-toggle").addEventListener("click", function () {
+      var current = document.documentElement.getAttribute("data-theme")
+        || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      var next = current === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", next);
+      localStorage.setItem("bob-theme", next);
+    });
+  })();
+</script>
+</body>
+</html>

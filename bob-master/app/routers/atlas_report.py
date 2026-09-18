@@ -21,7 +21,9 @@ timeout budget than a browser/curl) and for quick `?limit=N` smoke tests.
 """
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.db import get_db, get_session_factory
@@ -30,6 +32,10 @@ from app.tasks.atlas_report import build_atlas_report, run_and_store_atlas_repor
 from app.tasks.job_tracker import get_job, start_job
 
 router = APIRouter()
+templates = Jinja2Templates(directory="app/templates")
+
+_HEALTH_ORDER = {"at_risk": 0, "needs_attention": 1, "on_track": 2}
+_HEALTH_LABEL = {"at_risk": "At risk", "needs_attention": "Needs attention", "on_track": "On track"}
 
 
 @router.get("/reports/atlas-account-status")
@@ -91,3 +97,64 @@ def get_latest_atlas_report(db: Session = Depends(get_db)) -> dict:
     if run is None:
         return {"run_id": None, "run_at": None, "count": 0, "accounts": [], "narrative_batches": []}
     return _run_to_response(run)
+
+
+def _display_ready(a: dict) -> dict:
+    """Precomputes every string a Jinja template needs so the template stays
+    pure presentation -- same reasoning as keeping business logic out of
+    dashboard.html's Jinja (see dashboard_summary.py). Mirrors the one-off
+    Artifact preview built 2026-09-18 for the 15-account sample, now the
+    real server-rendered view Bob asked for after seeing that preview."""
+    stage = (a.get("stage") or "unknown").lower()
+    spend = a.get("ad_spend")
+    bits = []
+    if a.get("google_ads"):
+        bits.append(f"Google ${a['google_ads']['total_cost']:,.0f}")
+    elif a.get("google_ads_error"):
+        bits.append("Google: pull failed")
+    if a.get("meta_ads"):
+        bits.append(f"Meta ${a['meta_ads']['total_cost']:,.0f}")
+    elif a.get("meta_ads_error"):
+        bits.append("Meta: pull failed")
+
+    return {
+        **a,
+        "health_label": _HEALTH_LABEL.get(a.get("health"), a.get("health")),
+        "stage_bit": None if stage in ("live", "unknown") else stage.title(),
+        "has_spend": spend is not None,
+        "spend_total_display": f"${spend['total_spend']:,.0f}" if spend else None,
+        "spend_conversions_display": f"{spend['total_conversions']:g}" if spend else None,
+        "spend_cpc_display": (
+            f"${spend['cost_per_conversion']:,.2f}" if spend and spend.get("cost_per_conversion") is not None else "—"
+        ),
+        "platform_line": " · ".join(bits) if bits else "No ad platform on file",
+    }
+
+
+def _pulse_context(db: Session, run: AtlasReportRun | None) -> dict:
+    history = db.query(AtlasReportRun).order_by(AtlasReportRun.run_at.desc()).limit(30).all()
+    accounts: list[dict] = []
+    health_counts = {"at_risk": 0, "needs_attention": 0, "on_track": 0}
+    if run is not None:
+        data = json.loads(run.report_json)
+        raw_accounts = sorted(
+            data.get("accounts", []),
+            key=lambda a: (_HEALTH_ORDER.get(a.get("health"), 3), -(a.get("day") or 0)),
+        )
+        accounts = [_display_ready(a) for a in raw_accounts]
+        for a in raw_accounts:
+            key = a.get("health") if a.get("health") in health_counts else "on_track"
+            health_counts[key] += 1
+    return {"run": run, "history": history, "accounts": accounts, "health_counts": health_counts}
+
+
+@router.get("/reports/atlas-account-status/pulse", response_class=HTMLResponse)
+def latest_atlas_report_pulse(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    run = db.query(AtlasReportRun).order_by(AtlasReportRun.run_at.desc()).first()
+    return templates.TemplateResponse(request, "account_pulse.html", _pulse_context(db, run))
+
+
+@router.get("/reports/atlas-account-status/pulse/{run_id}", response_class=HTMLResponse)
+def atlas_report_pulse_for_run(run_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    run = db.query(AtlasReportRun).filter_by(id=run_id).first()
+    return templates.TemplateResponse(request, "account_pulse.html", _pulse_context(db, run))

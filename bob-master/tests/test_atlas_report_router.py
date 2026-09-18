@@ -176,3 +176,109 @@ def test_latest_with_no_runs_yet_returns_an_empty_shape_not_an_error(tmp_path):
     assert resp.status_code == 200
     body = resp.json()
     assert body == {"run_id": None, "run_at": None, "count": 0, "accounts": [], "narrative_batches": []}
+
+
+def _sample_account(name, health, **overrides):
+    base = {
+        "atlas_id": name.lower().replace(" ", "-"),
+        "company_name": name,
+        "stage": "live",
+        "day": 90,
+        "is_live": True,
+        "health": health,
+        "status": f"{name} status sentence.",
+        "recent_work": f"{name} recent work sentence.",
+        "google_ads": {"total_cost": 123.0},
+        "google_ads_error": None,
+        "meta_ads": None,
+        "meta_ads_error": None,
+        "ad_spend": {"total_spend": 123.0, "total_conversions": 2.0, "cost_per_conversion": 61.5},
+        "zoom_call_count": 0,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_pulse_with_no_run_yet_shows_the_empty_state(tmp_path):
+    resp = _client(tmp_path).get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    assert "No report run yet" in resp.text
+
+
+def test_pulse_renders_accounts_sorted_by_severity_with_health_counts(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    accounts = [
+        _sample_account("On Track Co", "on_track"),
+        _sample_account("At Risk Co", "at_risk"),
+        _sample_account("Needs Attention Co", "needs_attention"),
+    ]
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 18, 12, 0, 0),
+        limit_used=None,
+        report_json=json.dumps({"count": 3, "accounts": accounts, "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    body = resp.text
+    # At-risk sorts first, on-track last -- urgency order, not input order.
+    assert body.index("At Risk Co") < body.index("Needs Attention Co") < body.index("On Track Co")
+    assert "At Risk Co status sentence." in body
+    assert "At Risk Co recent work sentence." in body
+    # No leaked template artifacts.
+    assert "None" not in body
+    assert "{{" not in body and "{%" not in body
+
+
+def test_pulse_shows_no_spend_data_and_no_ad_platform_gracefully(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account(
+        "No Spend Co", "on_track",
+        google_ads=None, google_ads_error=None, meta_ads=None, meta_ads_error=None, ad_spend=None,
+    )
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 18, 12, 0, 0),
+        limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    assert "no spend data" in resp.text
+    assert "No ad platform on file" in resp.text
+
+
+def test_pulse_for_a_specific_run_id_renders_that_historical_run(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    older = AtlasReportRun(
+        run_at=datetime(2026, 9, 17, 9, 0, 0),
+        limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [_sample_account("Older Run Co", "on_track")], "narrative_batches": []}),
+    )
+    newer = AtlasReportRun(
+        run_at=datetime(2026, 9, 18, 9, 0, 0),
+        limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [_sample_account("Newer Run Co", "on_track")], "narrative_batches": []}),
+    )
+    db.add(older)
+    db.add(newer)
+    db.commit()
+    db.refresh(older)
+    older_id = older.id
+    db.close()
+
+    resp = client.get(f"/reports/atlas-account-status/pulse/{older_id}")
+
+    assert resp.status_code == 200
+    assert "Older Run Co" in resp.text
+    assert "Newer Run Co" not in resp.text
