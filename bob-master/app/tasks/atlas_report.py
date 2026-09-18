@@ -100,6 +100,18 @@ def _combined_ad_spend(google_ads: dict[str, Any] | None, meta_ads: dict[str, An
     }
 
 
+def _report(on_progress, payload: dict[str, Any]) -> None:
+    """Swallows any error from the callback itself -- progress reporting must
+    never be able to break the actual run (same reasoning as job_tracker's
+    own try/except around report_progress)."""
+    if on_progress is None:
+        return
+    try:
+        on_progress(payload)
+    except Exception:
+        pass
+
+
 def _add_zoom_context(db: Session | None, atlas_id: str | None, cutoff: datetime, context: list[str]) -> int:
     """Appends this week's Zoom call transcripts (see zoom_call_sync.py) to
     context in place, same [Zoom call, <topic>, <date>] tag daily_go_live_audit.py
@@ -131,10 +143,18 @@ def build_atlas_report(
     limit: int | None = None,
     context_window_days: int = 7,
     spend_date_range: str = "LAST_7_DAYS",
+    on_progress=None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """db: Postgres session for the Zoom transcript lookup (see
     _add_zoom_context) -- optional (defaults to None, which just skips Zoom)
     so callers/tests that don't care about it don't need to wire one up.
+    on_progress (2026-09-18, optional): called with a plain dict after each
+    account's gather completes ({"phase": "gathering", "completed", "total",
+    "account"}), then again per narrative-synthesis batch ({"phase":
+    "synthesizing", "completed", "total"}) -- the full run takes ~10+ minutes
+    over the real account universe and was otherwise a total black box while
+    running (see job_tracker.py). Never lets a progress-reporting error break
+    the actual run.
     limit: cap the account universe for smoke testing (sorted by companyName
     first, same reproducibility convention as Settings.debug_max_accounts) --
     None means every active Atlas account. context_window_days/spend_date_range
@@ -160,8 +180,9 @@ def build_atlas_report(
 
     records: list[dict[str, Any]] = []
     narrative_inputs: list[dict[str, Any]] = []
+    total_accounts = len(atlas_accounts)
 
-    for account in atlas_accounts:
+    for i, account in enumerate(atlas_accounts):
         name = account.get("companyName")
         if not name:
             continue
@@ -222,8 +243,13 @@ def build_atlas_report(
             "is_live": is_live,
             "context": ctx_result.context,
         })
+        _report(on_progress, {"phase": "gathering", "completed": i + 1, "total": total_accounts, "account": name})
 
-    reports, batch_results = synthesize_account_reports(narrative_inputs)
+    _report(on_progress, {"phase": "synthesizing", "completed": 0, "total": None})
+    reports, batch_results = synthesize_account_reports(
+        narrative_inputs,
+        on_batch_done=lambda done, total: _report(on_progress, {"phase": "synthesizing", "completed": done, "total": total}),
+    )
     for record in records:
         report = reports.get(record["company_name"], {})
         record["health"] = report.get("health") or "on_track"
@@ -233,15 +259,15 @@ def build_atlas_report(
     return records, batch_results
 
 
-def run_and_store_atlas_report(db: Session, limit: int | None = None) -> AtlasReportRun:
+def run_and_store_atlas_report(db: Session, limit: int | None = None, on_progress=None) -> AtlasReportRun:
     """Runs build_atlas_report and persists the result as a new AtlasReportRun
     row (2026-09-18) -- the durable counterpart to the manual-trigger
     endpoint's job_tracker status, same split AuditRun already has for the
     daily audit. Always inserts a new row rather than upserting one "latest"
     row, same append-only convention as AuditRun -- cheap to keep every run's
     history (see AtlasReportRun's docstring), and GET .../latest just orders
-    by run_at desc."""
-    records, batch_results = build_atlas_report(db=db, limit=limit)
+    by run_at desc. on_progress: see build_atlas_report."""
+    records, batch_results = build_atlas_report(db=db, limit=limit, on_progress=on_progress)
     run = AtlasReportRun(
         run_at=datetime.now(timezone.utc),
         limit_used=limit,

@@ -52,13 +52,15 @@ def _run_to_response(run: AtlasReportRun) -> dict:
     return {"run_id": run.id, "run_at": run.run_at.isoformat(), **data}
 
 
-def _run_atlas_report_job(limit: int | None) -> dict:
+def _run_atlas_report_job(limit: int | None, report_progress) -> dict:
     """Runs on job_tracker's background thread -- needs its own DB session
     since the request's is long gone by the time this executes (same
-    reasoning as main.py's _run_daily_go_live_audit_and_summarize)."""
+    reasoning as main.py's _run_daily_go_live_audit_and_summarize).
+    report_progress: job_tracker's callback (see start_job) -- threaded
+    straight through to run_and_store_atlas_report's on_progress."""
     db = get_session_factory()()
     try:
-        run = run_and_store_atlas_report(db, limit=limit)
+        run = run_and_store_atlas_report(db, limit=limit, on_progress=report_progress)
         return _run_to_response(run)
     finally:
         db.close()
@@ -70,9 +72,12 @@ def trigger_atlas_report(
 ) -> dict:
     """Manual-trigger endpoint for the full report, run in the background.
     Returns a job_id immediately instead of blocking (see module docstring
-    for why). Poll GET .../run/{job_id} for status, or GET .../latest once
-    it's done -- the latter survives a redeploy mid-run, the former doesn't."""
-    job_id = start_job(lambda: _run_atlas_report_job(limit))
+    for why). Poll GET .../run/{job_id} for status (now including a
+    "progress" field, 2026-09-18 -- a real unlimited run takes ~11 minutes
+    and was otherwise a total black box while running), or GET .../latest
+    once it's done -- the latter survives a redeploy mid-run, the former
+    doesn't."""
+    job_id = start_job(lambda report_progress: _run_atlas_report_job(limit, report_progress))
     return {"job_id": job_id, "job_status": "running"}
 
 
@@ -82,7 +87,7 @@ def get_atlas_report_run_status(job_id: str) -> dict:
     if job is None:
         raise HTTPException(status_code=404, detail="unknown job_id")
     if job["status"] == "running":
-        return {"job_status": "running"}
+        return {"job_status": "running", "progress": job.get("progress")}
     if job["status"] == "error":
         return {"job_status": "error", "error": job["error"]}
     return {"job_status": "done", **job["result"]}

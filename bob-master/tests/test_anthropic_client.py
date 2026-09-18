@@ -96,6 +96,37 @@ def test_synthesize_account_reports_returns_status_and_recent_work_per_account(m
     assert batch_results[0]["ok"] is True
 
 
+def test_on_batch_done_fires_after_every_batch_success_or_failure(monkeypatch):
+    def _fake_report_batch(batch):
+        if batch[0]["account"] == "Account 20":
+            raise RuntimeError("boom")
+        return {a["account"]: {"health": "on_track", "status": "ok", "recent_work": "ok"} for a in batch}
+
+    monkeypatch.setattr(anthropic_client, "_synthesize_report_batch", _fake_report_batch)
+    monkeypatch.setattr(anthropic_client, "_BATCH_SIZE", 20)
+
+    calls = []
+    anthropic_client.synthesize_account_reports(_accounts(45), on_batch_done=lambda done, total: calls.append((done, total)))
+
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def test_on_batch_done_error_does_not_break_the_batching_run(monkeypatch):
+    def _fake_report_batch(batch):
+        return {a["account"]: {"health": "on_track", "status": "ok", "recent_work": "ok"} for a in batch}
+
+    monkeypatch.setattr(anthropic_client, "_synthesize_report_batch", _fake_report_batch)
+    monkeypatch.setattr(anthropic_client, "_BATCH_SIZE", 20)
+
+    def _broken(done, total):
+        raise RuntimeError("progress sink down")
+
+    result, batch_results = anthropic_client.synthesize_account_reports(_accounts(5), on_batch_done=_broken)
+
+    assert len(result) == 5
+    assert batch_results[0]["ok"] is True
+
+
 def test_synthesize_account_reports_shares_the_same_partial_failure_batching(monkeypatch):
     def _fake_report_batch(batch):
         if batch[0]["account"] == "Account 20":

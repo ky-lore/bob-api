@@ -186,11 +186,17 @@ _REPORT_SYSTEM_PROMPT = (
 
 
 def _run_in_batches(
-    accounts: list[dict[str, Any]], batch_fn
+    accounts: list[dict[str, Any]], batch_fn, on_batch_done=None
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Shared by synthesize_account_narratives and synthesize_account_reports —
     same batch-size/partial-failure/diagnostics contract either way, only
     batch_fn (and what it returns per account) differs.
+
+    on_batch_done (2026-09-18, optional): called as on_batch_done(batches_done,
+    total_batches) after each batch attempt (success or failure) -- lets a
+    caller with a lot of batches (atlas_report.py's full-universe run is ~30)
+    surface progress instead of going silent for however long the batch loop
+    takes. Never itself allowed to break the run -- see the try/except below.
 
     Returns (results, batch_results):
       - results: {account_name: <whatever batch_fn produced for it>} — may be
@@ -212,6 +218,7 @@ def _run_in_batches(
     results: dict[str, Any] = {}
     batch_results: list[dict[str, Any]] = []
     batch_errors: list[str] = []
+    total_batches = (len(accounts) + _BATCH_SIZE - 1) // _BATCH_SIZE
 
     for i in range(0, len(accounts), _BATCH_SIZE):
         batch = accounts[i : i + _BATCH_SIZE]
@@ -240,6 +247,11 @@ def _run_in_batches(
                     "error": error_message,
                 }
             )
+        if on_batch_done is not None:
+            try:
+                on_batch_done(len(batch_results), total_batches)
+            except Exception:
+                pass
 
     if not results and batch_errors:
         raise RuntimeError("; ".join(batch_errors))
@@ -247,7 +259,7 @@ def _run_in_batches(
 
 
 def synthesize_account_narratives(
-    accounts: list[dict[str, Any]],
+    accounts: list[dict[str, Any]], on_batch_done=None,
 ) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
     """accounts: list of {"account": str, "day": int, "stage": str, "is_live": bool,
     "context": [str, ...]} where context is the already-gathered ClickUp/Slack
@@ -257,12 +269,12 @@ def synthesize_account_narratives(
     {"status": str, "recommended_action": str}} (2026-08-11: added
     recommended_action alongside status, same shape as
     synthesize_account_reports below). See _run_in_batches for the batching
-    contract."""
-    return _run_in_batches(accounts, _synthesize_batch)
+    contract (including on_batch_done)."""
+    return _run_in_batches(accounts, _synthesize_batch, on_batch_done=on_batch_done)
 
 
 def synthesize_account_reports(
-    accounts: list[dict[str, Any]],
+    accounts: list[dict[str, Any]], on_batch_done=None,
 ) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
     """Same input shape as synthesize_account_narratives. Returns (reports,
     batch_results) — reports is {account_name: {"health": str, "status": str,
@@ -271,8 +283,8 @@ def synthesize_account_reports(
     consumers that want the "what's actually been happening" summary as a
     distinct field rather than folded into one status sentence (built for
     app/tasks/atlas_report.py, 2026-08-06). See _run_in_batches for the
-    batching contract."""
-    return _run_in_batches(accounts, _synthesize_report_batch)
+    batching contract (including on_batch_done)."""
+    return _run_in_batches(accounts, _synthesize_report_batch, on_batch_done=on_batch_done)
 
 
 def _coerce_list(value: Any, key: str | None = None) -> list:

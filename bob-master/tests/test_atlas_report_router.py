@@ -10,6 +10,7 @@ start twice per process (see test_trigger_endpoint.py), and whose real
 Depends(get_db) would otherwise reach for a real DATABASE_URL.
 """
 import json
+import threading
 import time
 from datetime import datetime
 
@@ -107,7 +108,7 @@ class _FakeRun:
 def test_trigger_starts_a_background_job_and_returns_its_result_on_poll(monkeypatch, tmp_path):
     captured = {}
 
-    def _fake_run_and_store(db, limit=None):
+    def _fake_run_and_store(db, limit=None, on_progress=None):
         captured["limit"] = limit
         return _FakeRun(7, json.dumps({"count": 1, "accounts": [{"company_name": "Acme Co"}], "narrative_batches": []}))
 
@@ -128,7 +129,7 @@ def test_trigger_starts_a_background_job_and_returns_its_result_on_poll(monkeypa
 
 
 def test_trigger_job_error_surfaces_on_poll(monkeypatch, tmp_path):
-    def _always_fail(db, limit=None):
+    def _always_fail(db, limit=None, on_progress=None):
         raise RuntimeError("Atlas pull failed")
 
     monkeypatch.setattr(router_mod, "run_and_store_atlas_report", _always_fail)
@@ -140,6 +141,31 @@ def test_trigger_job_error_surfaces_on_poll(monkeypatch, tmp_path):
 
     assert body["job_status"] == "error"
     assert "Atlas pull failed" in body["error"]
+
+
+def test_progress_is_visible_on_poll_while_the_job_is_still_running(monkeypatch, tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_run_and_store(db, limit=None, on_progress=None):
+        on_progress({"phase": "gathering", "completed": 12, "total": 148, "account": "Acme Co"})
+        started.set()
+        release.wait(timeout=5.0)
+        return _FakeRun(9, json.dumps({"count": 0, "accounts": [], "narrative_batches": []}))
+
+    monkeypatch.setattr(router_mod, "run_and_store_atlas_report", _slow_run_and_store)
+    monkeypatch.setattr(router_mod, "get_session_factory", lambda: (lambda: _FakeDB()))
+    client = _client(tmp_path)
+
+    trigger_response = client.post("/reports/atlas-account-status/run").json()
+    started.wait(timeout=5.0)
+
+    mid_run = client.get(f"/reports/atlas-account-status/run/{trigger_response['job_id']}").json()
+    assert mid_run["job_status"] == "running"
+    assert mid_run["progress"] == {"phase": "gathering", "completed": 12, "total": 148, "account": "Acme Co"}
+
+    release.set()
+    _wait_for_job(client, trigger_response["job_id"])
 
 
 def test_unknown_job_id_returns_404(tmp_path):

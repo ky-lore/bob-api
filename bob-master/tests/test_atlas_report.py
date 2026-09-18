@@ -135,7 +135,7 @@ def test_record_carries_the_atlas_id_and_compressed_google_ads_summary(monkeypat
     }
     monkeypatch.setattr(
         mod, "synthesize_account_reports",
-        lambda accounts: (
+        lambda accounts, on_batch_done=None: (
             {"Acme Co": {"health": "on_track", "status": "Live and spending", "recent_work": "Fixed the landing page"}},
             [],
         ),
@@ -163,7 +163,7 @@ def test_record_carries_the_atlas_id_and_compressed_google_ads_summary(monkeypat
 def test_account_with_no_google_mcc_id_gets_a_null_google_ads_field_not_an_error(monkeypatch):
     _setup(monkeypatch)
     _FakeAtlasClient.accounts = [_atlas_account("No CID Co", google_ads_customer_id=None)]
-    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts: ({}, []))
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     records, _ = mod.build_atlas_report()
 
@@ -178,7 +178,7 @@ def test_is_live_reflects_atlas_stage_not_ad_spend(monkeypatch):
     _setup(monkeypatch)
     _FakeAtlasClient.accounts = [_atlas_account("Not Live Co", stage="onboarding", google_ads_customer_id="123")]
     _FakeGoogleAdsClient.responses = {"123": _spend(0.0, [], id_value="123", total_conversions=0.0)}
-    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts: ({}, []))
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     records, _ = mod.build_atlas_report()
 
@@ -188,7 +188,7 @@ def test_is_live_reflects_atlas_stage_not_ad_spend(monkeypatch):
 def test_bad_customer_id_is_soft_failed_not_run_crashing(monkeypatch):
     _setup(monkeypatch)
     _FakeAtlasClient.accounts = [_atlas_account("Bad CID Co", google_ads_customer_id="9999999999")]
-    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts: ({}, []))
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     records, _ = mod.build_atlas_report()
 
@@ -199,7 +199,7 @@ def test_bad_customer_id_is_soft_failed_not_run_crashing(monkeypatch):
 def test_limit_caps_the_universe_sorted_by_company_name(monkeypatch):
     _setup(monkeypatch)
     _FakeAtlasClient.accounts = [_atlas_account("Charlie"), _atlas_account("Alpha"), _atlas_account("Beta")]
-    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts: ({}, []))
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     records, _ = mod.build_atlas_report(limit=2)
 
@@ -215,7 +215,7 @@ def test_meta_ads_summary_is_compressed_and_combined_with_google_into_ad_spend(m
     _FakeMetaAdsClient.responses = {
         "act_222": _spend(30.0, [_CAMPAIGN, _DEAD_CAMPAIGN], id_key="ad_account_id", id_value="act_222", total_conversions=1.0),
     }
-    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts: ({}, []))
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     records, _ = mod.build_atlas_report()
 
@@ -228,7 +228,7 @@ def test_meta_ads_summary_is_compressed_and_combined_with_google_into_ad_spend(m
 def test_bad_meta_ad_account_id_is_soft_failed_not_run_crashing(monkeypatch):
     _setup(monkeypatch)
     _FakeAtlasClient.accounts = [_atlas_account("Bad Meta Co", meta_ad_account_id="act_999")]
-    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts: ({}, []))
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     records, _ = mod.build_atlas_report()
 
@@ -241,7 +241,7 @@ def test_health_field_passes_through_from_synthesis(monkeypatch):
     _FakeAtlasClient.accounts = [_atlas_account("At Risk Co", atlas_id="risk-1")]
     monkeypatch.setattr(
         mod, "synthesize_account_reports",
-        lambda accounts: ({"At Risk Co": {"health": "at_risk", "status": "Escalated", "recent_work": "x"}}, []),
+        lambda accounts, on_batch_done=None: ({"At Risk Co": {"health": "at_risk", "status": "Escalated", "recent_work": "x"}}, []),
     )
 
     records, _ = mod.build_atlas_report()
@@ -252,7 +252,7 @@ def test_health_field_passes_through_from_synthesis(monkeypatch):
 def test_no_db_session_skips_zoom_but_does_not_error(monkeypatch):
     _setup(monkeypatch)
     _FakeAtlasClient.accounts = [_atlas_account("No DB Co", atlas_id="no-db-1")]
-    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts: ({}, []))
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     records, _ = mod.build_atlas_report(db=None)
 
@@ -278,7 +278,7 @@ def test_zoom_transcript_within_the_window_reaches_the_narrative_context_and_cou
     captured = []
     monkeypatch.setattr(
         mod, "synthesize_account_reports",
-        lambda accounts: (captured.extend(accounts) or {}, []),
+        lambda accounts, on_batch_done=None: (captured.extend(accounts) or {}, []),
     )
 
     records, _ = mod.build_atlas_report(db=db_session)
@@ -304,7 +304,7 @@ def test_zoom_transcript_outside_the_window_is_excluded(monkeypatch, db_session)
         pulled_at=datetime.now(timezone.utc),
     ))
     db_session.commit()
-    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts: ({}, []))
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     records, _ = mod.build_atlas_report(db=db_session)
 
@@ -320,7 +320,7 @@ def test_run_and_store_atlas_report_persists_a_queryable_row(monkeypatch, db_ses
     _FakeAtlasClient.accounts = [_atlas_account("Persisted Co", atlas_id="persisted-1")]
     monkeypatch.setattr(
         mod, "synthesize_account_reports",
-        lambda accounts: ({"Persisted Co": {"health": "needs_attention", "status": "x", "recent_work": "y"}}, []),
+        lambda accounts, on_batch_done=None: ({"Persisted Co": {"health": "needs_attention", "status": "x", "recent_work": "y"}}, []),
     )
 
     run = mod.run_and_store_atlas_report(db_session, limit=5)
@@ -335,3 +335,39 @@ def test_run_and_store_atlas_report_persists_a_queryable_row(monkeypatch, db_ses
     # Actually queryable back out, not just returned in-memory.
     stored = db_session.query(AtlasReportRun).filter_by(id=run.id).one()
     assert json.loads(stored.report_json)["accounts"][0]["company_name"] == "Persisted Co"
+
+
+def test_on_progress_reports_each_account_gathered_then_each_synthesis_batch(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Alpha Co"), _atlas_account("Beta Co")]
+
+    def _fake_reports(accounts, on_batch_done=None):
+        if on_batch_done:
+            on_batch_done(1, 1)
+        return {}, []
+
+    monkeypatch.setattr(mod, "synthesize_account_reports", _fake_reports)
+
+    events = []
+    mod.build_atlas_report(on_progress=events.append)
+
+    gathering = [e for e in events if e["phase"] == "gathering"]
+    assert [e["completed"] for e in gathering] == [1, 2]
+    assert gathering[0]["total"] == 2
+    assert gathering[1]["account"] == "Beta Co"
+
+    synthesizing = [e for e in events if e["phase"] == "synthesizing"]
+    assert synthesizing[-1] == {"phase": "synthesizing", "completed": 1, "total": 1}
+
+
+def test_on_progress_errors_never_break_the_run(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Alpha Co")]
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
+
+    def _broken_progress(payload):
+        raise RuntimeError("progress sink is down")
+
+    records, _ = mod.build_atlas_report(on_progress=_broken_progress)
+
+    assert len(records) == 1
