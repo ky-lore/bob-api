@@ -386,7 +386,7 @@ def test_override_immediately_shows_on_pulse_without_a_new_run(tmp_path):
 
     before = client.get("/reports/atlas-account-status/pulse")
     assert "On track" in before.text
-    assert "manually set" not in before.text
+    assert 'class="override-flag"' not in before.text
 
     client.post(
         "/reports/atlas-account-status/overrides",
@@ -396,7 +396,7 @@ def test_override_immediately_shows_on_pulse_without_a_new_run(tmp_path):
 
     after = client.get("/reports/atlas-account-status/pulse")
     assert "At risk" in after.text
-    assert "manually set" in after.text
+    assert 'class="override-flag"' in after.text
     assert 'value="Known churn risk"' in after.text  # reason pre-filled into the override form's input
 
 
@@ -415,7 +415,7 @@ def test_clear_override_reverts_pulse_to_the_llm_health(tmp_path):
     db.close()
 
     before = client.get("/reports/atlas-account-status/pulse")
-    assert "manually set" in before.text
+    assert 'class="override-flag"' in before.text
 
     clear_resp = client.delete(
         "/reports/atlas-account-status/overrides/acme-1", headers=_ADMIN_HEADERS
@@ -424,7 +424,7 @@ def test_clear_override_reverts_pulse_to_the_llm_health(tmp_path):
     assert clear_resp.json()["cleared"] is True
 
     after = client.get("/reports/atlas-account-status/pulse")
-    assert "manually set" not in after.text
+    assert 'class="override-flag"' not in after.text
     assert "On track" in after.text
 
 
@@ -601,3 +601,35 @@ def test_pulse_renders_the_bottom_switch_bar_with_correct_group_counts(tmp_path)
     switch_bar = text[text.index('class="pulse-switch"'):]
     assert '<span class="pd risk" title="At risk"><i></i>1</span>' in switch_bar  # pipeline: Onboarding Co
     assert '<span class="pd warn" title="Needs attention"><i></i>1</span>' in switch_bar  # live: Live Co 2
+
+
+def test_override_flag_is_an_inline_hover_tooltip_not_a_separate_text_line(tmp_path):
+    """Real ask, 2026-09-21: "can we have that just as a (!) hover tooltip
+    inline with the status pill" -- replaces the old separate "manually
+    set" text line under the chip with a small (!) badge inside the pill
+    whose tooltip carries the same info (plus a human-readable LLM label,
+    not the raw snake_case health value)."""
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": _sample_run_accounts(), "narrative_batches": []}),
+    ))
+    db.add(AccountHealthOverride(
+        atlas_id="acme-1", company_name="Acme Co", health="at_risk", reason="x", set_by=None,
+        created_at=datetime(2026, 9, 21), updated_at=datetime(2026, 9, 21),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    text = resp.text
+    assert 'class="override-flag"' in text
+    assert "Manually set — LLM said On track" in text
+    # The flag lives inside the health chip, not as a sibling text line.
+    chip_idx = text.index('class="health-chip health-chip-at_risk"')
+    flag_idx = text.index('class="override-flag"')
+    chip_close_idx = text.index("</span>", flag_idx)
+    assert chip_idx < flag_idx < chip_close_idx

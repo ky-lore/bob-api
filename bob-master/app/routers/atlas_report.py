@@ -252,6 +252,7 @@ def _display_ready(a: dict) -> dict:
     return {
         **a,
         "health_label": _HEALTH_LABEL.get(a.get("health"), a.get("health")),
+        "llm_health_label": _HEALTH_LABEL.get(a.get("llm_health"), a.get("llm_health")),
         "needs_extra_focus": _needs_extra_focus(a),
         "stage_bit": None if stage in ("live", "unknown") else stage.title(),
         "has_spend": spend is not None,

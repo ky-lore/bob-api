@@ -188,9 +188,26 @@
   .health-chip-on_track { background: var(--good-bg); color: var(--good); border-color: var(--good-border); }
 
   .health-block { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-  .override-badge {
-    font-size: 10.5px; color: var(--accent); font-family: var(--font-mono); text-align: right; max-width: 220px;
+
+  /* Manually-set flag (2026-09-21, Bob: "as a (!) hover tooltip inline with
+     the status pill") -- replaces the old separate "manually set" text line
+     below the chip. Native title-less custom tooltip so it matches the rest
+     of the page's look instead of the browser's plain default. */
+  .override-flag {
+    position: relative; display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; margin-left: 6px; border-radius: 50%;
+    background: rgba(0, 0, 0, 0.16); font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+    line-height: 1; cursor: help; vertical-align: -1px;
   }
+  .override-tooltip {
+    position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: var(--surface); font-family: var(--font-body); font-weight: 400;
+    font-size: 11.5px; padding: 6px 10px; border-radius: 6px; white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22); opacity: 0; pointer-events: none;
+    transition: opacity 0.15s ease; z-index: 5;
+  }
+  .override-flag:hover .override-tooltip, .override-flag:focus-visible .override-tooltip { opacity: 1; }
+
   .override-toggle {
     background: none; border: none; color: var(--ink-faint); font-size: 11px; font-family: var(--font-mono);
     cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px;
@@ -341,10 +358,15 @@
           </div>
         </div>
         <div class="health-block">
-          <span class="health-chip health-chip-{{ a.health }}">{{ a.health_label }}</span>
-          {% if a.health_overridden %}
-            <span class="override-badge">manually set{% if a.llm_health %} (LLM said {{ a.llm_health }}){% endif %}</span>
-          {% endif %}
+          <span class="health-chip health-chip-{{ a.health }}">
+            {{ a.health_label }}
+            {% if a.health_overridden %}
+              <span class="override-flag" tabindex="0">
+                <span aria-hidden="true">!</span>
+                <span class="override-tooltip">Manually set{% if a.llm_health %} — LLM said {{ a.llm_health_label }}{% endif %}</span>
+              </span>
+            {% endif %}
+          </span>
           <button type="button" class="override-toggle" data-toggle-override>{{ 'edit override' if a.health_overridden else 'override' }}</button>
         </div>
       </header>
