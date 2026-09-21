@@ -372,6 +372,10 @@
     <path fill="none" stroke="#0668E1" stroke-width="4.6" stroke-linecap="round" d="M8 18C3.6 18 2 14 2 12s1.6-6 6-6c5 0 7.6 9 11 9 3.6 0 5-3 5-3"/>
     <path fill="none" stroke="#0668E1" stroke-width="4.6" stroke-linecap="round" d="M28 6c4.4 0 6 4 6 6s-1.6 6-6 6c-5 0-7.6-9-11-9"/>
   </symbol>
+  <symbol id="icon-clickup" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="10" fill="#7B68EE"/>
+    <path fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M7 13l3.5 3.5L17 9"/>
+  </symbol>
 </svg>
 <div class="page">
 
@@ -477,7 +481,7 @@
 
       {% if a.recent_clickup_activity %}
         <details class="recent-activity">
-          <summary>Recent ClickUp activity — {{ a.recent_clickup_activity|length }} task{{ 's' if a.recent_clickup_activity|length != 1 else '' }} touched, last 48 weekday hrs</summary>
+          <summary><svg class="platform-icon"><use href="#icon-clickup"></use></svg>Recent ClickUp activity — {{ a.recent_clickup_activity|length }} task{{ 's' if a.recent_clickup_activity|length != 1 else '' }} touched, last 48 weekday hrs</summary>
           <div class="recent-activity-body">
             {% for t in a.recent_clickup_activity %}
               <div class="recent-activity-task">
