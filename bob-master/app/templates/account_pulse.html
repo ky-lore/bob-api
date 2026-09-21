@@ -193,7 +193,6 @@
       {% endfor %}
     </nav>
     <div style="display:flex; gap:8px;">
-      <button type="button" class="theme-toggle" id="admin-toggle" aria-label="Unlock overrides">🔒 Overrides</button>
       <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">🌓 Toggle theme</button>
     </div>
   </div>
@@ -318,32 +317,11 @@
 
 <script>
   (function () {
-    var PW_KEY = "bob-admin-password";
-
-    function getPassword() { return sessionStorage.getItem(PW_KEY); }
-
-    function ensurePassword() {
-      var pw = getPassword();
-      if (pw) return pw;
-      pw = window.prompt("Admin password (stored only for this browser tab):");
-      if (pw) sessionStorage.setItem(PW_KEY, pw);
-      return pw;
-    }
-
-    function refreshAdminButton() {
-      var btn = document.getElementById("admin-toggle");
-      btn.textContent = getPassword() ? "🔓 Overrides" : "🔒 Overrides";
-    }
-    refreshAdminButton();
-
-    document.getElementById("admin-toggle").addEventListener("click", function () {
-      if (getPassword()) {
-        sessionStorage.removeItem(PW_KEY);
-      } else {
-        ensurePassword();
-      }
-      refreshAdminButton();
-    });
+    // Rudimentary on purpose (Bob, 2026-09-21: "just save the password in
+    // the frontend lol - this is completely internal facing") -- no
+    // prompt, no sessionStorage, just sent with every override request.
+    // Must match Settings.admin_override_password on the server.
+    var ADMIN_PASSWORD = "wasp";
 
     document.querySelectorAll("[data-toggle-override]").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -359,17 +337,9 @@
     });
 
     function withAdminFetch(url, options) {
-      var pw = ensurePassword();
-      if (!pw) return;
       options = options || {};
-      options.headers = Object.assign({}, options.headers, { "X-Admin-Password": pw });
+      options.headers = Object.assign({}, options.headers, { "X-Admin-Password": ADMIN_PASSWORD });
       fetch(url, options).then(function (res) {
-        if (res.status === 401) {
-          sessionStorage.removeItem(PW_KEY);
-          refreshAdminButton();
-          window.alert("Wrong password -- try again.");
-          return;
-        }
         if (!res.ok) {
           window.alert("Save failed (" + res.status + ") -- see console for details.");
           console.error("override request failed", res);
