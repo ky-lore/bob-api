@@ -92,10 +92,27 @@
   .pulse-cell.warn .pulse-swatch { background: var(--warn); }
   .pulse-cell.good .pulse-swatch { background: var(--good); }
 
-  .section-label {
-    font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
-    color: var(--ink-faint); margin: 0 0 14px 2px;
+  .section-block { margin-bottom: 44px; }
+  .section-block:last-child { margin-bottom: 0; }
+  .section-heading {
+    display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 18px;
+    margin: 0 0 6px; padding-bottom: 12px; border-bottom: 1px solid var(--border-strong);
   }
+  .section-heading h2 {
+    font-family: var(--font-display); font-weight: 500; font-size: 21px; margin: 0;
+    display: flex; align-items: baseline; gap: 9px;
+  }
+  .section-count {
+    font-family: var(--font-mono); font-size: 13px; color: var(--ink-faint); font-variant-numeric: tabular-nums;
+  }
+  .section-counts {
+    display: flex; gap: 14px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .section-counts .sc.risk { color: var(--risk); }
+  .section-counts .sc.warn { color: var(--warn); }
+  .section-counts .sc.good { color: var(--good); }
+  .section-note { font-size: 12.5px; color: var(--ink-muted); margin: 0 0 18px; max-width: 62ch; }
 
   .roster { display: flex; flex-direction: column; gap: 14px; }
 
@@ -220,6 +237,96 @@
     <p class="dek">Every account's status, this week's work, and ad spend, synthesized from ClickUp, Slack, Zoom, Google Ads, and Meta &mdash; scanned in seconds, not read report by report.</p>
   </div>
 
+  {% macro account_card(a) %}
+    <article class="card health-{{ a.health }}{{ ' needs-focus' if a.needs_extra_focus }}" data-atlas-id="{{ a.atlas_id }}" data-company-name="{{ a.company_name }}">
+      <header class="card-head">
+        <div class="card-id">
+          <h3>{{ a.company_name }}</h3>
+          <div class="card-meta">
+            <span class="dot dot-{{ 'live' if a.is_live else 'dark' }}"></span>{{ 'Live' if a.is_live else 'Not live' }}
+            <span class="sep">·</span>Day {{ a.day }}
+            {% if a.stage_bit %}<span class="sep">·</span>{{ a.stage_bit }}{% endif %}
+          </div>
+        </div>
+        <div class="health-block">
+          <span class="health-chip health-chip-{{ a.health }}">{{ a.health_label }}</span>
+          {% if a.health_overridden %}
+            <span class="override-badge">manually set{% if a.llm_health %} (LLM said {{ a.llm_health }}){% endif %}</span>
+          {% endif %}
+          <button type="button" class="override-toggle" data-toggle-override>{{ 'edit override' if a.health_overridden else 'override' }}</button>
+        </div>
+      </header>
+
+      <p class="status">{{ a.status or '—' }}</p>
+      <p class="recent-work"><span class="recent-work-label">This week</span>{{ a.recent_work or 'No recent activity reported.' }}</p>
+
+      <div class="override-form" data-override-form>
+        <div class="override-form-row">
+          <select data-override-health>
+            <option value="on_track" {{ 'selected' if a.health == 'on_track' }}>On track</option>
+            <option value="needs_attention" {{ 'selected' if a.health == 'needs_attention' }}>Needs attention</option>
+            <option value="at_risk" {{ 'selected' if a.health == 'at_risk' }}>At risk</option>
+          </select>
+          <input type="text" data-override-reason placeholder="Reason (optional)" value="{{ a.health_override_reason or '' }}">
+        </div>
+        <div class="override-form-row">
+          <button type="button" class="primary" data-save-override>Save override</button>
+          {% if a.health_overridden %}<button type="button" data-clear-override>Clear override</button>{% endif %}
+          <button type="button" data-cancel-override>Cancel</button>
+        </div>
+      </div>
+
+      <footer class="card-foot">
+        <div class="metrics">
+          {% if a.has_spend %}
+            <div class="metric">
+              <span class="metric-value">{{ a.spend_total_display }}</span>
+              <span class="metric-label">spend this wk</span>
+            </div>
+            <div class="metric">
+              <span class="metric-value">{{ a.spend_conversions_display }}</span>
+              <span class="metric-label">conversions</span>
+            </div>
+            <div class="metric">
+              <span class="metric-value">{{ a.spend_cpc_display }}</span>
+              <span class="metric-label">cost / conv.</span>
+            </div>
+          {% else %}
+            <div class="metric metric-empty">
+              <span class="metric-value">—</span>
+              <span class="metric-label">no spend data</span>
+            </div>
+          {% endif %}
+        </div>
+        <div class="platform-line">
+          {{ a.platform_line }}
+          {%- if a.zoom_call_count %} &nbsp;<span class="chip-zoom">{{ a.zoom_call_count }} call transcript{{ 's' if a.zoom_call_count != 1 else '' }} this wk</span>{% endif -%}
+        </div>
+      </footer>
+    </article>
+  {% endmacro %}
+
+  {% macro section(title, note, accounts, counts) %}
+    <section class="section-block">
+      <div class="section-heading">
+        <h2>{{ title }}<span class="section-count">{{ accounts|length }}</span></h2>
+        <div class="section-counts">
+          <span class="sc risk">{{ counts.at_risk }} at risk</span>
+          <span class="sc warn">{{ counts.needs_attention }} needs attention</span>
+          <span class="sc good">{{ counts.on_track }} on track</span>
+        </div>
+      </div>
+      {% if note %}<p class="section-note">{{ note }}</p>{% endif %}
+      {% if accounts %}
+        <div class="roster">
+          {% for a in accounts %}{{ account_card(a) }}{% endfor %}
+        </div>
+      {% else %}
+        <p class="empty">No accounts in this group right now.</p>
+      {% endif %}
+    </section>
+  {% endmacro %}
+
   {% if not run %}
     <p class="empty">No report run yet &mdash; POST /reports/atlas-account-status/run to generate one.</p>
   {% else %}
@@ -238,78 +345,8 @@
       </div>
     </div>
 
-    <p class="section-label">{{ accounts|length }} accounts · sorted by urgency</p>
-
-    <div class="roster">
-      {% for a in accounts %}
-        <article class="card health-{{ a.health }}{{ ' needs-focus' if a.needs_extra_focus }}" data-atlas-id="{{ a.atlas_id }}" data-company-name="{{ a.company_name }}">
-          <header class="card-head">
-            <div class="card-id">
-              <h3>{{ a.company_name }}</h3>
-              <div class="card-meta">
-                <span class="dot dot-{{ 'live' if a.is_live else 'dark' }}"></span>{{ 'Live' if a.is_live else 'Not live' }}
-                <span class="sep">·</span>Day {{ a.day }}
-                {% if a.stage_bit %}<span class="sep">·</span>{{ a.stage_bit }}{% endif %}
-              </div>
-            </div>
-            <div class="health-block">
-              <span class="health-chip health-chip-{{ a.health }}">{{ a.health_label }}</span>
-              {% if a.health_overridden %}
-                <span class="override-badge">manually set{% if a.llm_health %} (LLM said {{ a.llm_health }}){% endif %}</span>
-              {% endif %}
-              <button type="button" class="override-toggle" data-toggle-override>{{ 'edit override' if a.health_overridden else 'override' }}</button>
-            </div>
-          </header>
-
-          <p class="status">{{ a.status or '—' }}</p>
-          <p class="recent-work"><span class="recent-work-label">This week</span>{{ a.recent_work or 'No recent activity reported.' }}</p>
-
-          <div class="override-form" data-override-form>
-            <div class="override-form-row">
-              <select data-override-health>
-                <option value="on_track" {{ 'selected' if a.health == 'on_track' }}>On track</option>
-                <option value="needs_attention" {{ 'selected' if a.health == 'needs_attention' }}>Needs attention</option>
-                <option value="at_risk" {{ 'selected' if a.health == 'at_risk' }}>At risk</option>
-              </select>
-              <input type="text" data-override-reason placeholder="Reason (optional)" value="{{ a.health_override_reason or '' }}">
-            </div>
-            <div class="override-form-row">
-              <button type="button" class="primary" data-save-override>Save override</button>
-              {% if a.health_overridden %}<button type="button" data-clear-override>Clear override</button>{% endif %}
-              <button type="button" data-cancel-override>Cancel</button>
-            </div>
-          </div>
-
-          <footer class="card-foot">
-            <div class="metrics">
-              {% if a.has_spend %}
-                <div class="metric">
-                  <span class="metric-value">{{ a.spend_total_display }}</span>
-                  <span class="metric-label">spend this wk</span>
-                </div>
-                <div class="metric">
-                  <span class="metric-value">{{ a.spend_conversions_display }}</span>
-                  <span class="metric-label">conversions</span>
-                </div>
-                <div class="metric">
-                  <span class="metric-value">{{ a.spend_cpc_display }}</span>
-                  <span class="metric-label">cost / conv.</span>
-                </div>
-              {% else %}
-                <div class="metric metric-empty">
-                  <span class="metric-value">—</span>
-                  <span class="metric-label">no spend data</span>
-                </div>
-              {% endif %}
-            </div>
-            <div class="platform-line">
-              {{ a.platform_line }}
-              {%- if a.zoom_call_count %} &nbsp;<span class="chip-zoom">{{ a.zoom_call_count }} call transcript{{ 's' if a.zoom_call_count != 1 else '' }} this wk</span>{% endif -%}
-            </div>
-          </footer>
-        </article>
-      {% endfor %}
-    </div>
+    {{ section("Not live yet", "Pre-launch, at-risk, and closed-stage accounts — a different kind of problem than a live client's rough week.", pipeline_accounts, pipeline_health_counts) }}
+    {{ section("Live", none, live_accounts, live_health_counts) }}
   {% endif %}
 
   <footer class="colophon">

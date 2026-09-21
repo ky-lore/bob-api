@@ -236,10 +236,33 @@ def _display_ready(a: dict) -> dict:
     }
 
 
+def _empty_health_counts() -> dict:
+    return {"at_risk": 0, "needs_attention": 0, "on_track": 0}
+
+
+def _count_health(accounts: list[dict]) -> dict:
+    counts = _empty_health_counts()
+    for a in accounts:
+        key = a.get("health") if a.get("health") in counts else "on_track"
+        counts[key] += 1
+    return counts
+
+
 def _pulse_context(db: Session, run: AtlasReportRun | None) -> dict:
+    """Split into two sections, not one merged/sorted list (2026-09-21, Bob:
+    "go-live/non-live accounts are honestly treated in their complete other
+    scope... execs want to focus on those heavily") -- a live account's rough
+    week and a not-yet-live account's rough week are different categories of
+    problem to an exec, not just different severities of the same one.
+    Stacked sections (not tabs, not side-by-side columns) so nothing is ever
+    hidden behind a click and cards keep full width for the status/recent-work
+    prose -- see chat, this was a deliberate call against both alternatives."""
     history = db.query(AtlasReportRun).order_by(AtlasReportRun.run_at.desc()).limit(30).all()
-    accounts: list[dict] = []
-    health_counts = {"at_risk": 0, "needs_attention": 0, "on_track": 0}
+    pipeline_accounts: list[dict] = []
+    live_accounts: list[dict] = []
+    health_counts = _empty_health_counts()
+    pipeline_health_counts = _empty_health_counts()
+    live_health_counts = _empty_health_counts()
     if run is not None:
         data = json.loads(run.report_json)
         raw_accounts = data.get("accounts", [])
@@ -249,11 +272,24 @@ def _pulse_context(db: Session, run: AtlasReportRun | None) -> dict:
         raw_accounts.sort(
             key=lambda a: (_HEALTH_ORDER.get(a.get("health"), 3), 0 if _needs_extra_focus(a) else 1, -(a.get("day") or 0))
         )
-        accounts = [_display_ready(a) for a in raw_accounts]
-        for a in raw_accounts:
-            key = a.get("health") if a.get("health") in health_counts else "on_track"
-            health_counts[key] += 1
-    return {"run": run, "history": history, "accounts": accounts, "health_counts": health_counts}
+        # Splitting a stably-sorted list preserves each group's own
+        # severity/day ordering -- no need to sort twice.
+        raw_pipeline = [a for a in raw_accounts if not a.get("is_live")]
+        raw_live = [a for a in raw_accounts if a.get("is_live")]
+        pipeline_accounts = [_display_ready(a) for a in raw_pipeline]
+        live_accounts = [_display_ready(a) for a in raw_live]
+        health_counts = _count_health(raw_accounts)
+        pipeline_health_counts = _count_health(raw_pipeline)
+        live_health_counts = _count_health(raw_live)
+    return {
+        "run": run,
+        "history": history,
+        "health_counts": health_counts,
+        "pipeline_accounts": pipeline_accounts,
+        "pipeline_health_counts": pipeline_health_counts,
+        "live_accounts": live_accounts,
+        "live_health_counts": live_health_counts,
+    }
 
 
 @router.get("/reports/atlas-account-status/pulse", response_class=HTMLResponse)

@@ -453,7 +453,14 @@ def _focus_account(name, health, is_live, day=90):
     }
 
 
-def test_not_live_flagged_accounts_get_the_needs_focus_class_and_sort_first_in_their_tier(tmp_path):
+def test_pulse_is_split_into_a_not_live_section_and_a_live_section(tmp_path):
+    """Real ask, 2026-09-21: "go-live/non-live accounts are honestly treated
+    in their complete other scope... execs want to focus on those heavily."
+    Pipeline (not-live) accounts get their own section, always ahead of the
+    Live section, each internally sorted by severity/day -- not one merged
+    list. Flagged-and-not-live cards (see _needs_extra_focus) still get the
+    glow class within their section; live cards never do, regardless of
+    health, since the section split itself already carries that signal."""
     client, session_factory = _client_and_session_factory(tmp_path)
     db = session_factory()
     accounts = [
@@ -462,6 +469,7 @@ def test_not_live_flagged_accounts_get_the_needs_focus_class_and_sort_first_in_t
         _focus_account("Live Needs Attn Co", "needs_attention", True),
         _focus_account("Not Live Needs Attn Co", "needs_attention", False),
         _focus_account("Not Live On Track Co", "on_track", False),
+        _focus_account("Live On Track Co", "on_track", True),
     ]
     db.add(AtlasReportRun(
         run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
@@ -475,9 +483,15 @@ def test_not_live_flagged_accounts_get_the_needs_focus_class_and_sort_first_in_t
     assert resp.status_code == 200
     text = resp.text
     order = re.findall(r'data-company-name="([^"]+)"', text)
+    # Every pipeline (not-live) account, severity/day sorted, before every
+    # live account, also severity/day sorted -- not interleaved.
     assert order == [
-        "Not Live At Risk Co", "Live At Risk Co", "Not Live Needs Attn Co", "Live Needs Attn Co", "Not Live On Track Co",
+        "Not Live At Risk Co", "Not Live Needs Attn Co", "Not Live On Track Co",
+        "Live At Risk Co", "Live Needs Attn Co", "Live On Track Co",
     ]
+    assert text.index("Not live yet") < text.index('data-company-name="Not Live At Risk Co"')
+    assert text.index('data-company-name="Not Live At Risk Co"') < text.index(">Live<")
+
     # Exactly the two not-live+flagged accounts get the glow class -- not the
     # live-but-flagged ones, and not the not-live-but-on-track one. Checked
     # by looking just before each card's data-company-name attribute, where
