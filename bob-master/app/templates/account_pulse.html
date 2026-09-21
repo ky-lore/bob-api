@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Account Pulse</title>
+<link rel="icon" type="image/png" href="https://advancedmarketers.co/wp-content/uploads/2025/01/advmfav2.png">
 <style>
   :root {
     --bg: #f5f3ee;
@@ -67,7 +68,17 @@
   body[data-pulse-view="live"] { background: var(--bg-live); }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
-  .page { max-width: 860px; margin: 0 auto; padding: 40px 24px 104px; }
+  /* Glassy cross-fade for the Pipeline/Live switch (2026-09-21, Bob: "smooth/
+     blurry/glassy... the whole page too in sync with the color shift") --
+     the whole page (masthead, copy, cards) blurs+dims together right as the
+     background color shifts, then resolves sharp on the new view. Choreographed
+     in JS (see the script near the bottom): add view-transitioning, wait out
+     the transition, swap content + body background, remove the class. */
+  .page {
+    max-width: 860px; margin: 0 auto; padding: 40px 24px 104px;
+    transition: filter 0.22s ease, opacity 0.22s ease; filter: blur(0); opacity: 1;
+  }
+  .page.view-transitioning { filter: blur(10px) saturate(1.3); opacity: 0.35; }
 
   .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 22px; }
   nav.runs { overflow-x: auto; white-space: nowrap; }
@@ -79,6 +90,16 @@
   }
 
   .masthead { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .brand-row { display: flex; align-items: center; gap: 10px; }
+  /* Source art is solid white on transparent (Bob's real brand assets) --
+     brightness(0) recolors the white pixels to black on light surfaces
+     without needing a second dark-colored export; dark mode/theme just
+     shows the original white, which already reads correctly there. */
+  .brand-wordmark { height: 15px; width: auto; display: block; filter: brightness(0); opacity: 0.82; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .brand-wordmark { filter: none; opacity: 0.92; }
+  }
+  :root[data-theme="dark"] .brand-wordmark { filter: none; opacity: 0.92; }
   .eyebrow {
     font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase;
     color: var(--accent); font-weight: 600;
@@ -254,6 +275,13 @@
     display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 11px;
     color: var(--ink-muted); font-variant-numeric: tabular-nums;
   }
+  .pulse-switch-mark {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 26px; height: 26px; border-radius: 50%;
+    background: rgba(20, 18, 14, 0.85); /* fixed dark regardless of theme -- the mark is white-on-transparent art, needs a dark ground in both light and dark mode */
+    display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 1;
+  }
+  .pulse-switch-mark img { width: 13px; height: 13px; display: block; }
   .pulse-switch-btn .pd { display: inline-flex; align-items: center; gap: 4px; }
   .pulse-switch-btn .pd i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
   .pulse-switch-btn .pd.risk i { background: var(--risk); }
@@ -293,7 +321,10 @@
   </div>
 
   <div class="masthead">
-    <span class="eyebrow">Advanced Marketers · Internal</span>
+    <div class="brand-row">
+      <img src="https://advancedmarketers.co/wp-content/uploads/2025/01/ADVLOGOWHITE.png" alt="Advanced Marketers" class="brand-wordmark">
+      <span class="eyebrow">Internal</span>
+    </div>
     <h1>Account Pulse</h1>
     <p class="dek">Every account's status, this week's work, and ad spend, synthesized from ClickUp, Slack, Zoom, Google Ads, and Meta &mdash; scanned in seconds, not read report by report.</p>
   </div>
@@ -426,6 +457,7 @@
           <span class="pd good" title="On track"><i></i>{{ live_health_counts.on_track }}</span>
         </span>
       </button>
+      <span class="pulse-switch-mark"><img src="https://advancedmarketers.co/wp-content/uploads/2025/01/advmfav2.png" alt=""></span>
     </nav>
   {% endif %}
 
@@ -524,7 +556,11 @@
     var VIEW_KEY = "bob-pulse-view";
     var sections = document.querySelectorAll("[data-view-group]");
     var buttons = document.querySelectorAll("[data-switch-to]");
+    var page = document.querySelector(".page");
     if (!sections.length || !buttons.length) return;
+
+    var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var TRANSITION_MS = 220;
 
     function applyView(view) {
       sections.forEach(function (el) {
@@ -539,11 +575,27 @@
     var stored = localStorage.getItem(VIEW_KEY);
     applyView(stored === "live" ? "live" : "pipeline");
 
-    buttons.forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        var view = btn.dataset.switchTo;
+    function switchViewAnimated(view) {
+      if (reduceMotion || !page) {
         applyView(view);
         localStorage.setItem(VIEW_KEY, view);
+        return;
+      }
+      // Blur+dim out, swap content and body background together at the
+      // midpoint (while hidden behind the blur), then let the existing CSS
+      // transition resolve it back to sharp on the new view.
+      page.classList.add("view-transitioning");
+      setTimeout(function () {
+        applyView(view);
+        localStorage.setItem(VIEW_KEY, view);
+        page.classList.remove("view-transitioning");
+      }, TRANSITION_MS);
+    }
+
+    buttons.forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        if (btn.getAttribute("aria-pressed") === "true") return;
+        switchViewAnimated(btn.dataset.switchTo);
       });
     });
   })();
