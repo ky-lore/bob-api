@@ -190,6 +190,19 @@ def _apply_live_overrides(db: Session, accounts: list[dict]) -> None:
             a.pop("llm_health", None)
 
 
+def _needs_extra_focus(a: dict) -> bool:
+    """A not-live account that's already flagged (2026-09-21, Bob: "these are
+    the ones we typically want to focus on a bit more than active clients")
+    -- a live client having a rough week is being watched by the regular ad
+    pipeline regardless; a pre-launch/at-risk/closed-stage account that's
+    ALSO flagged risks losing the client before they ever go live, which is
+    a different, higher-priority kind of problem. Deliberately just
+    is_live + health, not stage, so it also catches an At Risk/Closed-stage
+    account (is_live is stage=="live" only -- see build_atlas_report) without
+    hardcoding Atlas's stage vocabulary a second time here."""
+    return not a.get("is_live") and a.get("health") in ("at_risk", "needs_attention")
+
+
 def _display_ready(a: dict) -> dict:
     """Precomputes every string a Jinja template needs so the template stays
     pure presentation -- same reasoning as keeping business logic out of
@@ -211,6 +224,7 @@ def _display_ready(a: dict) -> dict:
     return {
         **a,
         "health_label": _HEALTH_LABEL.get(a.get("health"), a.get("health")),
+        "needs_extra_focus": _needs_extra_focus(a),
         "stage_bit": None if stage in ("live", "unknown") else stage.title(),
         "has_spend": spend is not None,
         "spend_total_display": f"${spend['total_spend']:,.0f}" if spend else None,
@@ -232,7 +246,9 @@ def _pulse_context(db: Session, run: AtlasReportRun | None) -> dict:
         # Live overrides applied (and can re-sort/re-bucket an account) BEFORE
         # sorting/counting -- see _apply_live_overrides's docstring.
         _apply_live_overrides(db, raw_accounts)
-        raw_accounts.sort(key=lambda a: (_HEALTH_ORDER.get(a.get("health"), 3), -(a.get("day") or 0)))
+        raw_accounts.sort(
+            key=lambda a: (_HEALTH_ORDER.get(a.get("health"), 3), 0 if _needs_extra_focus(a) else 1, -(a.get("day") or 0))
+        )
         accounts = [_display_ready(a) for a in raw_accounts]
         for a in raw_accounts:
             key = a.get("health") if a.get("health") in health_counts else "on_track"

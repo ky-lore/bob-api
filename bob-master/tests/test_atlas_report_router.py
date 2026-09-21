@@ -10,6 +10,7 @@ start twice per process (see test_trigger_endpoint.py), and whose real
 Depends(get_db) would otherwise reach for a real DATABASE_URL.
 """
 import json
+import re
 import threading
 import time
 from datetime import datetime
@@ -433,3 +434,60 @@ def test_clear_override_requires_password_too(tmp_path):
     resp = client.delete("/reports/atlas-account-status/overrides/acme-1")
 
     assert resp.status_code == 401
+
+
+def test_needs_extra_focus_unit():
+    assert router_mod._needs_extra_focus({"is_live": False, "health": "at_risk"}) is True
+    assert router_mod._needs_extra_focus({"is_live": False, "health": "needs_attention"}) is True
+    assert router_mod._needs_extra_focus({"is_live": True, "health": "at_risk"}) is False
+    assert router_mod._needs_extra_focus({"is_live": False, "health": "on_track"}) is False
+    assert router_mod._needs_extra_focus({"is_live": True, "health": "on_track"}) is False
+
+
+def _focus_account(name, health, is_live, day=90):
+    return {
+        "atlas_id": name, "company_name": name, "stage": "live" if is_live else "onboarding", "day": day,
+        "is_live": is_live, "health": health, "status": f"{name} status.", "recent_work": f"{name} recent work.",
+        "google_ads": None, "google_ads_error": None, "meta_ads": None, "meta_ads_error": None,
+        "ad_spend": None, "zoom_call_count": 0,
+    }
+
+
+def test_not_live_flagged_accounts_get_the_needs_focus_class_and_sort_first_in_their_tier(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    accounts = [
+        _focus_account("Live At Risk Co", "at_risk", True),
+        _focus_account("Not Live At Risk Co", "at_risk", False),
+        _focus_account("Live Needs Attn Co", "needs_attention", True),
+        _focus_account("Not Live Needs Attn Co", "needs_attention", False),
+        _focus_account("Not Live On Track Co", "on_track", False),
+    ]
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": len(accounts), "accounts": accounts, "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    text = resp.text
+    order = re.findall(r'data-company-name="([^"]+)"', text)
+    assert order == [
+        "Not Live At Risk Co", "Live At Risk Co", "Not Live Needs Attn Co", "Live Needs Attn Co", "Not Live On Track Co",
+    ]
+    # Exactly the two not-live+flagged accounts get the glow class -- not the
+    # live-but-flagged ones, and not the not-live-but-on-track one. Checked
+    # by looking just before each card's data-company-name attribute, where
+    # the class="card health-... needs-focus" opening tag lives.
+    def _card_classes(company_name):
+        idx = text.index(f'data-company-name="{company_name}"')
+        return text[max(0, idx - 200):idx]
+
+    assert "needs-focus" in _card_classes("Not Live At Risk Co")
+    assert "needs-focus" in _card_classes("Not Live Needs Attn Co")
+    assert "needs-focus" not in _card_classes("Live At Risk Co")
+    assert "needs-focus" not in _card_classes("Live Needs Attn Co")
+    assert "needs-focus" not in _card_classes("Not Live On Track Co")
