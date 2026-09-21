@@ -569,3 +569,33 @@ def test_closed_stage_is_excluded_entirely_and_at_risk_stage_lands_in_live_secti
     assert order == ["Development Co", "Onboarding Co", "At Risk Stage Co", "Live Co"]
     assert text.index("Not live yet") < text.index('data-company-name="Development Co"')
     assert text.index('data-company-name="Onboarding Co"') < text.index(">Live<")
+
+
+def test_pulse_renders_the_bottom_switch_bar_with_correct_group_counts(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    accounts = [
+        _stage_account("Onboarding Co", "onboarding", "at_risk"),
+        _stage_account("Live Co 1", "live", "on_track"),
+        _stage_account("Live Co 2", "live", "needs_attention"),
+    ]
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": len(accounts), "accounts": accounts, "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    text = resp.text
+    assert 'data-switch-to="pipeline"' in text
+    assert 'data-switch-to="live"' in text
+    assert 'data-view-group="pipeline"' in text
+    assert 'data-view-group="live"' in text
+    # The switch bar's own breakdown counts must reflect the real per-group
+    # totals, not just repeat the top-level combined pulse-strip numbers.
+    switch_bar = text[text.index('class="pulse-switch"'):]
+    assert "1 at risk" in switch_bar  # pipeline: Onboarding Co
+    assert "1 attn" in switch_bar  # live: Live Co 2
