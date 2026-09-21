@@ -203,3 +203,36 @@ class AtlasReportRun(Base):
     run_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     limit_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     report_json: Mapped[str] = mapped_column(Text)
+
+
+class AccountHealthOverride(Base):
+    """A human's manual correction to Pulse's LLM-derived health chip
+    (2026-09-21, Bob: "some are under-flagged and some are over-flagged").
+    One row per account (unique on atlas_id) -- setting a new override for
+    an account already overridden just replaces the row rather than keeping
+    history; this is a rudimentary correction mechanism, not an audit trail.
+    Applied in app/tasks/atlas_report.py as the last step before a run's
+    health is persisted, so it wins over whatever the LLM inferred THAT run
+    and every run after, until cleared (DELETE .../overrides/{atlas_id}).
+
+    Keyed on atlas_id, not company_name, same reasoning as ZoomCallRecord --
+    Atlas's own id is the stable join key, never a display string.
+    company_name is denormalized purely so the admin.py-style list view (if
+    one gets built later) doesn't need a join back to Atlas to be readable.
+
+    No real auth on the write endpoints -- a single shared password checked
+    against Settings.admin_override_password, stored client-side in
+    sessionStorage, not a session/user system. Same trust-level tier as
+    every other admin-ish endpoint in this app today (see admin.py's
+    docstring) -- Bob's explicit call, not an oversight."""
+
+    __tablename__ = "account_health_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    atlas_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    company_name: Mapped[str] = mapped_column(String(255))
+    health: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    set_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)

@@ -123,6 +123,33 @@
   .health-chip-needs_attention { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
   .health-chip-on_track { background: var(--good-bg); color: var(--good); border-color: var(--good-border); }
 
+  .health-block { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .override-badge {
+    font-size: 10.5px; color: var(--accent); font-family: var(--font-mono); text-align: right; max-width: 220px;
+  }
+  .override-toggle {
+    background: none; border: none; color: var(--ink-faint); font-size: 11px; font-family: var(--font-mono);
+    cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: 2px;
+  }
+  .override-toggle:hover { color: var(--ink-muted); }
+
+  .override-form {
+    display: none; flex-direction: column; gap: 8px; margin-top: 12px; padding: 12px;
+    background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .override-form.open { display: flex; }
+  .override-form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .override-form select, .override-form input[type="text"] {
+    background: var(--surface); border: 1px solid var(--border); color: var(--ink); border-radius: 6px;
+    padding: 5px 8px; font-size: 12.5px; font-family: var(--font-body);
+  }
+  .override-form input[type="text"] { flex: 1; min-width: 160px; }
+  .override-form button {
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+    background: var(--surface); color: var(--ink);
+  }
+  .override-form button.primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+
   .status { font-size: 15px; margin: 0 0 8px; text-wrap: pretty; }
   .recent-work { font-size: 13.5px; color: var(--ink-muted); margin: 0 0 16px; text-wrap: pretty; }
   .recent-work-label {
@@ -165,7 +192,10 @@
         <a href="/reports/atlas-account-status/pulse/{{ h.id }}" class="{{ 'current' if run and h.id == run.id else '' }}">{{ h.run_at.strftime('%b %-d, %-I:%M%p') }}</a>
       {% endfor %}
     </nav>
-    <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">🌓 Toggle theme</button>
+    <div style="display:flex; gap:8px;">
+      <button type="button" class="theme-toggle" id="admin-toggle" aria-label="Unlock overrides">🔒 Overrides</button>
+      <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme">🌓 Toggle theme</button>
+    </div>
   </div>
 
   <div class="masthead">
@@ -196,7 +226,7 @@
 
     <div class="roster">
       {% for a in accounts %}
-        <article class="card health-{{ a.health }}">
+        <article class="card health-{{ a.health }}" data-atlas-id="{{ a.atlas_id }}" data-company-name="{{ a.company_name }}">
           <header class="card-head">
             <div class="card-id">
               <h3>{{ a.company_name }}</h3>
@@ -206,11 +236,33 @@
                 {% if a.stage_bit %}<span class="sep">·</span>{{ a.stage_bit }}{% endif %}
               </div>
             </div>
-            <span class="health-chip health-chip-{{ a.health }}">{{ a.health_label }}</span>
+            <div class="health-block">
+              <span class="health-chip health-chip-{{ a.health }}">{{ a.health_label }}</span>
+              {% if a.health_overridden %}
+                <span class="override-badge">manually set{% if a.llm_health %} (LLM said {{ a.llm_health }}){% endif %}</span>
+              {% endif %}
+              <button type="button" class="override-toggle" data-toggle-override>{{ 'edit override' if a.health_overridden else 'override' }}</button>
+            </div>
           </header>
 
           <p class="status">{{ a.status or '—' }}</p>
           <p class="recent-work"><span class="recent-work-label">This week</span>{{ a.recent_work or 'No recent activity reported.' }}</p>
+
+          <div class="override-form" data-override-form>
+            <div class="override-form-row">
+              <select data-override-health>
+                <option value="on_track" {{ 'selected' if a.health == 'on_track' }}>On track</option>
+                <option value="needs_attention" {{ 'selected' if a.health == 'needs_attention' }}>Needs attention</option>
+                <option value="at_risk" {{ 'selected' if a.health == 'at_risk' }}>At risk</option>
+              </select>
+              <input type="text" data-override-reason placeholder="Reason (optional)" value="{{ a.health_override_reason or '' }}">
+            </div>
+            <div class="override-form-row">
+              <button type="button" class="primary" data-save-override>Save override</button>
+              {% if a.health_overridden %}<button type="button" data-clear-override>Clear override</button>{% endif %}
+              <button type="button" data-cancel-override>Cancel</button>
+            </div>
+          </div>
 
           <footer class="card-foot">
             <div class="metrics">
@@ -260,6 +312,100 @@
       var next = current === "dark" ? "light" : "dark";
       document.documentElement.setAttribute("data-theme", next);
       localStorage.setItem("bob-theme", next);
+    });
+  })();
+</script>
+
+<script>
+  (function () {
+    var PW_KEY = "bob-admin-password";
+
+    function getPassword() { return sessionStorage.getItem(PW_KEY); }
+
+    function ensurePassword() {
+      var pw = getPassword();
+      if (pw) return pw;
+      pw = window.prompt("Admin password (stored only for this browser tab):");
+      if (pw) sessionStorage.setItem(PW_KEY, pw);
+      return pw;
+    }
+
+    function refreshAdminButton() {
+      var btn = document.getElementById("admin-toggle");
+      btn.textContent = getPassword() ? "🔓 Overrides" : "🔒 Overrides";
+    }
+    refreshAdminButton();
+
+    document.getElementById("admin-toggle").addEventListener("click", function () {
+      if (getPassword()) {
+        sessionStorage.removeItem(PW_KEY);
+      } else {
+        ensurePassword();
+      }
+      refreshAdminButton();
+    });
+
+    document.querySelectorAll("[data-toggle-override]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var form = btn.closest(".card").querySelector("[data-override-form]");
+        form.classList.toggle("open");
+      });
+    });
+
+    document.querySelectorAll("[data-cancel-override]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.closest("[data-override-form]").classList.remove("open");
+      });
+    });
+
+    function withAdminFetch(url, options) {
+      var pw = ensurePassword();
+      if (!pw) return;
+      options = options || {};
+      options.headers = Object.assign({}, options.headers, { "X-Admin-Password": pw });
+      fetch(url, options).then(function (res) {
+        if (res.status === 401) {
+          sessionStorage.removeItem(PW_KEY);
+          refreshAdminButton();
+          window.alert("Wrong password -- try again.");
+          return;
+        }
+        if (!res.ok) {
+          window.alert("Save failed (" + res.status + ") -- see console for details.");
+          console.error("override request failed", res);
+          return;
+        }
+        window.location.reload();
+      }).catch(function (err) {
+        window.alert("Request failed -- see console.");
+        console.error(err);
+      });
+    }
+
+    document.querySelectorAll("[data-save-override]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var card = btn.closest(".card");
+        var form = card.querySelector("[data-override-form]");
+        withAdminFetch("/reports/atlas-account-status/overrides", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            atlas_id: card.dataset.atlasId,
+            company_name: card.dataset.companyName,
+            health: form.querySelector("[data-override-health]").value,
+            reason: form.querySelector("[data-override-reason]").value || null,
+          }),
+        });
+      });
+    });
+
+    document.querySelectorAll("[data-clear-override]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var card = btn.closest(".card");
+        withAdminFetch("/reports/atlas-account-status/overrides/" + encodeURIComponent(card.dataset.atlasId), {
+          method: "DELETE",
+        });
+      });
     });
   })();
 </script>

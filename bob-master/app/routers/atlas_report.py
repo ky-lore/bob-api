@@ -20,14 +20,18 @@ synchronous GET is left as-is for Atlas's own cron (presumably a longer
 timeout budget than a browser/curl) and for quick `?limit=N` smoke tests.
 """
 import json
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db import get_db, get_session_factory
-from app.models import AtlasReportRun
+from app.integrations.anthropic_client import _HEALTH_VALUES
+from app.models import AccountHealthOverride, AtlasReportRun
 from app.tasks.atlas_report import build_atlas_report, run_and_store_atlas_report
 from app.tasks.job_tracker import get_job, start_job
 
@@ -36,6 +40,25 @@ templates = Jinja2Templates(directory="app/templates")
 
 _HEALTH_ORDER = {"at_risk": 0, "needs_attention": 1, "on_track": 2}
 _HEALTH_LABEL = {"at_risk": "At risk", "needs_attention": "Needs attention", "on_track": "On track"}
+
+
+def _require_admin_password(x_admin_password: str | None = Header(default=None)) -> None:
+    """Rudimentary shared-password gate (2026-09-21, Bob's explicit call --
+    not real auth) for the health-override write endpoints. Fails CLOSED if
+    the password isn't configured at all (Settings.admin_override_password
+    is None) -- an unset password must never mean "anyone can write," see
+    AccountHealthOverride's docstring."""
+    configured = get_settings().admin_override_password
+    if not configured or x_admin_password != configured:
+        raise HTTPException(status_code=401, detail="invalid or missing admin password")
+
+
+class _OverrideRequest(BaseModel):
+    atlas_id: str
+    company_name: str
+    health: str
+    reason: str | None = None
+    set_by: str | None = None
 
 
 @router.get("/reports/atlas-account-status")
@@ -104,6 +127,68 @@ def get_latest_atlas_report(db: Session = Depends(get_db)) -> dict:
     return _run_to_response(run)
 
 
+@router.post("/reports/atlas-account-status/overrides", dependencies=[Depends(_require_admin_password)])
+def set_health_override(payload: _OverrideRequest, db: Session = Depends(get_db)) -> dict:
+    """Sets (or replaces) the single override row for this account -- see
+    AccountHealthOverride's docstring for why there's no history. Applied
+    immediately on the NEXT read of /pulse (see _apply_live_overrides), not
+    just the next full run -- a correction shouldn't need an ~11-minute
+    re-run over the whole account universe to take effect."""
+    if payload.health not in _HEALTH_VALUES:
+        raise HTTPException(status_code=422, detail=f"health must be one of {sorted(_HEALTH_VALUES)}")
+
+    now = datetime.now(timezone.utc)
+    existing = db.query(AccountHealthOverride).filter_by(atlas_id=payload.atlas_id).first()
+    if existing:
+        existing.company_name = payload.company_name
+        existing.health = payload.health
+        existing.reason = payload.reason
+        existing.set_by = payload.set_by
+        existing.updated_at = now
+    else:
+        db.add(AccountHealthOverride(
+            atlas_id=payload.atlas_id,
+            company_name=payload.company_name,
+            health=payload.health,
+            reason=payload.reason,
+            set_by=payload.set_by,
+            created_at=now,
+            updated_at=now,
+        ))
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/reports/atlas-account-status/overrides/{atlas_id}", dependencies=[Depends(_require_admin_password)])
+def clear_health_override(atlas_id: str, db: Session = Depends(get_db)) -> dict:
+    deleted = db.query(AccountHealthOverride).filter_by(atlas_id=atlas_id).delete()
+    db.commit()
+    return {"ok": True, "cleared": bool(deleted)}
+
+
+def _apply_live_overrides(db: Session, accounts: list[dict]) -> None:
+    """Reapplies whatever overrides exist RIGHT NOW onto an already-persisted
+    run's account list, in place -- so setting/clearing an override shows up
+    on /pulse immediately, even for a run that was generated before the
+    override existed (see set_health_override's docstring). build_atlas_report
+    bakes overrides in too (for API consumers that only ever hit the plain
+    JSON endpoints), but that copy goes stale the moment someone changes an
+    override without triggering a brand new run -- this is what keeps /pulse
+    itself always current regardless of that staleness."""
+    overrides = {o.atlas_id: o for o in db.query(AccountHealthOverride).all()}
+    for a in accounts:
+        override = overrides.get(a.get("atlas_id"))
+        if override:
+            a.setdefault("llm_health", a.get("health"))
+            a["health"] = override.health
+            a["health_overridden"] = True
+            a["health_override_reason"] = override.reason
+        else:
+            a["health_overridden"] = False
+            a["health_override_reason"] = None
+            a.pop("llm_health", None)
+
+
 def _display_ready(a: dict) -> dict:
     """Precomputes every string a Jinja template needs so the template stays
     pure presentation -- same reasoning as keeping business logic out of
@@ -142,10 +227,11 @@ def _pulse_context(db: Session, run: AtlasReportRun | None) -> dict:
     health_counts = {"at_risk": 0, "needs_attention": 0, "on_track": 0}
     if run is not None:
         data = json.loads(run.report_json)
-        raw_accounts = sorted(
-            data.get("accounts", []),
-            key=lambda a: (_HEALTH_ORDER.get(a.get("health"), 3), -(a.get("day") or 0)),
-        )
+        raw_accounts = data.get("accounts", [])
+        # Live overrides applied (and can re-sort/re-bucket an account) BEFORE
+        # sorting/counting -- see _apply_live_overrides's docstring.
+        _apply_live_overrides(db, raw_accounts)
+        raw_accounts.sort(key=lambda a: (_HEALTH_ORDER.get(a.get("health"), 3), -(a.get("day") or 0)))
         accounts = [_display_ready(a) for a in raw_accounts]
         for a in raw_accounts:
             key = a.get("health") if a.get("health") in health_counts else "on_track"

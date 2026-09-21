@@ -40,7 +40,7 @@ from app.integrations.anthropic_client import synthesize_account_reports
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
 from app.integrations.slack import SlackClient
-from app.models import AtlasReportRun, ZoomCallRecord
+from app.models import AccountHealthOverride, AtlasReportRun, ZoomCallRecord
 from app.tasks.account_context_gather import gather_atlas_context
 from app.tasks.daily_go_live_audit import _days_since_atlas_created_at
 from app.tasks.zoom_call_sync import format_transcript_for_context
@@ -138,6 +138,15 @@ def _add_zoom_context(db: Session | None, atlas_id: str | None, cutoff: datetime
     return len(calls)
 
 
+def _fetch_health_overrides(db: Session | None) -> dict[str, AccountHealthOverride]:
+    """One query up front rather than one per account (148 individual
+    lookups would be wasteful) -- db=None just skips overrides entirely,
+    same soft-fail contract as _add_zoom_context."""
+    if db is None:
+        return {}
+    return {o.atlas_id: o for o in db.query(AccountHealthOverride).all()}
+
+
 def build_atlas_report(
     db: Session | None = None,
     limit: int | None = None,
@@ -164,10 +173,14 @@ def build_atlas_report(
 
     Returns (records, narrative_batch_results). Each record is one account:
     {atlas_id, company_name, stage, day, is_live, google_ads, meta_ads,
-    ad_spend (combined, deterministic), health, status, recent_work} --
-    google_ads/meta_ads are None if the account has no ID on file for that
-    platform or the pull failed (soft-failed, never drops the record itself;
-    see google_ads_error/meta_ads_error to tell the two cases apart)."""
+    ad_spend (combined, deterministic), health, status, recent_work,
+    health_overridden, health_override_reason} -- google_ads/meta_ads are
+    None if the account has no ID on file for that platform or the pull
+    failed (soft-failed, never drops the record itself; see
+    google_ads_error/meta_ads_error to tell the two cases apart). health is
+    the LLM's read UNLESS a human has overridden it (see
+    AccountHealthOverride) -- health_overridden=True means health is the
+    override's value, not the LLM's (kept separately as llm_health)."""
     atlas_accounts = [a for a in AtlasClient().get_all_accounts() if a.get("isActive")]
     if limit is not None:
         atlas_accounts = sorted(atlas_accounts, key=lambda a: a.get("companyName") or "")[:limit]
@@ -250,11 +263,25 @@ def build_atlas_report(
         narrative_inputs,
         on_batch_done=lambda done, total: _report(on_progress, {"phase": "synthesizing", "completed": done, "total": total}),
     )
+    overrides = _fetch_health_overrides(db)
     for record in records:
         report = reports.get(record["company_name"], {})
         record["health"] = report.get("health") or "on_track"
         record["status"] = report.get("status")
         record["recent_work"] = report.get("recent_work")
+
+        # A human override wins over whatever the LLM inferred THIS run --
+        # see AccountHealthOverride's docstring. llm_health is kept alongside
+        # so the override doesn't silently hide what the model actually saw.
+        override = overrides.get(record["atlas_id"])
+        if override:
+            record["llm_health"] = record["health"]
+            record["health"] = override.health
+            record["health_overridden"] = True
+            record["health_override_reason"] = override.reason
+        else:
+            record["health_overridden"] = False
+            record["health_override_reason"] = None
 
     return records, batch_results
 

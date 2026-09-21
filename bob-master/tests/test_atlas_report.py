@@ -371,3 +371,52 @@ def test_on_progress_errors_never_break_the_run(monkeypatch):
     records, _ = mod.build_atlas_report(on_progress=_broken_progress)
 
     assert len(records) == 1
+
+
+def test_health_override_wins_over_llm_health(monkeypatch, db_session):
+    from app.models import AccountHealthOverride
+
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Overridden Co", atlas_id="ov-1")]
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: ({"Overridden Co": {"health": "on_track", "status": "x", "recent_work": "y"}}, []),
+    )
+    db_session.add(AccountHealthOverride(
+        atlas_id="ov-1", company_name="Overridden Co", health="at_risk", reason="Known churn risk",
+        set_by="bob", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+    ))
+    db_session.commit()
+
+    records, _ = mod.build_atlas_report(db=db_session)
+
+    assert records[0]["health"] == "at_risk"
+    assert records[0]["llm_health"] == "on_track"
+    assert records[0]["health_overridden"] is True
+    assert records[0]["health_override_reason"] == "Known churn risk"
+
+
+def test_no_override_leaves_llm_health_untouched(monkeypatch, db_session):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Plain Co", atlas_id="plain-1")]
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: ({"Plain Co": {"health": "needs_attention", "status": "x", "recent_work": "y"}}, []),
+    )
+
+    records, _ = mod.build_atlas_report(db=db_session)
+
+    assert records[0]["health"] == "needs_attention"
+    assert records[0]["health_overridden"] is False
+    assert records[0]["health_override_reason"] is None
+    assert "llm_health" not in records[0]
+
+
+def test_no_db_session_skips_overrides_gracefully(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("No DB Override Co", atlas_id="no-db-ov")]
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
+
+    records, _ = mod.build_atlas_report(db=None)
+
+    assert records[0]["health_overridden"] is False

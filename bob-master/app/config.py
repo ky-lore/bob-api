@@ -90,6 +90,14 @@ class Settings(BaseSettings):
     zoom_client_id: str | None = None
     zoom_client_secret: str | None = None
 
+    # --- Pulse health-override gate (2026-09-21) -- a single shared
+    # password, not a real user/session system (Bob's explicit call, same
+    # trust tier as the rest of this app's admin-ish endpoints). Optional/no
+    # default: unset means the override endpoints refuse every request
+    # (fail closed, not fail open) rather than forcing this into every
+    # test/deploy before it's actually configured. ---
+    admin_override_password: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:
