@@ -247,7 +247,18 @@
   .metric-value { font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 600; }
   .metric-empty .metric-value { color: var(--ink-faint); font-weight: 400; }
   .metric-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); }
-  .platform-line { font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .platform-line {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums;
+  }
+  .platform-chip {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-muted);
+    background: var(--surface-raised); border: 1px solid var(--border); border-radius: 100px;
+    padding: 3px 9px 3px 5px; line-height: 1;
+  }
+  .platform-chip.is-error { color: var(--risk); border-color: var(--risk-border); background: var(--risk-bg); }
+  .platform-icon { width: 13px; height: 13px; display: block; flex: none; }
+  .no-ad-platform { color: var(--ink-faint); }
   .chip-zoom { font-size: 11px; color: var(--accent); }
 
   .empty { color: var(--ink-muted); font-style: italic; padding: 40px 0; text-align: center; }
@@ -324,6 +335,18 @@
 </style>
 </head>
 <body>
+<svg style="display:none" aria-hidden="true">
+  <symbol id="icon-google" viewBox="0 0 18 18">
+    <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"/>
+    <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+    <path fill="#FBBC05" d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.348 6.173 0 7.548 0 9s.348 2.827.957 4.042l3.007-2.332z"/>
+    <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
+  </symbol>
+  <symbol id="icon-meta" viewBox="0 0 36 24">
+    <path fill="none" stroke="#0668E1" stroke-width="4.6" stroke-linecap="round" d="M8 18C3.6 18 2 14 2 12s1.6-6 6-6c5 0 7.6 9 11 9 3.6 0 5-3 5-3"/>
+    <path fill="none" stroke="#0668E1" stroke-width="4.6" stroke-linecap="round" d="M28 6c4.4 0 6 4 6 6s-1.6 6-6 6c-5 0-7.6-9-11-9"/>
+  </symbol>
+</svg>
 <div class="page">
 
   <div class="toolbar">
@@ -413,8 +436,16 @@
           {% endif %}
         </div>
         <div class="platform-line">
-          {{ a.platform_line }}
-          {%- if a.zoom_call_count %} &nbsp;<span class="chip-zoom">{{ a.zoom_call_count }} call transcript{{ 's' if a.zoom_call_count != 1 else '' }} this wk</span>{% endif -%}
+          {% if a.platforms %}
+            {% for p in a.platforms %}
+              <span class="platform-chip{{ ' is-error' if p.error }}">
+                <svg class="platform-icon"><use href="#icon-{{ p.key }}"></use></svg>{{ p.label }}
+              </span>
+            {% endfor %}
+          {% else %}
+            <span class="no-ad-platform">No ad platform on file</span>
+          {% endif %}
+          {%- if a.zoom_call_count %} <span class="chip-zoom">{{ a.zoom_call_count }} call transcript{{ 's' if a.zoom_call_count != 1 else '' }} this wk</span>{% endif -%}
         </div>
       </footer>
     </article>

@@ -239,15 +239,18 @@ def _display_ready(a: dict) -> dict:
     real server-rendered view Bob asked for after seeing that preview."""
     stage = (a.get("stage") or "unknown").lower()
     spend = a.get("ad_spend")
-    bits = []
+    # Structured, not a joined string (2026-09-21, Bob: "hardcode some icon
+    # chips for google / meta logos for the adspend icons") -- the template
+    # needs to know which platform each entry is for to pick the right icon.
+    platforms = []
     if a.get("google_ads"):
-        bits.append(f"Google ${a['google_ads']['total_cost']:,.0f}")
+        platforms.append({"key": "google", "label": f"${a['google_ads']['total_cost']:,.0f}", "error": False})
     elif a.get("google_ads_error"):
-        bits.append("Google: pull failed")
+        platforms.append({"key": "google", "label": "pull failed", "error": True})
     if a.get("meta_ads"):
-        bits.append(f"Meta ${a['meta_ads']['total_cost']:,.0f}")
+        platforms.append({"key": "meta", "label": f"${a['meta_ads']['total_cost']:,.0f}", "error": False})
     elif a.get("meta_ads_error"):
-        bits.append("Meta: pull failed")
+        platforms.append({"key": "meta", "label": "pull failed", "error": True})
 
     return {
         **a,
@@ -261,7 +264,7 @@ def _display_ready(a: dict) -> dict:
         "spend_cpc_display": (
             f"${spend['cost_per_conversion']:,.2f}" if spend and spend.get("cost_per_conversion") is not None else "—"
         ),
-        "platform_line": " · ".join(bits) if bits else "No ad platform on file",
+        "platforms": platforms,
     }
 
 

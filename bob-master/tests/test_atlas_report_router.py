@@ -284,6 +284,37 @@ def test_pulse_shows_no_spend_data_and_no_ad_platform_gracefully(tmp_path):
     assert "No ad platform on file" in resp.text
 
 
+def test_pulse_renders_google_and_meta_icon_chips(tmp_path):
+    """Real ask, 2026-09-21: "hardcode some icon chips for google / meta
+    logos for the adspend icons? small, pretty, inline." Each platform gets
+    its own chip referencing a shared inline SVG sprite symbol (not a
+    per-card duplicated icon or an external logo CDN) -- a failed pull gets
+    the is-error styling, not just plain text."""
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account(
+        "Both Platforms Co", "on_track",
+        google_ads={"total_cost": 500.0}, meta_ads=None, meta_ads_error="403 forbidden",
+    )
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    text = resp.text
+    assert '<symbol id="icon-google"' in text  # sprite defined once
+    assert '<symbol id="icon-meta"' in text
+    assert '<use href="#icon-google">' in text
+    assert '<use href="#icon-meta">' in text
+    assert '<span class="platform-chip">' in text  # google: real spend, no error styling
+    assert '<span class="platform-chip is-error">' in text  # meta: failed pull
+
+
 def test_pulse_for_a_specific_run_id_renders_that_historical_run(tmp_path):
     client, session_factory = _client_and_session_factory(tmp_path)
     db = session_factory()
