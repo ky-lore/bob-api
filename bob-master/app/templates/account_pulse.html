@@ -439,26 +439,6 @@
 
     {{ section("pipeline", "Not live yet", "Onboarding and Development accounts — a different kind of problem than a live client's rough week.", pipeline_accounts, pipeline_health_counts) }}
     {{ section("live", "Live", none, live_accounts, live_health_counts) }}
-
-    <nav class="pulse-switch" aria-label="Filter by pipeline stage">
-      <button type="button" class="pulse-switch-btn" data-switch-to="pipeline" aria-pressed="true">
-        <span class="psb-title">Not live yet <span class="psb-count">{{ pipeline_accounts|length }}</span></span>
-        <span class="psb-dots">
-          <span class="pd risk" title="At risk"><i></i>{{ pipeline_health_counts.at_risk }}</span>
-          <span class="pd warn" title="Needs attention"><i></i>{{ pipeline_health_counts.needs_attention }}</span>
-          <span class="pd good" title="On track"><i></i>{{ pipeline_health_counts.on_track }}</span>
-        </span>
-      </button>
-      <button type="button" class="pulse-switch-btn" data-switch-to="live" aria-pressed="false">
-        <span class="psb-title">Live <span class="psb-count">{{ live_accounts|length }}</span></span>
-        <span class="psb-dots">
-          <span class="pd risk" title="At risk"><i></i>{{ live_health_counts.at_risk }}</span>
-          <span class="pd warn" title="Needs attention"><i></i>{{ live_health_counts.needs_attention }}</span>
-          <span class="pd good" title="On track"><i></i>{{ live_health_counts.on_track }}</span>
-        </span>
-      </button>
-      <span class="pulse-switch-mark"><img src="https://advancedmarketers.co/wp-content/uploads/2025/01/advmfav2.png" alt=""></span>
-    </nav>
   {% endif %}
 
   <footer class="colophon">
@@ -466,6 +446,36 @@
     <span>{% if run %}Pulled {{ run.run_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}</span>
   </footer>
 </div>
+
+{% if run %}
+  {# Deliberately OUTSIDE .page (2026-09-21 fix): .page always carries a
+     `filter` (blur(0) at rest, for the glassy transition below), and per
+     the CSS spec ANY non-none filter on an ancestor makes it a new
+     containing block for position:fixed descendants -- .pulse-switch was
+     silently being fixed to .page's 860px box instead of the real
+     viewport, which is exactly why it looked "shrunk." Living as a body-
+     level sibling instead means position:fixed correctly resolves against
+     the actual browser viewport, full width, always. #}
+  <nav class="pulse-switch" aria-label="Filter by pipeline stage">
+    <button type="button" class="pulse-switch-btn" data-switch-to="pipeline" aria-pressed="true">
+      <span class="psb-title">Not live yet <span class="psb-count">{{ pipeline_accounts|length }}</span></span>
+      <span class="psb-dots">
+        <span class="pd risk" title="At risk"><i></i>{{ pipeline_health_counts.at_risk }}</span>
+        <span class="pd warn" title="Needs attention"><i></i>{{ pipeline_health_counts.needs_attention }}</span>
+        <span class="pd good" title="On track"><i></i>{{ pipeline_health_counts.on_track }}</span>
+      </span>
+    </button>
+    <button type="button" class="pulse-switch-btn" data-switch-to="live" aria-pressed="false">
+      <span class="psb-title">Live <span class="psb-count">{{ live_accounts|length }}</span></span>
+      <span class="psb-dots">
+        <span class="pd risk" title="At risk"><i></i>{{ live_health_counts.at_risk }}</span>
+        <span class="pd warn" title="Needs attention"><i></i>{{ live_health_counts.needs_attention }}</span>
+        <span class="pd good" title="On track"><i></i>{{ live_health_counts.on_track }}</span>
+      </span>
+    </button>
+    <span class="pulse-switch-mark"><img src="https://advancedmarketers.co/wp-content/uploads/2025/01/advmfav2.png" alt=""></span>
+  </nav>
+{% endif %}
 
 <script>
   (function () {
