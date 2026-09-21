@@ -437,11 +437,28 @@ def test_clear_override_requires_password_too(tmp_path):
 
 
 def test_needs_extra_focus_unit():
-    assert router_mod._needs_extra_focus({"is_live": False, "health": "at_risk"}) is True
-    assert router_mod._needs_extra_focus({"is_live": False, "health": "needs_attention"}) is True
-    assert router_mod._needs_extra_focus({"is_live": True, "health": "at_risk"}) is False
-    assert router_mod._needs_extra_focus({"is_live": False, "health": "on_track"}) is False
-    assert router_mod._needs_extra_focus({"is_live": True, "health": "on_track"}) is False
+    # Stage-based, not is_live-based (2026-09-21 fix) -- only genuine
+    # pipeline stages (onboarding/development) should ever glow.
+    assert router_mod._needs_extra_focus({"stage": "onboarding", "health": "at_risk"}) is True
+    assert router_mod._needs_extra_focus({"stage": "Development", "health": "needs_attention"}) is True
+    assert router_mod._needs_extra_focus({"stage": "live", "health": "at_risk"}) is False
+    assert router_mod._needs_extra_focus({"stage": "At Risk", "health": "at_risk"}) is False
+    assert router_mod._needs_extra_focus({"stage": "closed", "health": "at_risk"}) is False
+    assert router_mod._needs_extra_focus({"stage": "onboarding", "health": "on_track"}) is False
+
+
+def test_pipeline_and_excluded_stage_helpers_unit():
+    assert router_mod._is_pipeline_stage({"stage": "Onboarding"}) is True
+    assert router_mod._is_pipeline_stage({"stage": "development"}) is True
+    assert router_mod._is_pipeline_stage({"stage": "live"}) is False
+    assert router_mod._is_pipeline_stage({"stage": "At Risk"}) is False
+    assert router_mod._is_pipeline_stage({"stage": "closed"}) is False
+    assert router_mod._is_pipeline_stage({"stage": None}) is False
+
+    assert router_mod._is_excluded_stage({"stage": "Closed"}) is True
+    assert router_mod._is_excluded_stage({"stage": "closed"}) is True
+    assert router_mod._is_excluded_stage({"stage": "At Risk"}) is False
+    assert router_mod._is_excluded_stage({"stage": "live"}) is False
 
 
 def _focus_account(name, health, is_live, day=90):
@@ -505,3 +522,50 @@ def test_pulse_is_split_into_a_not_live_section_and_a_live_section(tmp_path):
     assert "needs-focus" not in _card_classes("Live At Risk Co")
     assert "needs-focus" not in _card_classes("Live Needs Attn Co")
     assert "needs-focus" not in _card_classes("Not Live On Track Co")
+
+
+def _stage_account(name, stage, health="on_track", day=90):
+    is_live = stage.lower() == "live"
+    return {
+        "atlas_id": name, "company_name": name, "stage": stage, "day": day, "is_live": is_live,
+        "health": health, "status": f"{name} status.", "recent_work": f"{name} recent work.",
+        "google_ads": None, "google_ads_error": None, "meta_ads": None, "meta_ads_error": None,
+        "ad_spend": None, "zoom_call_count": 0,
+    }
+
+
+def test_closed_stage_is_excluded_entirely_and_at_risk_stage_lands_in_live_section(tmp_path):
+    """Real bug reported live, 2026-09-21: "Remember, onboarding and
+    development only. Closed accounts should be completely ignored for this
+    purpose." Closed accounts were previously falling into the Not-live-yet
+    section just because is_live (stage=="live" only) was False for them
+    too -- same category of bug as the daily audit's At Risk/Closed
+    exemption fix earlier in this session, just in a different pipeline."""
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    accounts = [
+        _stage_account("Onboarding Co", "onboarding", "needs_attention"),
+        _stage_account("Development Co", "development", "at_risk"),
+        _stage_account("At Risk Stage Co", "At Risk", "at_risk"),
+        _stage_account("Closed Co", "closed", "on_track"),
+        _stage_account("Live Co", "live", "on_track"),
+    ]
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": len(accounts), "accounts": accounts, "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    text = resp.text
+    assert "Closed Co" not in text
+
+    order = re.findall(r'data-company-name="([^"]+)"', text)
+    # Only genuine pipeline stages in the Not-live-yet section (severity
+    # sorted); At Risk-stage lands in Live (by elimination), not pipeline.
+    assert order == ["Development Co", "Onboarding Co", "At Risk Stage Co", "Live Co"]
+    assert text.index("Not live yet") < text.index('data-company-name="Development Co"')
+    assert text.index('data-company-name="Onboarding Co"') < text.index(">Live<")

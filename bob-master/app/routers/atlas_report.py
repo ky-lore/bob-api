@@ -40,6 +40,33 @@ templates = Jinja2Templates(directory="app/templates")
 _HEALTH_ORDER = {"at_risk": 0, "needs_attention": 1, "on_track": 2}
 _HEALTH_LABEL = {"at_risk": "At risk", "needs_attention": "Needs attention", "on_track": "On track"}
 
+# Pulse's "Not live yet" section membership is Atlas's own STAGE, not the
+# is_live boolean (2026-09-21, Bob: "Remember, onboarding and development
+# only") -- is_live is stage=="live" specifically (see build_atlas_report),
+# which meant an At Risk or Closed stage account (neither of which is the
+# literal string "live") was falling into "not live" right alongside a
+# genuine pre-launch account, even though neither is actually pre-launch.
+# Closed is excluded from Pulse ENTIRELY (Bob: "completely ignored for this
+# purpose") -- it's neither pipeline nor an active client, showing it in
+# either section is just noise. At Risk is deliberately NOT pipeline: by
+# elimination it lands in the Live section below, since an at-risk account
+# is presumably a currently-or-recently-live client flagged for churn risk,
+# not a pre-launch prospect.
+_PIPELINE_STAGES = {"onboarding", "development"}
+_EXCLUDED_STAGES = {"closed"}
+
+
+def _account_stage(a: dict) -> str:
+    return (a.get("stage") or "").lower()
+
+
+def _is_pipeline_stage(a: dict) -> bool:
+    return _account_stage(a) in _PIPELINE_STAGES
+
+
+def _is_excluded_stage(a: dict) -> bool:
+    return _account_stage(a) in _EXCLUDED_STAGES
+
 
 # Hardcoded, not a Settings/env var (2026-09-21, Bob: "forget .env - can we
 # just store it static on-page?") -- this is a rudimentary internal-only
@@ -191,16 +218,17 @@ def _apply_live_overrides(db: Session, accounts: list[dict]) -> None:
 
 
 def _needs_extra_focus(a: dict) -> bool:
-    """A not-live account that's already flagged (2026-09-21, Bob: "these are
+    """A genuine pipeline account (Onboarding/Development stage -- see
+    _PIPELINE_STAGES) that's already flagged (2026-09-21, Bob: "these are
     the ones we typically want to focus on a bit more than active clients")
     -- a live client having a rough week is being watched by the regular ad
-    pipeline regardless; a pre-launch/at-risk/closed-stage account that's
-    ALSO flagged risks losing the client before they ever go live, which is
-    a different, higher-priority kind of problem. Deliberately just
-    is_live + health, not stage, so it also catches an At Risk/Closed-stage
-    account (is_live is stage=="live" only -- see build_atlas_report) without
-    hardcoding Atlas's stage vocabulary a second time here."""
-    return not a.get("is_live") and a.get("health") in ("at_risk", "needs_attention")
+    pipeline regardless; a pre-launch account that's ALSO flagged risks
+    losing the client before they ever go live, which is a different,
+    higher-priority kind of problem. Stage-based, not is_live-based (fixed
+    2026-09-21 alongside the section split below) -- is_live only being
+    stage=="live" meant this used to also fire for At Risk/Closed-stage
+    accounts, neither of which is actually pre-launch."""
+    return _is_pipeline_stage(a) and a.get("health") in ("at_risk", "needs_attention")
 
 
 def _display_ready(a: dict) -> dict:
@@ -265,7 +293,7 @@ def _pulse_context(db: Session, run: AtlasReportRun | None) -> dict:
     live_health_counts = _empty_health_counts()
     if run is not None:
         data = json.loads(run.report_json)
-        raw_accounts = data.get("accounts", [])
+        raw_accounts = [a for a in data.get("accounts", []) if not _is_excluded_stage(a)]
         # Live overrides applied (and can re-sort/re-bucket an account) BEFORE
         # sorting/counting -- see _apply_live_overrides's docstring.
         _apply_live_overrides(db, raw_accounts)
@@ -273,9 +301,12 @@ def _pulse_context(db: Session, run: AtlasReportRun | None) -> dict:
             key=lambda a: (_HEALTH_ORDER.get(a.get("health"), 3), 0 if _needs_extra_focus(a) else 1, -(a.get("day") or 0))
         )
         # Splitting a stably-sorted list preserves each group's own
-        # severity/day ordering -- no need to sort twice.
-        raw_pipeline = [a for a in raw_accounts if not a.get("is_live")]
-        raw_live = [a for a in raw_accounts if a.get("is_live")]
+        # severity/day ordering -- no need to sort twice. Live section is
+        # "everything that isn't pipeline" (by elimination), not literally
+        # is_live -- an At Risk-stage account belongs here too, see
+        # _PIPELINE_STAGES's docstring.
+        raw_pipeline = [a for a in raw_accounts if _is_pipeline_stage(a)]
+        raw_live = [a for a in raw_accounts if not _is_pipeline_stage(a)]
         pipeline_accounts = [_display_ready(a) for a in raw_pipeline]
         live_accounts = [_display_ready(a) for a in raw_live]
         health_counts = _count_health(raw_accounts)
