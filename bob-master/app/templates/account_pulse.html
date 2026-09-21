@@ -7,6 +7,7 @@
 <style>
   :root {
     --bg: #f5f3ee;
+    --bg-live: #e6ebf3;
     --surface: #ffffff;
     --surface-raised: #fbfaf6;
     --ink: #201d17;
@@ -33,7 +34,7 @@
 
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
-      --bg: #16140f; --surface: #1f1c15; --surface-raised: #241f17;
+      --bg: #16140f; --bg-live: #10151c; --surface: #1f1c15; --surface-raised: #241f17;
       --ink: #f1ecdf; --ink-muted: #a89d84; --ink-faint: #766c58;
       --border: #34301f; --border-strong: #423c26; --accent: #97a9cd;
       --good: #7ecba1; --good-bg: #1c2b21; --good-border: #2c4536;
@@ -42,7 +43,7 @@
     }
   }
   :root[data-theme="dark"] {
-    --bg: #16140f; --surface: #1f1c15; --surface-raised: #241f17;
+    --bg: #16140f; --bg-live: #10151c; --surface: #1f1c15; --surface-raised: #241f17;
     --ink: #f1ecdf; --ink-muted: #a89d84; --ink-faint: #766c58;
     --border: #34301f; --border-strong: #423c26; --accent: #97a9cd;
     --good: #7ecba1; --good-bg: #1c2b21; --good-border: #2c4536;
@@ -55,7 +56,15 @@
   body {
     background: var(--bg); color: var(--ink); font-family: var(--font-body);
     font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased;
+    transition: background 0.25s ease;
   }
+  /* Distinct page-wide background per view (2026-09-21, Bob: "a pretty
+     distinct background shift to differentiate pre-live vs. live") -- warm
+     ivory for Pipeline (the default/focus view), a cooler blue-grey for
+     Live, so switching reads as changing context, not just content. Set on
+     body via data-pulse-view, alongside the same JS that filters which
+     section is visible -- see the script near the bottom. */
+  body[data-pulse-view="live"] { background: var(--bg-live); }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
   .page { max-width: 860px; margin: 0 auto; padding: 40px 24px 104px; }
@@ -524,6 +533,7 @@
       buttons.forEach(function (btn) {
         btn.setAttribute("aria-pressed", String(btn.dataset.switchTo === view));
       });
+      document.body.dataset.pulseView = view;
     }
 
     var stored = localStorage.getItem(VIEW_KEY);
