@@ -156,8 +156,19 @@ def _go_live_target_status(go_live_deadline: str | None, is_live: bool) -> str:
 
 _STALE_LIVE_MONITORING_WINDOW_DAYS = 14
 
+# Atlas's real stage vocabulary (Bob, 2026-09-21): Onboarding, Development,
+# LIVE, At Risk, Closed. Onboarding/Development are always pre-launch and
+# always need monitoring; LIVE gets the existing tapered window below. At
+# Risk and Closed are terminal from this board's point of view -- At Risk is
+# a retention/churn concern (a different problem this audit doesn't track),
+# and Closed is simply done -- neither should be swept into the "not live
+# yet, blocked" bucket just because is_live (which only checks stage=="live")
+# is False for them too. Before this, a Closed account showed up in the
+# accounts overview looking exactly like a stalled pre-launch account.
+_MONITORING_EXEMPT_STAGES = {"at risk", "closed"}
 
-def _needs_active_monitoring(go_live_deadline: str | None, is_live: bool) -> bool:
+
+def _needs_active_monitoring(go_live_deadline: str | None, is_live: bool, stage: str | None = None) -> bool:
     """The full-context gather (ClickUp comments, Slack channel history, LLM
     narrative synthesis) is the real runtime cost driver on a full-account-
     universe run (Bob, 2026-08-11: ~20 min across ~137 accounts) -- NOT the
@@ -165,6 +176,12 @@ def _needs_active_monitoring(go_live_deadline: str | None, is_live: bool) -> boo
     REST calls and keep running for every live account regardless of this
     check (see the gather loop and classify_ads_off below), since that's
     exactly what catches an established client's ads silently going dark.
+
+    stage (2026-09-21): an exempt stage (see _MONITORING_EXEMPT_STAGES) short-
+    circuits to False before anything else -- an At Risk or Closed account
+    never needs monitoring regardless of is_live/deadline. Optional/defaults
+    to None (no exemption) so existing is_live-only callers/tests are
+    unaffected.
 
     Not-yet-live accounts always need the full treatment -- that's the whole
     point of this board. A live account only needs it for a short window
@@ -178,6 +195,8 @@ def _needs_active_monitoring(go_live_deadline: str | None, is_live: bool) -> boo
     A missing/unparseable deadline never excludes an account -- same
     never-assume-when-Atlas-data-is-missing posture as
     _go_live_target_status."""
+    if stage and stage.lower() in _MONITORING_EXEMPT_STAGES:
+        return False
     if not is_live:
         return True
     if not go_live_deadline:
@@ -405,7 +424,9 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     try:
         for account_name in all_matched_accounts(account_context):
             ctx = account_context.get(account_name, {})
-            needs_monitoring = _needs_active_monitoring(ctx.get("go_live_deadline"), account_name in live_accounts)
+            needs_monitoring = _needs_active_monitoring(
+                ctx.get("go_live_deadline"), account_name in live_accounts, ctx.get("stage")
+            )
             diagnostics = {
                 "full_gather_skipped": not needs_monitoring,
                 "clickup_ok": None, "clickup_comment_count": None, "clickup_error": None,
@@ -603,7 +624,7 @@ def run_daily_go_live_audit(db: Session) -> AuditRun:
     # live_google_ads_spend/live_meta_ads_spend directly, not this dict. ---
     active_account_context = {
         name: ctx for name, ctx in account_context.items()
-        if _needs_active_monitoring(ctx.get("go_live_deadline"), name in live_accounts)
+        if _needs_active_monitoring(ctx.get("go_live_deadline"), name in live_accounts, ctx.get("stage"))
     }
 
     db.add_all(flags)

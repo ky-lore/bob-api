@@ -1261,6 +1261,34 @@ def test_needs_active_monitoring_unit_never_excludes_on_unparseable_deadline():
     assert mod._needs_active_monitoring("not-a-date", is_live=True) is True
 
 
+def test_needs_active_monitoring_unit_closed_stage_is_always_exempt():
+    # Closed is_live=False the same way a genuine pre-launch account is
+    # (stage != "live") -- without the stage check this would incorrectly
+    # return True, same bug reported live: a Closed account showing up in
+    # the accounts overview looking like a stalled pre-launch account.
+    deadline = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._needs_active_monitoring(deadline, is_live=False, stage="Closed") is False
+    assert mod._needs_active_monitoring(None, is_live=False, stage="closed") is False
+
+
+def test_needs_active_monitoring_unit_at_risk_stage_is_always_exempt():
+    deadline = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._needs_active_monitoring(deadline, is_live=False, stage="At Risk") is False
+
+
+def test_needs_active_monitoring_unit_onboarding_and_development_are_unaffected():
+    # Real pre-launch stages must still always need monitoring -- the
+    # exemption is specific to at-risk/closed, not "any non-live stage."
+    deadline = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._needs_active_monitoring(deadline, is_live=False, stage="Onboarding") is True
+    assert mod._needs_active_monitoring(deadline, is_live=False, stage="Development") is True
+
+
+def test_needs_active_monitoring_unit_stage_none_preserves_old_behavior():
+    deadline = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    assert mod._needs_active_monitoring(deadline, is_live=False, stage=None) is True
+
+
 def test_stale_live_account_skips_full_gather_but_still_gets_ads_off_classification(monkeypatch, tmp_path):
     """The actual efficiency change (Bob, 2026-08-11): an established,
     long-past-due-live account shouldn't cost a ClickUp/Slack/LLM gather
@@ -1324,6 +1352,54 @@ def test_stale_live_account_skips_full_gather_but_still_gets_ads_off_classificat
         flags = db.query(mod.Flag).filter_by(run_id=run.id).all()
         should_be_on = [f for f in flags if f.category == FlagCategory.ads_off_should_be_on]
         assert should_be_on and should_be_on[0].client_name == "Stale Live Co"
+    finally:
+        db.close()
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        get_session_factory.cache_clear()
+
+
+def test_closed_and_at_risk_stage_accounts_are_exempt_from_monitoring_end_to_end(monkeypatch, tmp_path):
+    """Real bug reported live, 2026-09-21: a Closed account has is_live=False
+    the same way a genuine pre-launch account does (stage != "live"), so
+    without a stage-aware exemption it showed up in the accounts overview
+    looking exactly like a stalled pre-launch account. At Risk is exempt for
+    the same reason -- it's a retention/churn concern this board doesn't
+    track, not an unlaunched account. Onboarding/Development must remain
+    unaffected -- the exemption is specific to at-risk/closed."""
+    db_path = tmp_path / "exempt_stages.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    _setenv_common(monkeypatch)
+    monkeypatch.delenv("DEBUG_MAX_ACCOUNTS", raising=False)
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    get_session_factory.cache_clear()
+
+    monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    monkeypatch.setattr(mod, "ClickUpClient", _FakeClickUp)
+    monkeypatch.setattr(mod, "GHLClient", _no_ghl)
+    monkeypatch.setattr(mod, "SlackClient", _FakeSlack)
+    monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
+    _FakeAtlasClient.accounts = [
+        _atlas_account("Closed Co", stage="closed", clickup_folder_id="folder1"),
+        _atlas_account("At Risk Co", stage="at risk", clickup_folder_id="folder1"),
+        _atlas_account("Pending Co", stage="onboarding", clickup_folder_id="folder1"),
+    ]
+    _FakeSlack.sent = []
+
+    init_db()
+    db = get_session_factory()()
+    try:
+        run = mod.run_daily_go_live_audit(db)
+
+        context_gather = json.loads(run.context_gather_json)
+        assert context_gather["Closed Co"]["full_gather_skipped"] is True
+        assert context_gather["At Risk Co"]["full_gather_skipped"] is True
+        assert context_gather["Pending Co"]["full_gather_skipped"] is False
+
+        dashboard_data = json.loads(run.dashboard_json)
+        overview_accounts = {a["account"] for a in dashboard_data["accounts_overview"]}
+        assert overview_accounts == {"Pending Co"}
     finally:
         db.close()
         get_settings.cache_clear()
