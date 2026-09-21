@@ -286,9 +286,11 @@ def test_pulse_shows_no_spend_data_and_no_ad_platform_gracefully(tmp_path):
 
 def test_pulse_renders_google_and_meta_icon_chips(tmp_path):
     """Real ask, 2026-09-21: "hardcode some icon chips for google / meta
-    logos for the adspend icons? small, pretty, inline." Each platform gets
-    its own chip referencing a shared inline SVG sprite symbol (not a
-    per-card duplicated icon or an external logo CDN) -- a failed pull gets
+    logos for the adspend icons? small, pretty, inline" -- then further
+    refined to "my ocd really just wants a good logo cdn," landing on real
+    logo.dev icons (img tags, onerror-hide, format=png for real transparency
+    -- see _LOGO_URLS's docstring for why png specifically) instead of the
+    hand-approximated inline SVGs from the first pass. A failed pull gets
     the is-error styling, not just plain text."""
     client, session_factory = _client_and_session_factory(tmp_path)
     db = session_factory()
@@ -307,10 +309,9 @@ def test_pulse_renders_google_and_meta_icon_chips(tmp_path):
 
     assert resp.status_code == 200
     text = resp.text
-    assert '<symbol id="icon-google"' in text  # sprite defined once
-    assert '<symbol id="icon-meta"' in text
-    assert '<use href="#icon-google">' in text
-    assert '<use href="#icon-meta">' in text
+    assert "img.logo.dev/google.com" in text
+    assert "img.logo.dev/meta.com" in text
+    assert "onerror=\"this.style.display='none'\"" in text
     assert '<span class="platform-chip">' in text  # google: real spend, no error styling
     assert '<span class="platform-chip is-error">' in text  # meta: failed pull
 

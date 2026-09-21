@@ -40,6 +40,29 @@ templates = Jinja2Templates(directory="app/templates")
 _HEALTH_ORDER = {"at_risk": 0, "needs_attention": 1, "on_track": 2}
 _HEALTH_LABEL = {"at_risk": "At risk", "needs_attention": "Needs attention", "on_track": "On track"}
 
+# Real brand icons via logo.dev (2026-09-21, Bob: "my ocd really just wants a
+# good logo cdn") -- replaces the earlier hand-approximated inline SVGs for
+# Google/Meta/ClickUp. Hardcoded directly, same reasoning as
+# _ADMIN_OVERRIDE_PASSWORD: this is a PUBLISHABLE key (pk_ prefix, logo.dev's
+# own convention for "safe to expose client-side," same idea as Stripe's
+# pk_/sk_ split) -- it's going to be visible in the rendered <img src> to any
+# viewer regardless of where it lives in the source, so an env var buys no
+# real protection here, just indirection. Each platform's icon URL is the
+# same for every account (not account-specific), so this is computed ONCE at
+# import time, not per-request/per-card.
+_LOGO_DEV_TOKEN = "pk_cffuq5CoSbaMfA7fgrXOPg"
+_LOGO_DEV_DOMAINS = {"google": "google.com", "meta": "meta.com", "clickup": "clickup.com"}
+_LOGO_URLS = {
+    # format=png explicitly -- logo.dev's default is an opaque JPEG (real
+    # white/solid background baked in, confirmed by fetching one), which
+    # would show a visible white square around the icon on any non-white
+    # surface (i.e. every dark-mode chip). png gets a real RGBA alpha
+    # channel, confirmed transparent against this app's own light AND dark
+    # surfaces.
+    key: f"https://img.logo.dev/{domain}?token={_LOGO_DEV_TOKEN}&size=28&format=png"
+    for key, domain in _LOGO_DEV_DOMAINS.items()
+}
+
 # Pulse's "Not live yet" section membership is Atlas's own STAGE, not the
 # is_live boolean (2026-09-21, Bob: "Remember, onboarding and development
 # only") -- is_live is stage=="live" specifically (see build_atlas_report),
@@ -363,6 +386,7 @@ def _pulse_context(db: Session, run: AtlasReportRun | None) -> dict:
         "pipeline_health_counts": pipeline_health_counts,
         "live_accounts": live_accounts,
         "live_health_counts": live_health_counts,
+        "logo_urls": _LOGO_URLS,
     }
 
 
