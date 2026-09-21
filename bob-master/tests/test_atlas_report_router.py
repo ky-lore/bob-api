@@ -594,8 +594,10 @@ def test_pulse_renders_the_bottom_switch_bar_with_correct_group_counts(tmp_path)
     assert 'data-switch-to="live"' in text
     assert 'data-view-group="pipeline"' in text
     assert 'data-view-group="live"' in text
-    # The switch bar's own breakdown counts must reflect the real per-group
-    # totals, not just repeat the top-level combined pulse-strip numbers.
+    # The switch bar's own breakdown dots must reflect the real per-group
+    # totals, not just repeat the top-level combined pulse-strip numbers --
+    # rendered as compact dot+count groups (title attr carries the label),
+    # not full "N at risk" text (2026-09-21 slim redesign).
     switch_bar = text[text.index('class="pulse-switch"'):]
-    assert "1 at risk" in switch_bar  # pipeline: Onboarding Co
-    assert "1 attn" in switch_bar  # live: Live Co 2
+    assert '<span class="pd risk" title="At risk"><i></i>1</span>' in switch_bar  # pipeline: Onboarding Co
+    assert '<span class="pd warn" title="Needs attention"><i></i>1</span>' in switch_bar  # live: Live Co 2

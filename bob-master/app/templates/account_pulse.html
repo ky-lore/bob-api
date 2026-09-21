@@ -58,7 +58,7 @@
   }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
-  .page { max-width: 860px; margin: 0 auto; padding: 40px 24px calc(clamp(96px, 15vh, 220px) + 40px); }
+  .page { max-width: 860px; margin: 0 auto; padding: 40px 24px 104px; }
 
   .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 22px; }
   nav.runs { overflow-x: auto; white-space: nowrap; }
@@ -214,33 +214,42 @@
      process (Bob, 2026-09-21) -- a big, impossible-to-miss physical switch
      rather than a small tab strip. Fixed to the viewport bottom so it's
      always in reach regardless of scroll position; filters which section is
-     shown (see the script below), it doesn't just jump-scroll to it. */
+     shown (see the script below), it doesn't just jump-scroll to it.
+     Slimmed to a fixed 64px (2026-09-21, Bob: "a little too fat vertically")
+     -- fixed px, not vh, specifically so it can never balloon on a tall
+     viewport the way the original 15vh version did. Health breakdown kept
+     as compact dot+count groups, not full "N at risk" text, to fit the
+     shorter row -- Bob's explicit call: "definitely do keep the status
+     breakdown dots." */
   .pulse-switch {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-    height: clamp(96px, 15vh, 220px);
+    height: 64px;
     display: grid; grid-template-columns: 1fr 1fr;
     background: var(--surface); border-top: 1px solid var(--border-strong);
     box-shadow: 0 -8px 28px -12px rgba(0, 0, 0, 0.25);
   }
   .pulse-switch-btn {
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    display: flex; align-items: center; justify-content: center; gap: 16px;
     border: none; background: var(--surface-raised); color: var(--ink-muted); cursor: pointer;
-    font-family: var(--font-body); padding: 10px 16px; position: relative;
+    font-family: var(--font-body); padding: 8px 14px; position: relative; overflow: hidden;
   }
   .pulse-switch-btn + .pulse-switch-btn { border-left: 1px solid var(--border); }
   .pulse-switch-btn .psb-title {
-    font-family: var(--font-display); font-size: clamp(16px, 2.4vh, 24px); font-weight: 500; color: var(--ink);
-    display: flex; align-items: baseline; gap: 8px;
+    font-family: var(--font-display); font-size: 16px; font-weight: 500; color: var(--ink);
+    display: flex; align-items: baseline; gap: 7px; white-space: nowrap;
   }
   .pulse-switch-btn .psb-count {
-    font-family: var(--font-mono); font-size: 0.55em; color: var(--ink-faint); font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink-faint); font-variant-numeric: tabular-nums;
   }
-  .pulse-switch-btn .psb-breakdown {
-    font-family: var(--font-mono); font-size: 11.5px; display: flex; gap: 12px; font-variant-numeric: tabular-nums;
+  .pulse-switch-btn .psb-dots {
+    display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 11px;
+    color: var(--ink-muted); font-variant-numeric: tabular-nums;
   }
-  .pulse-switch-btn .psb-breakdown .risk { color: var(--risk); }
-  .pulse-switch-btn .psb-breakdown .warn { color: var(--warn); }
-  .pulse-switch-btn .psb-breakdown .good { color: var(--good); }
+  .pulse-switch-btn .pd { display: inline-flex; align-items: center; gap: 4px; }
+  .pulse-switch-btn .pd i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .pulse-switch-btn .pd.risk i { background: var(--risk); }
+  .pulse-switch-btn .pd.warn i { background: var(--warn); }
+  .pulse-switch-btn .pd.good i { background: var(--good); }
   .pulse-switch-btn[aria-pressed="true"] {
     background: var(--surface); box-shadow: inset 0 3px 0 var(--accent);
   }
@@ -253,8 +262,10 @@
     .pulse-strip { grid-template-columns: 1fr; }
     h1 { font-size: 27px; }
     .card { padding: 16px; }
-    .pulse-switch { height: clamp(84px, 13vh, 160px); }
-    .pulse-switch-btn .psb-breakdown { gap: 8px; font-size: 10.5px; }
+    .pulse-switch { height: 58px; }
+    .pulse-switch-btn { gap: 8px; padding: 6px 8px; }
+    .pulse-switch-btn .psb-title { font-size: 13.5px; }
+    .pulse-switch-btn .psb-dots { gap: 6px; font-size: 10px; }
   }
 </style>
 </head>
@@ -392,18 +403,18 @@
     <nav class="pulse-switch" aria-label="Filter by pipeline stage">
       <button type="button" class="pulse-switch-btn" data-switch-to="pipeline" aria-pressed="true">
         <span class="psb-title">Not live yet <span class="psb-count">{{ pipeline_accounts|length }}</span></span>
-        <span class="psb-breakdown">
-          <span class="risk">{{ pipeline_health_counts.at_risk }} at risk</span>
-          <span class="warn">{{ pipeline_health_counts.needs_attention }} attn</span>
-          <span class="good">{{ pipeline_health_counts.on_track }} ok</span>
+        <span class="psb-dots">
+          <span class="pd risk" title="At risk"><i></i>{{ pipeline_health_counts.at_risk }}</span>
+          <span class="pd warn" title="Needs attention"><i></i>{{ pipeline_health_counts.needs_attention }}</span>
+          <span class="pd good" title="On track"><i></i>{{ pipeline_health_counts.on_track }}</span>
         </span>
       </button>
       <button type="button" class="pulse-switch-btn" data-switch-to="live" aria-pressed="false">
         <span class="psb-title">Live <span class="psb-count">{{ live_accounts|length }}</span></span>
-        <span class="psb-breakdown">
-          <span class="risk">{{ live_health_counts.at_risk }} at risk</span>
-          <span class="warn">{{ live_health_counts.needs_attention }} attn</span>
-          <span class="good">{{ live_health_counts.on_track }} ok</span>
+        <span class="psb-dots">
+          <span class="pd risk" title="At risk"><i></i>{{ live_health_counts.at_risk }}</span>
+          <span class="pd warn" title="Needs attention"><i></i>{{ live_health_counts.needs_attention }}</span>
+          <span class="pd good" title="On track"><i></i>{{ live_health_counts.on_track }}</span>
         </span>
       </button>
     </nav>
