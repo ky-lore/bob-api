@@ -19,7 +19,7 @@ import pytest
 import app.tasks.daily_go_live_audit as mod
 from app.config import get_settings
 from app.db import get_engine, get_session_factory, init_db
-from app.models import FlagCategory, RunStatus, ZoomCallRecord
+from app.models import Flag, FlagCategory, RunStatus, ZoomCallRecord
 
 
 @pytest.fixture(autouse=True)
@@ -1405,3 +1405,36 @@ def test_closed_and_at_risk_stage_accounts_are_exempt_from_monitoring_end_to_end
         get_settings.cache_clear()
         get_engine.cache_clear()
         get_session_factory.cache_clear()
+
+
+def _flag(category, client_name="Some Co", message="msg"):
+    return Flag(run_id=1, category=category, client_name=client_name, message=message, created_at=datetime.now(timezone.utc))
+
+
+def test_build_digest_all_clear_when_no_flags():
+    assert mod.build_digest([]) == mod._NO_DIGEST_WORTHY_FLAGS_MESSAGE
+
+
+def test_build_digest_real_bug_2026_09_21_falls_back_to_all_clear_when_every_flag_is_dashboard_only():
+    # Real production failure: flags existed (clock_violation, ads_off_*),
+    # none in the 4 digest-covered categories -- "\n".join([]) is "", and
+    # Slack's chat.postMessage hard-rejects an empty text with no_text,
+    # taking the whole run down at the very last step.
+    flags = [
+        _flag(FlagCategory.clock_violation),
+        _flag(FlagCategory.ads_off_should_be_on),
+        _flag(FlagCategory.ads_off_verified_off),
+    ]
+    assert mod.build_digest(flags) == mod._NO_DIGEST_WORTHY_FLAGS_MESSAGE
+
+
+def test_build_digest_never_returns_an_empty_string():
+    # Guard the actual Slack failure mode directly, not just this one flag combo.
+    for category in FlagCategory:
+        assert mod.build_digest([_flag(category)]) != ""
+
+
+def test_build_digest_still_lists_digest_worthy_flags_normally():
+    digest = mod.build_digest([_flag(FlagCategory.action_needed, "Acme Co", "Follow up on X")])
+    assert "Action needed today" in digest
+    assert "Acme Co: Follow up on X" in digest

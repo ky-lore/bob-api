@@ -209,11 +209,26 @@ def _needs_active_monitoring(go_live_deadline: str | None, is_live: bool, stage:
     return (now - deadline).days <= _STALE_LIVE_MONITORING_WINDOW_DAYS
 
 
+_NO_DIGEST_WORTHY_FLAGS_MESSAGE = "Go-live audit: all clear today. :white_check_mark:"
+
+
 def build_digest(flags: list[Flag]) -> str:
     """Assembles the digest per SKILL.md DO #6. Caps section length loosely
-    toward the ~40-line target — trim further once real flag volume is known."""
+    toward the ~40-line target — trim further once real flag volume is known.
+
+    Deliberately covers only 4 of FlagCategory's ~10 values -- the rest
+    (heartbeat_mismatch, clock_violation, every ads_off_* bucket) are
+    dashboard-only, not Slack-DM-worthy every day. Real bug, 2026-09-21: a
+    run whose flags existed ONLY in one of those dashboard-only categories
+    fell through this function with zero lines, and "\n".join([]) is "" --
+    an empty string, sent straight to Slack's chat.postMessage, which
+    rejects it with a hard no_text error and takes the whole run down at
+    the very last step (after everything else had already committed). Must
+    fall back to the same all-clear message the zero-flags case already
+    uses -- from the Slack DM's point of view "nothing digest-worthy today"
+    and "no flags at all today" read identically."""
     if not flags:
-        return "Go-live audit: all clear today. :white_check_mark:"
+        return _NO_DIGEST_WORTHY_FLAGS_MESSAGE
 
     sections = [
         (":rotating_light: Action needed today", FlagCategory.action_needed),
@@ -230,7 +245,7 @@ def build_digest(flags: list[Flag]) -> str:
         for f in items:
             suffix = " (unverified)" if f.unverified else ""
             lines.append(f"• {f.client_name}: {f.message}{suffix}")
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else _NO_DIGEST_WORTHY_FLAGS_MESSAGE
 
 
 def run_daily_go_live_audit(db: Session) -> AuditRun:
