@@ -740,3 +740,52 @@ def test_pulse_hides_recent_clickup_activity_disclosure_when_none(tmp_path):
 
     assert resp.status_code == 200
     assert '<details class="recent-activity">' not in resp.text
+
+
+def test_pulse_renders_evidence_quotes(tmp_path):
+    """Real ask, 2026-09-21: "relevant slack message snippets or zoom call
+    quotes that support the summary" -- verified verbatim quotes come back
+    from build_atlas_report already filtered (see _verify_evidence_quotes),
+    so the template just needs to render whatever's on the record."""
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account(
+        "Quote Co", "on_track",
+        evidence=[
+            {"source": "slack", "quote": "we shipped the fix this morning"},
+            {"source": "zoom", "quote": "client confirmed everything looks good"},
+        ],
+    )
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    text = resp.text
+    assert '<ul class="evidence-list">' in text
+    assert "we shipped the fix this morning" in text
+    assert "client confirmed everything looks good" in text
+    assert ">Slack<" in text
+    assert ">Zoom<" in text
+
+
+def test_pulse_hides_evidence_list_when_none(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account("No Quote Co", "on_track", evidence=[])
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    assert '<ul class="evidence-list">' not in resp.text

@@ -470,3 +470,42 @@ def test_no_clickup_folder_id_leaves_recent_clickup_activity_empty(monkeypatch):
     records, _ = mod.build_atlas_report()
 
     assert records[0]["recent_clickup_activity"] == []
+
+
+def test_evidence_quotes_thread_through_to_the_record(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Quote Co", atlas_id="quote-co-1")]
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: (
+            {
+                "Quote Co": {
+                    "health": "on_track",
+                    "status": "Live and spending",
+                    "recent_work": "Fixed the landing page",
+                    "evidence": [{"source": "slack", "quote": "landing page is fixed now"}],
+                }
+            },
+            [],
+        ),
+    )
+
+    records, _ = mod.build_atlas_report()
+
+    assert records[0]["evidence"] == [{"source": "slack", "quote": "landing page is fixed now"}]
+
+
+def test_missing_evidence_key_defaults_to_an_empty_list_on_the_record(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("No Evidence Co", atlas_id="no-evidence-1")]
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: (
+            {"No Evidence Co": {"health": "on_track", "status": "x", "recent_work": "y"}},
+            [],
+        ),
+    )
+
+    records, _ = mod.build_atlas_report()
+
+    assert records[0]["evidence"] == []

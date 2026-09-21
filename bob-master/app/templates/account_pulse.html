@@ -238,6 +238,24 @@
     color: var(--ink-faint); margin-right: 8px; vertical-align: 1px;
   }
 
+  /* Evidence quotes (2026-09-21, Bob: "relevant slack message snippets or
+     zoom call quotes that support the summary") -- 0-3 verbatim quotes the
+     LLM cited for its status/recent-work, verified against the account's
+     own context before ever reaching this template (see
+     _verify_evidence_quotes). Kept as small inline citations, not a
+     <details> like recent-clickup-activity, since the expected volume is
+     tiny. */
+  .evidence-list { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .evidence-item {
+    font-size: 12.5px; color: var(--ink-muted); line-height: 1.45; padding-left: 10px;
+    border-left: 2px solid var(--border-strong);
+  }
+  .evidence-item q { quotes: "\201C" "\201D"; font-style: italic; }
+  .evidence-source {
+    font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--ink-faint); margin-right: 7px; vertical-align: 1px;
+  }
+
   .card-foot {
     display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px;
     padding-top: 14px; border-top: 1px solid var(--border);
@@ -421,6 +439,16 @@
 
       <p class="status">{{ a.status or '—' }}</p>
       <p class="recent-work"><span class="recent-work-label">This week</span>{{ a.recent_work or 'No recent activity reported.' }}</p>
+
+      {% if a.evidence %}
+        <ul class="evidence-list">
+          {% for e in a.evidence %}
+            <li class="evidence-item">
+              <span class="evidence-source">{{ 'Slack' if e.source == 'slack' else 'Zoom' }}</span><q>{{ e.quote }}</q>
+            </li>
+          {% endfor %}
+        </ul>
+      {% endif %}
 
       <div class="override-form" data-override-form>
         <div class="override-form-row">

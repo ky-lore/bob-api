@@ -181,7 +181,9 @@ def build_atlas_report(
     Returns (records, narrative_batch_results). Each record is one account:
     {atlas_id, company_name, stage, day, is_live, google_ads, meta_ads,
     ad_spend (combined, deterministic), health, status, recent_work,
-    health_overridden, health_override_reason, recent_clickup_activity
+    evidence (0-3 {source, quote} dicts pulled from Slack/Zoom context and
+    verified against it -- see _verify_evidence_quotes, empty for a quiet
+    account), health_overridden, health_override_reason, recent_clickup_activity
     (display-only, last _RECENT_CLICKUP_ACTIVITY_HOURS weekday-hours of
     ClickUp comments -- see gather_atlas_context, never narrows what the
     LLM saw)} -- google_ads/meta_ads are
@@ -284,6 +286,7 @@ def build_atlas_report(
         record["health"] = report.get("health") or "on_track"
         record["status"] = report.get("status")
         record["recent_work"] = report.get("recent_work")
+        record["evidence"] = report.get("evidence") or []
 
         # A human override wins over whatever the LLM inferred THIS run --
         # see AccountHealthOverride's docstring. llm_health is kept alongside

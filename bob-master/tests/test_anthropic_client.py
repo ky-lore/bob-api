@@ -201,7 +201,9 @@ def test_synthesize_report_batch_handles_reports_double_encoded_as_a_json_string
         [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
     )
 
-    assert result == {"Acme Co": {"health": "at_risk", "status": "doing fine", "recent_work": "shipped a fix"}}
+    assert result == {
+        "Acme Co": {"health": "at_risk", "status": "doing fine", "recent_work": "shipped a fix", "evidence": []}
+    }
 
 
 def test_synthesize_report_batch_handles_a_self_nested_stringified_object(monkeypatch):
@@ -214,7 +216,9 @@ def test_synthesize_report_batch_handles_a_self_nested_stringified_object(monkey
         [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
     )
 
-    assert result == {"Acme Co": {"health": "needs_attention", "status": "doing fine", "recent_work": "shipped a fix"}}
+    assert result == {
+        "Acme Co": {"health": "needs_attention", "status": "doing fine", "recent_work": "shipped a fix", "evidence": []}
+    }
 
 
 def test_synthesize_report_batch_still_works_with_a_normal_native_array(monkeypatch):
@@ -225,7 +229,9 @@ def test_synthesize_report_batch_still_works_with_a_normal_native_array(monkeypa
         [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
     )
 
-    assert result == {"Acme Co": {"health": "on_track", "status": "doing fine", "recent_work": "shipped a fix"}}
+    assert result == {
+        "Acme Co": {"health": "on_track", "status": "doing fine", "recent_work": "shipped a fix", "evidence": []}
+    }
 
 
 def test_synthesize_report_batch_defaults_health_to_on_track_when_missing_or_invalid(monkeypatch):
@@ -242,3 +248,114 @@ def test_synthesize_report_batch_defaults_health_to_on_track_when_missing_or_inv
         [{"account": "Bad Health Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
     )
     assert result["Bad Health Co"]["health"] == "on_track"
+
+
+def test_synthesize_report_batch_keeps_evidence_quotes_verified_against_context(monkeypatch):
+    reports = [
+        {
+            "account": "Acme Co",
+            "health": "on_track",
+            "status": "doing fine",
+            "recent_work": "shipped a fix",
+            "evidence": [{"source": "slack", "quote": "we shipped the fix this morning"}],
+        }
+    ]
+    _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
+
+    result = anthropic_client._synthesize_report_batch(
+        [
+            {
+                "account": "Acme Co",
+                "day": 1,
+                "stage": "live",
+                "is_live": True,
+                "context": ["Slack #acme: we shipped the fix this morning, all good now"],
+            }
+        ]
+    )
+
+    assert result["Acme Co"]["evidence"] == [{"source": "slack", "quote": "we shipped the fix this morning"}]
+
+
+def test_synthesize_report_batch_drops_a_quote_not_actually_present_in_context(monkeypatch):
+    # Real risk this guards against: the LLM inventing a plausible-sounding
+    # quote that was never actually said -- worse than no evidence at all
+    # since it carries an implicit claim of verbatim accuracy.
+    reports = [
+        {
+            "account": "Acme Co",
+            "health": "on_track",
+            "status": "doing fine",
+            "recent_work": "shipped a fix",
+            "evidence": [{"source": "slack", "quote": "this was never actually said by anyone"}],
+        }
+    ]
+    _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
+
+    result = anthropic_client._synthesize_report_batch(
+        [
+            {
+                "account": "Acme Co",
+                "day": 1,
+                "stage": "live",
+                "is_live": True,
+                "context": ["Slack #acme: everything is on track this week"],
+            }
+        ]
+    )
+
+    assert result["Acme Co"]["evidence"] == []
+
+
+def test_synthesize_report_batch_drops_evidence_with_an_invalid_source(monkeypatch):
+    reports = [
+        {
+            "account": "Acme Co",
+            "health": "on_track",
+            "status": "doing fine",
+            "recent_work": "shipped a fix",
+            "evidence": [{"source": "clickup", "quote": "shipped the fix"}],
+        }
+    ]
+    _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
+
+    result = anthropic_client._synthesize_report_batch(
+        [
+            {
+                "account": "Acme Co",
+                "day": 1,
+                "stage": "live",
+                "is_live": True,
+                "context": ["ClickUp task Foo: shipped the fix"],
+            }
+        ]
+    )
+
+    assert result["Acme Co"]["evidence"] == []
+
+
+def test_synthesize_report_batch_evidence_match_is_case_and_whitespace_insensitive(monkeypatch):
+    reports = [
+        {
+            "account": "Acme Co",
+            "health": "on_track",
+            "status": "doing fine",
+            "recent_work": "shipped a fix",
+            "evidence": [{"source": "zoom", "quote": "We   Shipped\nthe fix"}],
+        }
+    ]
+    _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
+
+    result = anthropic_client._synthesize_report_batch(
+        [
+            {
+                "account": "Acme Co",
+                "day": 1,
+                "stage": "live",
+                "is_live": True,
+                "context": ["Zoom call: we shipped the fix today"],
+            }
+        ]
+    )
+
+    assert result["Acme Co"]["evidence"] == [{"source": "zoom", "quote": "We   Shipped\nthe fix"}]

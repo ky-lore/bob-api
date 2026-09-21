@@ -150,6 +150,32 @@ _REPORT_TOOL_SCHEMA = {
                                 "never invent activity."
                             ),
                         },
+                        "evidence": {
+                            "type": "array",
+                            "maxItems": 3,
+                            "description": (
+                                "0-3 short supporting quotes from the given Slack messages or Zoom call "
+                                "transcript lines that most directly back up your status/recent_work above "
+                                "-- NOT ClickUp (that has its own separate raw-activity view elsewhere). "
+                                "Every quote MUST be copied verbatim from the Slack/Zoom context you were "
+                                "given, character for character -- never paraphrase, summarize, or "
+                                "construct a quote that sounds plausible but wasn't actually said. Return "
+                                "an empty list if nothing in the Slack/Zoom context clearly supports your "
+                                "summary -- an empty list is correct and expected for a quiet account, not "
+                                "a failure."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "source": {"type": "string", "enum": ["slack", "zoom"]},
+                                    "quote": {
+                                        "type": "string",
+                                        "description": "Copied verbatim from the given context -- see the array description.",
+                                    },
+                                },
+                                "required": ["source", "quote"],
+                            },
+                        },
                     },
                     "required": ["account", "health", "status", "recent_work"],
                 },
@@ -179,6 +205,11 @@ _REPORT_SYSTEM_PROMPT = (
     "reported in the given context — what the team has been doing (builds, fixes, calls, campaign "
     "changes, blockers worked), distinct from the status judgment. Say 'No recent activity reported' if "
     "there's nothing to summarize. "
+    "(4) evidence: 0-3 short quotes from the Slack messages or Zoom call transcript lines (not ClickUp) "
+    "that most directly support your status/recent_work — see the tool schema for the exact bar. Every "
+    "quote must be copied verbatim, character for character, from the context you were given — inventing "
+    "a plausible-sounding quote that wasn't actually said is worse than providing none at all. Empty is "
+    "the correct answer whenever nothing in the Slack/Zoom context clearly supports your summary. "
     "Do not invent facts not present in the input. If signals conflict, say so plainly rather than "
     "silently picking a side. No greetings, no preamble, no markdown. You MUST produce one entry per "
     "account given."
@@ -358,15 +389,44 @@ def _synthesize_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[str, str
     )
 
 
+def _normalize_for_match(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
+def _verify_evidence_quotes(reports: list[dict], accounts_by_name: dict[str, dict]) -> None:
+    """Mutates each report dict's "evidence" list in place, dropping any
+    quote that doesn't actually appear (whitespace/case-insensitive) in that
+    account's own gathered context (2026-09-21, Bob: "relevant slack message
+    snippets or zoom call quotes that support the summary"). A hallucinated
+    quote that sounds plausible is worse than no evidence at all -- it reads
+    as verified when it isn't. Pure string matching, no extra API call --
+    same skeptical-of-raw-LLM-output posture as _coerce_list's double-
+    encoding guard and the health override's "LLM said X" tooltip."""
+    for r in reports:
+        if not isinstance(r, dict):
+            continue
+        account = accounts_by_name.get(r.get("account"))
+        context_blob = _normalize_for_match(" ".join(account.get("context", []))) if account else ""
+        verified = []
+        for e in r.get("evidence") or []:
+            if not isinstance(e, dict):
+                continue
+            quote = (e.get("quote") or "").strip()
+            source = e.get("source")
+            if quote and source in ("slack", "zoom") and _normalize_for_match(quote) in context_blob:
+                verified.append({"source": source, "quote": quote})
+        r["evidence"] = verified
+
+
 def _synthesize_report_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
     settings = get_settings()
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    # Three fields per account now (health/status/recent_work) -- triple the
-    # per-account token allowance so this doesn't inherit the max_tokens
-    # incident this module's docstring warns about. health itself is a cheap
-    # one-word enum; the multiplier is really still paying for status +
-    # recent_work, same as before.
-    max_tokens = min(_MAX_TOKENS_CAP, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * 3 * len(accounts)))
+    # Four fields per account now (health/status/recent_work/evidence) --
+    # quadruple the per-account token allowance so this doesn't inherit the
+    # max_tokens incident this module's docstring warns about. health itself
+    # is a cheap one-word enum; the multiplier is really paying for
+    # status + recent_work + up to 3 evidence quotes.
+    max_tokens = min(_MAX_TOKENS_CAP, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * 4 * len(accounts)))
 
     response = client.messages.create(
         model=settings.anthropic_model,
@@ -380,11 +440,14 @@ def _synthesize_report_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[s
     for block in response.content:
         if block.type == "tool_use" and block.name == _REPORT_TOOL_NAME:
             reports = _coerce_list(block.input.get("reports", []), key="reports")
+            accounts_by_name = {a["account"]: a for a in accounts if isinstance(a, dict) and a.get("account")}
+            _verify_evidence_quotes(reports, accounts_by_name)
             result = {
                 r["account"]: {
                     "health": r.get("health") if r.get("health") in _HEALTH_VALUES else "on_track",
                     "status": r.get("status", ""),
                     "recent_work": r.get("recent_work", ""),
+                    "evidence": r.get("evidence", []),
                 }
                 for r in reports
                 if isinstance(r, dict) and r.get("account")
