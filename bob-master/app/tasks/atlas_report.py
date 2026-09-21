@@ -50,6 +50,13 @@ from app.tasks.zoom_call_sync import format_transcript_for_context
 # dwarf the rest of that account's context.
 _ZOOM_CONTEXT_CALL_LIMIT = 3
 
+# Display-only "recent activity" reference list on each Pulse card (2026-09-21,
+# Bob: "tasks active in the last 48hrs of weekdays... referenceable in the
+# card under a dropdown"). Does NOT narrow context_window_days -- see
+# gather_atlas_context's recent_activity_hours docstring for why the LLM
+# still sees the full window regardless of this.
+_RECENT_CLICKUP_ACTIVITY_HOURS = 48
+
 
 def _compress_google_ads_summary(spend: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -174,7 +181,10 @@ def build_atlas_report(
     Returns (records, narrative_batch_results). Each record is one account:
     {atlas_id, company_name, stage, day, is_live, google_ads, meta_ads,
     ad_spend (combined, deterministic), health, status, recent_work,
-    health_overridden, health_override_reason} -- google_ads/meta_ads are
+    health_overridden, health_override_reason, recent_clickup_activity
+    (display-only, last _RECENT_CLICKUP_ACTIVITY_HOURS weekday-hours of
+    ClickUp comments -- see gather_atlas_context, never narrows what the
+    LLM saw)} -- google_ads/meta_ads are
     None if the account has no ID on file for that platform or the pull
     failed (soft-failed, never drops the record itself; see
     google_ads_error/meta_ads_error to tell the two cases apart). health is
@@ -206,7 +216,11 @@ def build_atlas_report(
         customer_id = integ.get("googleMccId") or None
         meta_ad_account_id = integ.get("metaAdAccountId") or None
 
-        ctx_result = gather_atlas_context(folder_id, channel_id, clickup, slack, window_days=context_window_days)
+        ctx_result = gather_atlas_context(
+            folder_id, channel_id, clickup, slack,
+            window_days=context_window_days,
+            recent_activity_hours=_RECENT_CLICKUP_ACTIVITY_HOURS,
+        )
         zoom_call_count = _add_zoom_context(db, atlas_id, zoom_cutoff, ctx_result.context)
 
         google_ads_summary: dict[str, Any] | None = None
@@ -248,6 +262,7 @@ def build_atlas_report(
             "meta_ads_error": meta_ads_error,
             "ad_spend": _combined_ad_spend(google_ads_summary, meta_ads_summary),
             "zoom_call_count": zoom_call_count,
+            "recent_clickup_activity": ctx_result.recent_clickup_activity,
         })
         narrative_inputs.append({
             "account": name,

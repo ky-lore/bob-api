@@ -664,3 +664,78 @@ def test_override_flag_is_an_inline_hover_tooltip_not_a_separate_text_line(tmp_p
     flag_idx = text.index('class="override-flag"')
     chip_close_idx = text.index("</span>", flag_idx)
     assert chip_idx < flag_idx < chip_close_idx
+
+
+def test_group_recent_clickup_activity_groups_by_task_and_sorts_newest_first():
+    entries = [
+        {"task_id": "t1", "task_name": "Fix redirect", "text": "older note on t1", "date_ms": "1000"},
+        {"task_id": "t2", "task_name": "Weekly call notes", "text": "budget discussion", "date_ms": "3000"},
+        {"task_id": "t1", "task_name": "Fix redirect", "text": "newer note on t1", "date_ms": "2000"},
+    ]
+
+    grouped = router_mod._group_recent_clickup_activity(entries)
+
+    # Task t2 (most recent comment at 3000) sorts ahead of t1 (most recent at 2000).
+    assert [t["task_name"] for t in grouped] == ["Weekly call notes", "Fix redirect"]
+    # Within t1, newest comment (2000) comes before the older one (1000).
+    t1 = grouped[1]
+    assert [c["text"] for c in t1["comments"]] == ["newer note on t1", "older note on t1"]
+
+
+def test_group_recent_clickup_activity_truncates_long_text():
+    long_text = "x" * 400
+    grouped = router_mod._group_recent_clickup_activity(
+        [{"task_id": "t1", "task_name": "Big task", "text": long_text, "date_ms": "1000"}]
+    )
+
+    text = grouped[0]["comments"][0]["text"]
+    assert len(text) <= router_mod._RECENT_ACTIVITY_TEXT_LIMIT + 1  # +1 for the ellipsis char
+    assert text.endswith("…")
+
+
+def test_group_recent_clickup_activity_empty_input_returns_empty():
+    assert router_mod._group_recent_clickup_activity([]) == []
+    assert router_mod._group_recent_clickup_activity(None) == []
+
+
+def test_pulse_renders_recent_clickup_activity_disclosure(tmp_path):
+    """Real ask, 2026-09-21: "referenceable in the card under a dropdown."""
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account(
+        "Task Co", "on_track",
+        recent_clickup_activity=[
+            {"task_id": "t1", "task_name": "Fix redirect", "text": "deployed the fix", "date_ms": "1758000000000"},
+        ],
+    )
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    text = resp.text
+    assert '<details class="recent-activity">' in text
+    assert "Fix redirect" in text
+    assert "deployed the fix" in text
+
+
+def test_pulse_hides_recent_clickup_activity_disclosure_when_none(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account("No Activity Co", "on_track", recent_clickup_activity=[])
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    assert '<details class="recent-activity">' not in resp.text

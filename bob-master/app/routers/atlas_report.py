@@ -231,6 +231,44 @@ def _needs_extra_focus(a: dict) -> bool:
     return _is_pipeline_stage(a) and a.get("health") in ("at_risk", "needs_attention")
 
 
+_RECENT_ACTIVITY_TEXT_LIMIT = 220
+
+
+def _group_recent_clickup_activity(entries: list[dict]) -> list[dict]:
+    """Groups the flat comment-level list from
+    AccountContextResult.recent_clickup_activity (see its docstring -- this
+    is the "last 48 weekday-hours" reference list, display-only, never fed
+    to the LLM) by task -- newest comment first within a task, tasks
+    ordered by their own most recent comment. A flat unbroken list would
+    repeat the task name once per comment; this is what actually reads as
+    a "here's what happened, task by task" reference."""
+    if not entries:
+        return []
+    by_task: dict[str, dict] = {}
+    for e in entries:
+        task_id = e["task_id"]
+        bucket = by_task.setdefault(task_id, {"task_name": e["task_name"], "comments": []})
+        text = e["text"]
+        if len(text) > _RECENT_ACTIVITY_TEXT_LIMIT:
+            text = text[:_RECENT_ACTIVITY_TEXT_LIMIT].rstrip() + "…"
+        date_ms = e.get("date_ms")
+        date_sort = 0
+        date_display = None
+        if date_ms:
+            try:
+                date_sort = int(date_ms)
+                date_display = datetime.fromtimestamp(date_sort / 1000, tz=timezone.utc).strftime("%b %-d, %-I:%M%p")
+            except (TypeError, ValueError):
+                pass
+        bucket["comments"].append({"text": text, "date_display": date_display, "_date_sort": date_sort})
+
+    tasks = list(by_task.values())
+    for t in tasks:
+        t["comments"].sort(key=lambda c: c["_date_sort"], reverse=True)
+    tasks.sort(key=lambda t: t["comments"][0]["_date_sort"] if t["comments"] else 0, reverse=True)
+    return tasks
+
+
 def _display_ready(a: dict) -> dict:
     """Precomputes every string a Jinja template needs so the template stays
     pure presentation -- same reasoning as keeping business logic out of
@@ -265,6 +303,7 @@ def _display_ready(a: dict) -> dict:
             f"${spend['cost_per_conversion']:,.2f}" if spend and spend.get("cost_per_conversion") is not None else "—"
         ),
         "platforms": platforms,
+        "recent_clickup_activity": _group_recent_clickup_activity(a.get("recent_clickup_activity") or []),
     }
 
 

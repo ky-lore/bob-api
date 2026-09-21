@@ -72,6 +72,26 @@ def _context_cutoff(window_days: int = _CONTEXT_WINDOW_DAYS) -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=window_days)
 
 
+def business_hours_cutoff(hours: int, now: datetime | None = None) -> datetime:
+    """Walks back `hours` hours from `now`, skipping weekend time entirely
+    (2026-09-21, Bob: "tasks active in the last 48hrs of weekdays") -- a
+    flat 48-calendar-hour window checked Monday morning would only reach
+    back to Saturday, missing all of Friday's actual work. Simple hour-by-
+    hour stepping rather than closed-form day arithmetic -- `hours` is small
+    (tens, not thousands) so the extra iterations are free, and this is
+    trivially easy to verify correct at every boundary compared to computing
+    day-segment overlaps by hand."""
+    now = now or datetime.now(timezone.utc)
+    cursor = now
+    remaining = hours
+    step = timedelta(hours=1)
+    while remaining > 0:
+        cursor -= step
+        if cursor.weekday() < 5:  # Mon=0 .. Fri=4; Sat/Sun don't count
+            remaining -= 1
+    return cursor
+
+
 def _is_recent_epoch_ms(value: str | int | None, cutoff: datetime) -> bool:
     """ClickUp's date_updated/date_created/comment date fields are all
     epoch-millisecond strings (confirmed against real task + comment
@@ -114,6 +134,14 @@ class AccountContextResult:
     slack_ok: bool = True
     slack_message_count: int = 0
     slack_error: str | None = None
+    # Display-only, NEVER fed to the LLM (2026-09-21, Bob: "I still want the
+    # full LLM blend window to consider the full timerange of all
+    # platforms" -- this is purely a human-referenceable raw-evidence list,
+    # a subset of what's already gathered into `context` above for the
+    # narrative, not a second gather pass or a narrower LLM input). One
+    # entry per ClickUp comment whose date passes the caller's tighter
+    # recent-activity cutoff (see gather_atlas_context's recent_activity_hours).
+    recent_clickup_activity: list[dict] = field(default_factory=list)
 
 
 def _add_clickup_context(clickup: ClickUpClient, card_id: str, result: AccountContextResult) -> None:
@@ -201,12 +229,23 @@ def gather_rich_context(
 
 
 def _add_clickup_folder_context(
-    clickup: ClickUpClient, folder_id: str, result: AccountContextResult, cutoff: datetime
+    clickup: ClickUpClient,
+    folder_id: str,
+    result: AccountContextResult,
+    cutoff: datetime,
+    recent_cutoff: datetime | None = None,
 ) -> None:
     """Atlas's clickupFolderId is a real Folder (Space > Folder > List >
     Task), not a single card -- walks every List inside it, every Task inside
     each List, and every comment on each Task. Confirmed shape against a real
-    folder 2026-08-04 (Smithco construction: 2 lists, 13 tasks total)."""
+    folder 2026-08-04 (Smithco construction: 2 lists, 13 tasks total).
+
+    recent_cutoff (2026-09-21, optional): a tighter cutoff than `cutoff`,
+    purely for populating result.recent_clickup_activity -- see that field's
+    docstring for why this never changes what's fed to the LLM. Comments
+    still get gated on the wider `cutoff` first, same rate-limit-relief
+    reasoning as before; recent_cutoff only decides which of those already-
+    qualifying comments ALSO get mirrored into the display-only list."""
     try:
         lists = clickup.get_folder_lists(folder_id)
     except Exception as exc:
@@ -252,6 +291,13 @@ def _add_clickup_folder_context(
                 if text:
                     result.context.append(f"[ClickUp comment, task {task_id} ({task.get('name')})] {text}")
                     result.clickup_comment_count += 1
+                    if recent_cutoff is not None and _is_recent_epoch_ms(comment.get("date"), recent_cutoff):
+                        result.recent_clickup_activity.append({
+                            "task_id": task_id,
+                            "task_name": task.get("name") or task_id,
+                            "text": text,
+                            "date_ms": comment.get("date"),
+                        })
 
 
 def gather_atlas_context(
@@ -260,6 +306,7 @@ def gather_atlas_context(
     clickup: ClickUpClient,
     slack: SlackClient,
     window_days: int = _CONTEXT_WINDOW_DAYS,
+    recent_activity_hours: int | None = None,
 ) -> AccountContextResult:
     """Atlas-exact-ID smoke test path (Bob, 2026-08-04): no fuzzy matching at
     all, no account_name/slack_channels list needed -- both IDs come straight
@@ -268,11 +315,19 @@ def gather_atlas_context(
     contract as gather_rich_context. window_days (2026-08-06) overrides the
     production default of _CONTEXT_WINDOW_DAYS for one-off pulls (smoke tests
     asking for a different lookback) without needing to monkeypatch the
-    module constant."""
+    module constant.
+
+    recent_activity_hours (2026-09-21, optional): when set, also populates
+    result.recent_clickup_activity with the subset of already-gathered
+    ClickUp comments from the last N weekday-business-hours (see
+    business_hours_cutoff) -- display-only, does NOT narrow window_days or
+    what the LLM sees. None (default) skips this entirely, same no-op cost
+    as before for every caller that doesn't ask for it."""
     cutoff = _context_cutoff(window_days)
+    recent_cutoff = business_hours_cutoff(recent_activity_hours) if recent_activity_hours else None
     result = AccountContextResult()
     if clickup_folder_id:
-        _add_clickup_folder_context(clickup, clickup_folder_id, result, cutoff)
+        _add_clickup_folder_context(clickup, clickup_folder_id, result, cutoff, recent_cutoff)
     if slack_channel_id:
         result.slack_channel_matched = slack_channel_id
         result.slack_match_confidence = "atlas_exact_id"

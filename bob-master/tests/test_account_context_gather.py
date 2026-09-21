@@ -1,6 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from app.tasks.account_context_gather import extract_channel_client_name, gather_atlas_context, gather_rich_context
+from app.tasks.account_context_gather import (
+    business_hours_cutoff,
+    extract_channel_client_name,
+    gather_atlas_context,
+    gather_rich_context,
+)
 
 
 def _recent_ms(days_ago: float = 0) -> str:
@@ -325,3 +330,105 @@ def test_gather_atlas_context_is_resilient_to_folder_fetch_failure():
     assert any("ClickUp context fetch failed for folder folder1" in c for c in result.context)
     assert result.clickup_ok is False
     assert "clickup folder down" in result.clickup_error
+
+
+def test_business_hours_cutoff_monday_morning_reaches_back_to_thursday():
+    # The actual motivating case (Bob, 2026-09-21): a flat 48-calendar-hour
+    # window checked Monday morning would only reach Saturday, missing all
+    # of Friday's real work. 2026-09-21 is a real Monday.
+    now = datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc)
+    cutoff = business_hours_cutoff(48, now=now)
+    assert cutoff == datetime(2026, 9, 17, 10, 0, tzinfo=timezone.utc)
+    assert cutoff.strftime("%A") == "Thursday"
+
+
+def test_business_hours_cutoff_with_no_weekend_in_range_is_a_flat_subtraction():
+    now = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)  # Wednesday
+    cutoff = business_hours_cutoff(24, now=now)
+    assert cutoff == datetime(2026, 9, 22, 10, 0, tzinfo=timezone.utc)  # Tuesday, exactly 24h back
+
+
+def test_business_hours_cutoff_starting_on_a_weekend_skips_weekend_hours_too():
+    now = datetime(2026, 9, 26, 10, 0, tzinfo=timezone.utc)  # Saturday
+    cutoff = business_hours_cutoff(8, now=now)
+    assert cutoff == datetime(2026, 9, 25, 16, 0, tzinfo=timezone.utc)  # Friday 16:00
+    assert cutoff.strftime("%A") == "Friday"
+
+
+def test_business_hours_cutoff_defaults_now_to_the_real_current_time():
+    before = datetime.now(timezone.utc)
+    cutoff = business_hours_cutoff(0)
+    after = datetime.now(timezone.utc)
+    assert before <= cutoff <= after
+
+
+def test_gather_atlas_context_recent_activity_hours_none_by_default_leaves_it_empty():
+    # Every existing caller (e.g. daily_go_live_audit.py) that doesn't pass
+    # recent_activity_hours must see zero behavior change.
+    clickup = _FakeClickUpFolder(
+        lists=[{"id": "list1"}],
+        tasks_by_list={"list1": [{"id": "task1", "name": "Ongoing", "date_updated": _recent_ms()}]},
+        comments_by_task={"task1": [{"comment_text": "brand new note", "date": _recent_ms()}]},
+    )
+    slack = _FakeSlack()
+
+    result = gather_atlas_context("folder1", None, clickup, slack)
+
+    assert result.recent_clickup_activity == []
+    assert any("brand new note" in c for c in result.context)  # unaffected
+
+
+def test_gather_atlas_context_recent_activity_hours_is_a_subset_never_a_narrower_llm_window():
+    # Real requirement (Bob, 2026-09-21): "I still want the full LLM blend
+    # window to consider the full timerange of all platforms" -- a comment
+    # inside the wide 7-day window but OUTSIDE the tight recent-activity
+    # window must still reach the LLM's `context`, just not the display-only
+    # recent_clickup_activity list.
+    within_recent = _recent_ms(0)
+    # 5 real calendar days ago: still inside the 7-day gather window, but
+    # safely outside ANY 48-weekday-hour cutoff regardless of what day this
+    # suite happens to run on -- worst case (a Monday "now"), 48 weekday
+    # hours only reaches back 4 calendar days (through Thu-Fri, skipping the
+    # weekend), so 3 days would sometimes land wrongly ON the inside.
+    within_wide_only = _recent_ms(5)
+    clickup = _FakeClickUpFolder(
+        lists=[{"id": "list1"}],
+        tasks_by_list={"list1": [{"id": "task1", "name": "Ongoing", "date_updated": within_recent}]},
+        comments_by_task={
+            "task1": [
+                {"comment_text": "very fresh note", "date": within_recent},
+                {"comment_text": "three days old note", "date": within_wide_only},
+            ]
+        },
+    )
+    slack = _FakeSlack()
+
+    result = gather_atlas_context("folder1", None, clickup, slack, recent_activity_hours=48)
+
+    # Both comments still reach the LLM's context -- the wide window is untouched.
+    assert any("very fresh note" in c for c in result.context)
+    assert any("three days old note" in c for c in result.context)
+    assert result.clickup_comment_count == 2
+
+    # Only the genuinely-recent one shows up in the display-only list.
+    recent_texts = [e["text"] for e in result.recent_clickup_activity]
+    assert "very fresh note" in recent_texts
+    assert "three days old note" not in recent_texts
+
+
+def test_gather_atlas_context_recent_activity_entries_carry_task_identity():
+    clickup = _FakeClickUpFolder(
+        lists=[{"id": "list1"}],
+        tasks_by_list={"list1": [{"id": "task1", "name": "Fix redirect", "date_updated": _recent_ms()}]},
+        comments_by_task={"task1": [{"comment_text": "deployed the fix", "date": _recent_ms()}]},
+    )
+    slack = _FakeSlack()
+
+    result = gather_atlas_context("folder1", None, clickup, slack, recent_activity_hours=48)
+
+    assert len(result.recent_clickup_activity) == 1
+    entry = result.recent_clickup_activity[0]
+    assert entry["task_id"] == "task1"
+    assert entry["task_name"] == "Fix redirect"
+    assert entry["text"] == "deployed the fix"
+    assert entry["date_ms"] == _recent_ms()

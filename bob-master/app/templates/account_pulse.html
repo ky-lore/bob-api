@@ -261,6 +261,32 @@
   .no-ad-platform { color: var(--ink-faint); }
   .chip-zoom { font-size: 11px; color: var(--accent); }
 
+  /* Recent ClickUp activity disclosure (2026-09-21, Bob: "tasks active in
+     the last 48hrs of weekdays... referenceable in the card under a
+     dropdown") -- native <details>/<summary>, no custom JS needed for a
+     plain expand/collapse. Display-only raw evidence, separate from (not a
+     replacement for) the LLM-synthesized status/recent-work prose above --
+     see AccountContextResult.recent_clickup_activity's docstring. */
+  .recent-activity { margin-top: 12px; }
+  .recent-activity summary {
+    cursor: pointer; font-size: 11.5px; color: var(--ink-faint); font-family: var(--font-mono);
+    list-style: none; display: inline-flex; align-items: center; gap: 5px; user-select: none;
+  }
+  .recent-activity summary::-webkit-details-marker { display: none; }
+  .recent-activity summary::before { content: "▸"; font-size: 9px; display: inline-block; transition: transform 0.15s ease; }
+  .recent-activity[open] summary::before { transform: rotate(90deg); }
+  .recent-activity summary:hover { color: var(--ink-muted); }
+  .recent-activity-body {
+    margin-top: 10px; padding: 12px 14px; background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: 8px; display: flex; flex-direction: column; gap: 12px; max-height: 320px; overflow-y: auto;
+  }
+  .recent-activity-task-name { font-family: var(--font-display); font-size: 13px; font-weight: 500; margin-bottom: 5px; }
+  .recent-activity-comment { font-size: 12px; color: var(--ink-muted); margin-bottom: 5px; }
+  .recent-activity-comment:last-child { margin-bottom: 0; }
+  .recent-activity-date {
+    font-family: var(--font-mono); font-size: 10px; color: var(--ink-faint); margin-right: 7px; white-space: nowrap;
+  }
+
   .empty { color: var(--ink-muted); font-style: italic; padding: 40px 0; text-align: center; }
 
   footer.colophon {
@@ -448,6 +474,24 @@
           {%- if a.zoom_call_count %} <span class="chip-zoom">{{ a.zoom_call_count }} call transcript{{ 's' if a.zoom_call_count != 1 else '' }} this wk</span>{% endif -%}
         </div>
       </footer>
+
+      {% if a.recent_clickup_activity %}
+        <details class="recent-activity">
+          <summary>Recent ClickUp activity — {{ a.recent_clickup_activity|length }} task{{ 's' if a.recent_clickup_activity|length != 1 else '' }} touched, last 48 weekday hrs</summary>
+          <div class="recent-activity-body">
+            {% for t in a.recent_clickup_activity %}
+              <div class="recent-activity-task">
+                <div class="recent-activity-task-name">{{ t.task_name }}</div>
+                {% for c in t.comments %}
+                  <div class="recent-activity-comment">
+                    {% if c.date_display %}<span class="recent-activity-date">{{ c.date_display }}</span>{% endif %}{{ c.text }}
+                  </div>
+                {% endfor %}
+              </div>
+            {% endfor %}
+          </div>
+        </details>
+      {% endif %}
     </article>
   {% endmacro %}
 

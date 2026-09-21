@@ -48,8 +48,22 @@ class _FakeAtlasClient:
 
 
 class _FakeClickUp:
+    """Empty by default (existing tests don't care about ClickUp content);
+    set the class-level fixtures below to exercise the folder/list/task/
+    comment walk for the recent_clickup_activity tests."""
+
+    lists: list = []
+    tasks_by_list: dict = {}
+    comments_by_task: dict = {}
+
     def get_folder_lists(self, folder_id):
-        return []
+        return _FakeClickUp.lists
+
+    def get_list_tasks(self, list_id, include_closed=True, page=0):
+        return {"tasks": _FakeClickUp.tasks_by_list.get(list_id, [])}
+
+    def get_task_comments(self, task_id):
+        return _FakeClickUp.comments_by_task.get(task_id, [])
 
 
 class _FakeSlack:
@@ -110,6 +124,9 @@ def _setup(monkeypatch):
     _FakeAtlasClient.accounts = []
     _FakeGoogleAdsClient.responses = {}
     _FakeMetaAdsClient.responses = {}
+    _FakeClickUp.lists = []
+    _FakeClickUp.tasks_by_list = {}
+    _FakeClickUp.comments_by_task = {}
 
 
 @pytest.fixture
@@ -420,3 +437,36 @@ def test_no_db_session_skips_overrides_gracefully(monkeypatch):
     records, _ = mod.build_atlas_report(db=None)
 
     assert records[0]["health_overridden"] is False
+
+
+def test_recent_clickup_activity_threads_through_to_the_record(monkeypatch):
+    """Real ask, 2026-09-21: "tasks active in the last 48hrs of weekdays...
+    referenceable in the card." Proves build_atlas_report's record carries
+    the structured recent_clickup_activity list gather_atlas_context
+    produces -- the actual weekend-aware cutoff logic itself is unit-tested
+    directly in test_account_context_gather.py."""
+    now_ms = str(int(datetime.now(timezone.utc).timestamp() * 1000))
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Task Co", atlas_id="task-co-1", clickup_folder_id="folder1")]
+    _FakeClickUp.lists = [{"id": "list1"}]
+    _FakeClickUp.tasks_by_list = {"list1": [{"id": "task1", "name": "Fix redirect", "date_updated": now_ms}]}
+    _FakeClickUp.comments_by_task = {"task1": [{"comment_text": "deployed the fix", "date": now_ms}]}
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
+
+    records, _ = mod.build_atlas_report()
+
+    activity = records[0]["recent_clickup_activity"]
+    assert len(activity) == 1
+    assert activity[0]["task_id"] == "task1"
+    assert activity[0]["task_name"] == "Fix redirect"
+    assert activity[0]["text"] == "deployed the fix"
+
+
+def test_no_clickup_folder_id_leaves_recent_clickup_activity_empty(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("No Folder Co", atlas_id="no-folder-1", clickup_folder_id=None)]
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
+
+    records, _ = mod.build_atlas_report()
+
+    assert records[0]["recent_clickup_activity"] == []
