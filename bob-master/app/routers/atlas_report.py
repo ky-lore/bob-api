@@ -28,7 +28,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.db import get_db, get_session_factory
 from app.integrations.anthropic_client import _HEALTH_VALUES
 from app.models import AccountHealthOverride, AtlasReportRun
@@ -42,14 +41,16 @@ _HEALTH_ORDER = {"at_risk": 0, "needs_attention": 1, "on_track": 2}
 _HEALTH_LABEL = {"at_risk": "At risk", "needs_attention": "Needs attention", "on_track": "On track"}
 
 
+# Hardcoded, not a Settings/env var (2026-09-21, Bob: "forget .env - can we
+# just store it static on-page?") -- this is a rudimentary internal-only
+# gate, not real auth (see AccountHealthOverride's docstring), and Bob
+# explicitly wants zero deployment/config step to use it. Must match the
+# ADMIN_PASSWORD constant in account_pulse.html's script exactly.
+_ADMIN_OVERRIDE_PASSWORD = "wasp"
+
+
 def _require_admin_password(x_admin_password: str | None = Header(default=None)) -> None:
-    """Rudimentary shared-password gate (2026-09-21, Bob's explicit call --
-    not real auth) for the health-override write endpoints. Fails CLOSED if
-    the password isn't configured at all (Settings.admin_override_password
-    is None) -- an unset password must never mean "anyone can write," see
-    AccountHealthOverride's docstring."""
-    configured = get_settings().admin_override_password
-    if not configured or x_admin_password != configured:
+    if x_admin_password != _ADMIN_OVERRIDE_PASSWORD:
         raise HTTPException(status_code=401, detail="invalid or missing admin password")
 
 

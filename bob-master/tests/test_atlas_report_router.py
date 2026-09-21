@@ -310,12 +310,7 @@ def test_pulse_for_a_specific_run_id_renders_that_historical_run(tmp_path):
     assert "Newer Run Co" not in resp.text
 
 
-class _FakeSettingsWithPassword:
-    admin_override_password = "correct-horse"
-
-
-class _FakeSettingsNoPassword:
-    admin_override_password = None
+_ADMIN_HEADERS = {"X-Admin-Password": router_mod._ADMIN_OVERRIDE_PASSWORD}
 
 
 def _sample_run_accounts():
@@ -327,8 +322,7 @@ def _sample_run_accounts():
     }]
 
 
-def test_set_override_requires_correct_password(monkeypatch, tmp_path):
-    monkeypatch.setattr(router_mod, "get_settings", lambda: _FakeSettingsWithPassword())
+def test_set_override_requires_correct_password(tmp_path):
     client = _client(tmp_path)
     body = {"atlas_id": "acme-1", "company_name": "Acme Co", "health": "at_risk"}
 
@@ -340,41 +334,25 @@ def test_set_override_requires_correct_password(monkeypatch, tmp_path):
     )
     assert wrong_password.status_code == 401
 
-    correct = client.post(
-        "/reports/atlas-account-status/overrides", json=body, headers={"X-Admin-Password": "correct-horse"}
-    )
+    correct = client.post("/reports/atlas-account-status/overrides", json=body, headers=_ADMIN_HEADERS)
     assert correct.status_code == 200
 
 
-def test_override_endpoints_fail_closed_when_password_not_configured(monkeypatch, tmp_path):
-    monkeypatch.setattr(router_mod, "get_settings", lambda: _FakeSettingsNoPassword())
-    client = _client(tmp_path)
-    body = {"atlas_id": "acme-1", "company_name": "Acme Co", "health": "at_risk"}
-
-    # Even sending SOME header (matching nothing, since nothing's configured) must still fail.
-    resp = client.post(
-        "/reports/atlas-account-status/overrides", json=body, headers={"X-Admin-Password": "anything"}
-    )
-    assert resp.status_code == 401
-
-
-def test_set_override_rejects_an_invalid_health_value(monkeypatch, tmp_path):
-    monkeypatch.setattr(router_mod, "get_settings", lambda: _FakeSettingsWithPassword())
+def test_set_override_rejects_an_invalid_health_value(tmp_path):
     client = _client(tmp_path)
 
     resp = client.post(
         "/reports/atlas-account-status/overrides",
         json={"atlas_id": "acme-1", "company_name": "Acme Co", "health": "somewhat_bad"},
-        headers={"X-Admin-Password": "correct-horse"},
+        headers=_ADMIN_HEADERS,
     )
 
     assert resp.status_code == 422
 
 
-def test_set_override_upserts_rather_than_duplicating(monkeypatch, tmp_path):
-    monkeypatch.setattr(router_mod, "get_settings", lambda: _FakeSettingsWithPassword())
+def test_set_override_upserts_rather_than_duplicating(tmp_path):
     client, session_factory = _client_and_session_factory(tmp_path)
-    headers = {"X-Admin-Password": "correct-horse"}
+    headers = _ADMIN_HEADERS
 
     client.post(
         "/reports/atlas-account-status/overrides",
@@ -395,8 +373,7 @@ def test_set_override_upserts_rather_than_duplicating(monkeypatch, tmp_path):
     assert rows[0].reason == "second"
 
 
-def test_override_immediately_shows_on_pulse_without_a_new_run(monkeypatch, tmp_path):
-    monkeypatch.setattr(router_mod, "get_settings", lambda: _FakeSettingsWithPassword())
+def test_override_immediately_shows_on_pulse_without_a_new_run(tmp_path):
     client, session_factory = _client_and_session_factory(tmp_path)
     db = session_factory()
     db.add(AtlasReportRun(
@@ -413,7 +390,7 @@ def test_override_immediately_shows_on_pulse_without_a_new_run(monkeypatch, tmp_
     client.post(
         "/reports/atlas-account-status/overrides",
         json={"atlas_id": "acme-1", "company_name": "Acme Co", "health": "at_risk", "reason": "Known churn risk"},
-        headers={"X-Admin-Password": "correct-horse"},
+        headers=_ADMIN_HEADERS,
     )
 
     after = client.get("/reports/atlas-account-status/pulse")
@@ -422,8 +399,7 @@ def test_override_immediately_shows_on_pulse_without_a_new_run(monkeypatch, tmp_
     assert 'value="Known churn risk"' in after.text  # reason pre-filled into the override form's input
 
 
-def test_clear_override_reverts_pulse_to_the_llm_health(monkeypatch, tmp_path):
-    monkeypatch.setattr(router_mod, "get_settings", lambda: _FakeSettingsWithPassword())
+def test_clear_override_reverts_pulse_to_the_llm_health(tmp_path):
     client, session_factory = _client_and_session_factory(tmp_path)
     db = session_factory()
     db.add(AtlasReportRun(
@@ -441,7 +417,7 @@ def test_clear_override_reverts_pulse_to_the_llm_health(monkeypatch, tmp_path):
     assert "manually set" in before.text
 
     clear_resp = client.delete(
-        "/reports/atlas-account-status/overrides/acme-1", headers={"X-Admin-Password": "correct-horse"}
+        "/reports/atlas-account-status/overrides/acme-1", headers=_ADMIN_HEADERS
     )
     assert clear_resp.status_code == 200
     assert clear_resp.json()["cleared"] is True
@@ -451,8 +427,7 @@ def test_clear_override_reverts_pulse_to_the_llm_health(monkeypatch, tmp_path):
     assert "On track" in after.text
 
 
-def test_clear_override_requires_password_too(monkeypatch, tmp_path):
-    monkeypatch.setattr(router_mod, "get_settings", lambda: _FakeSettingsWithPassword())
+def test_clear_override_requires_password_too(tmp_path):
     client = _client(tmp_path)
 
     resp = client.delete("/reports/atlas-account-status/overrides/acme-1")
