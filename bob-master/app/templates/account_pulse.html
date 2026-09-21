@@ -239,22 +239,16 @@
   }
 
   /* Evidence quotes (2026-09-21, Bob: "relevant slack message snippets or
-     zoom call quotes that support the summary") -- 0-3 verbatim quotes the
+     zoom call quotes that support the summary" -> later "hide under a
+     similar dropdown as the clickup [activity]") -- 0-3 verbatim quotes the
      LLM cited for its status/recent-work, verified against the account's
      own context before ever reaching this template (see
-     _verify_evidence_quotes). Kept as small inline citations, not a
-     <details> like recent-clickup-activity, since the expected volume is
-     tiny. */
-  .evidence-list { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .evidence-item {
-    font-size: 12.5px; color: var(--ink-muted); line-height: 1.45; padding-left: 10px;
-    border-left: 2px solid var(--border-strong);
-  }
+     _verify_evidence_quotes). Reuses the .recent-activity <details> pattern
+     below for a consistent disclosure treatment across both dropdowns. */
+  .evidence-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .evidence-item { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; color: var(--ink-muted); line-height: 1.5; }
+  .evidence-item .platform-icon { margin-top: 1px; }
   .evidence-item q { quotes: "\201C" "\201D"; font-style: italic; }
-  .evidence-source {
-    font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
-    color: var(--ink-faint); margin-right: 7px; vertical-align: 1px;
-  }
 
   .card-foot {
     display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px;
@@ -275,18 +269,20 @@
     padding: 3px 9px 3px 5px; line-height: 1;
   }
   .platform-chip.is-error { color: var(--risk); border-color: var(--risk-border); background: var(--risk-bg); }
-  /* White backing plate, not just a bare icon (2026-09-21) -- confirmed by
-     fetching logo.dev's real response: Google/ClickUp come back true RGBA
-     transparent, but Meta's comes back RGB with a solid white background
-     baked in (no alpha at all). A bare img would show a visible white
-     square around the Meta icon on every dark-mode chip. A small white
-     card behind ALL THREE makes it a deliberate, consistent treatment
-     instead of an inconsistency that only breaks in dark mode -- brand
-     marks generally assume a white/neutral ground anyway. */
+  /* Bare icon by default -- confirmed by fetching logo.dev's real PNG
+     response and inspecting alpha directly: Google/ClickUp/Slack/Zoom all
+     come back true RGBA transparent (corner alpha 0), so they sit cleanly
+     on the card surface in both themes. Only Meta's comes back RGB with a
+     solid white background baked in (no alpha at all) -- confirmed via
+     Pillow pixel inspection, corner pixel exactly (255,255,255,255). Giving
+     every icon a white backing plate (the original 2026-09-21 fix) papered
+     over that one real exception but made the other four look like a
+     mistake on dark cards. .platform-icon-opaque below is applied only to
+     Meta's <img>. */
   .platform-icon {
     width: 15px; height: 15px; display: block; flex: none; object-fit: contain; box-sizing: border-box;
-    background: #fff; border-radius: 3px; padding: 1.5px;
   }
+  .platform-icon-opaque { background: #fff; border-radius: 3px; padding: 1.5px; }
   .no-ad-platform { color: var(--ink-faint); }
   .chip-zoom { font-size: 11px; color: var(--accent); }
 
@@ -440,16 +436,6 @@
       <p class="status">{{ a.status or '—' }}</p>
       <p class="recent-work"><span class="recent-work-label">This week</span>{{ a.recent_work or 'No recent activity reported.' }}</p>
 
-      {% if a.evidence %}
-        <ul class="evidence-list">
-          {% for e in a.evidence %}
-            <li class="evidence-item">
-              <span class="evidence-source">{{ 'Slack' if e.source == 'slack' else 'Zoom' }}</span><q>{{ e.quote }}</q>
-            </li>
-          {% endfor %}
-        </ul>
-      {% endif %}
-
       <div class="override-form" data-override-form>
         <div class="override-form-row">
           <select data-override-health>
@@ -492,7 +478,7 @@
           {% if a.platforms %}
             {% for p in a.platforms %}
               <span class="platform-chip{{ ' is-error' if p.error }}">
-                <img class="platform-icon" src="{{ logo_urls[p.key] }}" alt="" onerror="this.style.display='none'">{{ p.label }}
+                <img class="platform-icon{{ ' platform-icon-opaque' if p.key == 'meta' }}" src="{{ logo_urls[p.key] }}" alt="" onerror="this.style.display='none'">{{ p.label }}
               </span>
             {% endfor %}
           {% else %}
@@ -516,6 +502,26 @@
                 {% endfor %}
               </div>
             {% endfor %}
+          </div>
+        </details>
+      {% endif %}
+
+      {% if a.evidence %}
+        <details class="recent-activity">
+          <summary>
+            <img class="platform-icon" src="{{ logo_urls.slack }}" alt="" onerror="this.style.display='none'">
+            <img class="platform-icon" src="{{ logo_urls.zoom }}" alt="" onerror="this.style.display='none'">
+            Communication context — {{ a.evidence|length }} quote{{ 's' if a.evidence|length != 1 else '' }} cited
+          </summary>
+          <div class="recent-activity-body">
+            <ul class="evidence-list">
+              {% for e in a.evidence %}
+                <li class="evidence-item">
+                  <img class="platform-icon" src="{{ logo_urls[e.source] }}" alt="" onerror="this.style.display='none'">
+                  <q>{{ e.quote }}</q>
+                </li>
+              {% endfor %}
+            </ul>
           </div>
         </details>
       {% endif %}

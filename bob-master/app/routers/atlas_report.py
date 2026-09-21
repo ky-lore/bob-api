@@ -51,7 +51,10 @@ _HEALTH_LABEL = {"at_risk": "At risk", "needs_attention": "Needs attention", "on
 # same for every account (not account-specific), so this is computed ONCE at
 # import time, not per-request/per-card.
 _LOGO_DEV_TOKEN = "pk_cffuq5CoSbaMfA7fgrXOPg"
-_LOGO_DEV_DOMAINS = {"google": "google.com", "meta": "meta.com", "clickup": "clickup.com"}
+_LOGO_DEV_DOMAINS = {
+    "google": "google.com", "meta": "meta.com", "clickup": "clickup.com",
+    "slack": "slack.com", "zoom": "zoom.us",
+}
 _LOGO_URLS = {
     # format=png explicitly -- logo.dev's default is an opaque JPEG (real
     # white/solid background baked in, confirmed by fetching one), which

@@ -316,6 +316,35 @@ def test_pulse_renders_google_and_meta_icon_chips(tmp_path):
     assert '<span class="platform-chip is-error">' in text  # meta: failed pull
 
 
+def test_pulse_only_gives_meta_the_opaque_icon_backing_plate(tmp_path):
+    """Real ask, 2026-09-21: "make sure the transparent bgs for the icons
+    display properly on dark theme" -- confirmed via Pillow pixel inspection
+    that Google/ClickUp/Slack/Zoom all come back true RGBA transparent from
+    logo.dev, but Meta's PNG has a solid white background baked in with no
+    alpha at all. Only Meta's <img> should get the white backing plate;
+    a bare icon everywhere else so it sits cleanly on a dark card."""
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account(
+        "Meta Only Co", "on_track",
+        google_ads={"total_cost": 500.0}, meta_ads={"total_cost": 250.0},
+    )
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    text = resp.text
+    assert 'class="platform-icon platform-icon-opaque" src="https://img.logo.dev/meta.com' in text
+    assert 'class="platform-icon" src="https://img.logo.dev/google.com' in text
+    assert "platform-icon-opaque\" src=\"https://img.logo.dev/google.com" not in text
+
+
 def test_pulse_for_a_specific_run_id_renders_that_historical_run(tmp_path):
     client, session_factory = _client_and_session_factory(tmp_path)
     db = session_factory()
@@ -742,15 +771,20 @@ def test_pulse_hides_recent_clickup_activity_disclosure_when_none(tmp_path):
     assert '<details class="recent-activity">' not in resp.text
 
 
-def test_pulse_renders_evidence_quotes(tmp_path):
+def test_pulse_renders_evidence_quotes_under_a_dropdown_with_source_icons(tmp_path):
     """Real ask, 2026-09-21: "relevant slack message snippets or zoom call
     quotes that support the summary" -- verified verbatim quotes come back
-    from build_atlas_report already filtered (see _verify_evidence_quotes),
-    so the template just needs to render whatever's on the record."""
+    from build_atlas_report already filtered (see _verify_evidence_quotes).
+    Later ask, same day: "hide under a similar dropdown as the clickup [...]
+    use icons for those too with our new CDN" -- reuses the <details>
+    disclosure pattern and logo.dev icons, one dropdown for both sources."""
     client, session_factory = _client_and_session_factory(tmp_path)
     db = session_factory()
     account = _sample_account(
         "Quote Co", "on_track",
+        recent_clickup_activity=[
+            {"task_id": "t1", "task_name": "Fix redirect", "text": "deployed the fix", "date_ms": "1758000000000"},
+        ],
         evidence=[
             {"source": "slack", "quote": "we shipped the fix this morning"},
             {"source": "zoom", "quote": "client confirmed everything looks good"},
@@ -767,11 +801,17 @@ def test_pulse_renders_evidence_quotes(tmp_path):
 
     assert resp.status_code == 200
     text = resp.text
+    assert '<details class="recent-activity">' in text
+    assert "Communication context" in text
+    assert "2 quotes cited" in text
     assert '<ul class="evidence-list">' in text
     assert "we shipped the fix this morning" in text
     assert "client confirmed everything looks good" in text
-    assert ">Slack<" in text
-    assert ">Zoom<" in text
+    assert "img.logo.dev/slack.com" in text
+    assert "img.logo.dev/zoom.us" in text
+    # Real ask: "put it underneath the clickup dropdown" -- ClickUp's
+    # disclosure must come first in document order.
+    assert text.index("Recent ClickUp activity") < text.index("Communication context")
 
 
 def test_pulse_hides_evidence_list_when_none(tmp_path):
@@ -789,3 +829,23 @@ def test_pulse_hides_evidence_list_when_none(tmp_path):
 
     assert resp.status_code == 200
     assert '<ul class="evidence-list">' not in resp.text
+
+
+def test_pulse_evidence_dropdown_singularizes_a_single_quote(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account(
+        "One Quote Co", "on_track", evidence=[{"source": "slack", "quote": "all good here"}],
+    )
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    assert "1 quote cited" in resp.text
+    assert "1 quotes cited" not in resp.text
