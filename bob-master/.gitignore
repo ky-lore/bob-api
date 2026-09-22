@@ -16,6 +16,9 @@ week_*/
 
 .DS_Store
 
+# Scratch/one-off output, not part of the app
+/temp/
+
 # Python
 .venv/
 __pycache__/

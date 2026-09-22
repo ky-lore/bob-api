@@ -158,6 +158,17 @@ class ZoomCallRecord(Base):
     match_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     transcript_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     pulled_at: Mapped[datetime] = mapped_column(DateTime)
+    # A human's assignment always wins over the fuzzy match and is never
+    # touched by re-sync (sync_zoom_calls/backfill_zoom_calls only ever
+    # process meeting_uuids not already in the table -- see
+    # app/tasks/zoom_call_sync.py). Written into atlas_account_id/
+    # matched_company_name directly (not a separate column) so every
+    # existing read site -- _add_zoom_context in atlas_report.py,
+    # daily_go_live_audit.py -- picks it up with no changes; these three
+    # columns just distinguish "a human confirmed this" for the review UI.
+    manually_assigned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=True)
+    assigned_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    assigned_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class ManagedClientEntry(Base):

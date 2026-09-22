@@ -143,6 +143,37 @@ def test_already_stored_meeting_uuid_is_not_reprocessed(monkeypatch, tmp_path):
     assert db.query(ZoomCallRecord).first().transcript_text == "already here"  # untouched, not re-fetched
 
 
+def test_manually_assigned_row_is_not_reprocessed_or_overwritten(monkeypatch, tmp_path):
+    """A human's assignment (app/routers/zoom_review.py) must survive
+    re-sync even when the fuzzy matcher would now pick a different -- or no
+    -- account for the same topic. Dedup is purely by meeting_uuid, so this
+    should already hold; this is a regression test for that guarantee."""
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [{"id": "acme-1", "companyName": "Acme Co", "isActive": True}]
+    _FakeZoomClient.users = [{"email": "tim@x.com"}]
+    _register("tim@x.com", "2026-09-16", "2026-09-16",
+               [_recording("uuid-1", "Mariachi Corazon de Maria", transcript_url="https://z/dl/1")])
+    _FakeZoomClient.transcripts_by_url = {"https://z/dl/1": "WEBVTT\n\nhello"}
+
+    db = _db(tmp_path)
+    db.add(ZoomCallRecord(
+        meeting_uuid="uuid-1", host_email="tim@x.com", topic="Mariachi Corazon de Maria",
+        start_time=datetime(2026, 9, 16, 20, 0, tzinfo=timezone.utc),
+        atlas_account_id="acme-1", matched_company_name="Acme Co", match_confidence=None,
+        manually_assigned=True, assigned_by="chris", assigned_at=datetime.now(timezone.utc),
+        transcript_text="already here", pulled_at=datetime.now(timezone.utc),
+    ))
+    db.commit()
+
+    result = mod.sync_zoom_calls(db, target_date=date(2026, 9, 16))
+
+    assert result["new_records"] == 0
+    row = db.query(ZoomCallRecord).one()
+    assert row.atlas_account_id == "acme-1"
+    assert row.manually_assigned is True
+    assert row.assigned_by == "chris"
+
+
 def test_low_confidence_match_is_not_stored_as_a_real_match(monkeypatch, tmp_path):
     _setup(monkeypatch)
     _FakeAtlasClient.accounts = [{"id": "df-1", "companyName": "Drain Force Plumbing", "isActive": True}]

@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Zoom Call Review</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 1000px; margin: 2rem auto; color: #1a1a1a; }
+    h1 { margin-bottom: 0.25rem; }
+    p.sub { color: #555; margin-top: 0; }
+    .banner { background: #fdecea; border: 1px solid #f5c2c0; padding: 0.6rem 0.8rem; border-radius: 4px; margin-bottom: 1rem; }
+    .tabs { margin-bottom: 1rem; }
+    .tabs a { margin-right: 1rem; text-decoration: none; color: #555; }
+    .tabs a.active { color: #1a1a1a; font-weight: 600; border-bottom: 2px solid #1a1a1a; }
+    form.search { margin-bottom: 1rem; }
+    form.search input[type=text] { width: 260px; padding: 0.35rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+    .match-auto { color: #555; }
+    .match-manual { color: #1a7a3c; font-weight: 600; }
+    .match-none { color: #b04a00; }
+    details.transcript summary { cursor: pointer; color: #555; }
+    details.transcript pre { white-space: pre-wrap; max-height: 240px; overflow-y: auto; background: #f7f7f7; padding: 0.5rem; border-radius: 4px; }
+    form.assign { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+    form.assign select { max-width: 220px; }
+    form.assign input[type=text] { width: 100px; }
+    form.assign button { padding: 0.3rem 0.6rem; }
+    form.clear { margin-top: 0.3rem; }
+    form.clear button { padding: 0.2rem 0.5rem; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>Zoom Call Review</h1>
+  <p class="sub">Assign a transcript to a client and it sticks -- future Pulse runs and audits use it automatically, and re-sync will never overwrite it.</p>
+  <p><a href="/admin/watchlist">← Watchlist admin</a></p>
+
+  {% if atlas_fetch_error %}
+    <div class="banner">Couldn't load the Atlas account list ({{ atlas_fetch_error }}) -- assignment is unavailable until this clears.</div>
+  {% endif %}
+
+  <div class="tabs">
+    <a href="/admin/zoom-calls?filter=unassigned" class="{{ 'active' if filter == 'unassigned' }}">Unassigned</a>
+    <a href="/admin/zoom-calls?filter=auto_matched" class="{{ 'active' if filter == 'auto_matched' }}">Auto-matched</a>
+    <a href="/admin/zoom-calls?filter=manually_assigned" class="{{ 'active' if filter == 'manually_assigned' }}">Manually assigned</a>
+    <a href="/admin/zoom-calls?filter=all" class="{{ 'active' if filter == 'all' }}">All</a>
+  </div>
+
+  <form class="search" method="get" action="/admin/zoom-calls">
+    <input type="hidden" name="filter" value="{{ filter }}">
+    <input type="text" name="q" value="{{ q }}" placeholder="Search topic / host / client">
+    <button type="submit">Search</button>
+  </form>
+
+  <table>
+    <tr><th>Date</th><th>Host</th><th>Topic / transcript</th><th>Current match</th><th>Assign</th></tr>
+    {% for c in calls %}
+      <tr>
+        <td>{{ c.start_time.strftime("%Y-%m-%d %H:%M") if c.start_time else "" }}</td>
+        <td>{{ c.host_email }}</td>
+        <td>
+          {{ c.topic }}
+          {% if c.transcript_text %}
+            <details class="transcript">
+              <summary>View transcript</summary>
+              <pre>{{ c.transcript_text }}</pre>
+            </details>
+          {% endif %}
+        </td>
+        <td>
+          {% if c.manually_assigned %}
+            <span class="match-manual">{{ c.matched_company_name or c.atlas_account_id }}</span><br>
+            <small>by {{ c.assigned_by or "unknown" }}{% if c.assigned_at %} on {{ c.assigned_at.strftime("%Y-%m-%d") }}{% endif %}</small>
+          {% elif c.atlas_account_id %}
+            <span class="match-auto">{{ c.matched_company_name or c.atlas_account_id }}</span><br>
+            <small>auto-matched{% if c.match_confidence %} ({{ "%.0f"|format(c.match_confidence * 100) }}%){% endif %}</small>
+          {% else %}
+            <span class="match-none">Unassigned</span>
+          {% endif %}
+          {% if c.atlas_account_id %}
+            <form class="clear" method="post" action="/admin/zoom-calls/{{ c.id }}/clear">
+              <input type="hidden" name="filter" value="{{ filter }}">
+              <input type="hidden" name="q" value="{{ q }}">
+              <button type="submit">Clear</button>
+            </form>
+          {% endif %}
+        </td>
+        <td>
+          <form class="assign" method="post" action="/admin/zoom-calls/{{ c.id }}/assign">
+            <input type="hidden" name="filter" value="{{ filter }}">
+            <input type="hidden" name="q" value="{{ q }}">
+            <select name="atlas_account_id" required>
+              <option value="" disabled selected>Choose client…</option>
+              {% for a in accounts %}
+                <option value="{{ a.id }}">{{ a.companyName }}</option>
+              {% endfor %}
+            </select>
+            <input type="text" name="assigned_by" placeholder="your name">
+            <button type="submit">Assign</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">No calls match this view.</td></tr>
+    {% endfor %}
+  </table>
+  {% if calls|length == list_limit %}
+    <p><small>Showing the most recent {{ list_limit }} matching calls.</small></p>
+  {% endif %}
+</body>
+</html>
