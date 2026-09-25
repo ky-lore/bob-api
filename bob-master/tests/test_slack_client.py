@@ -10,10 +10,12 @@ from app.integrations.slack import SlackClient
 
 
 class _FakeWebClient:
-    def __init__(self, channels, join_error=None):
-        self._channels = channels
+    def __init__(self, channels=None, join_error=None, users=None):
+        self._channels = channels or []
         self._join_error = join_error
         self.join_attempts: list[str] = []
+        self._users = users or {}
+        self.users_info_calls: list[str] = []
 
     def conversations_list(self, types, cursor, limit):
         return {"channels": self._channels}
@@ -23,6 +25,12 @@ class _FakeWebClient:
         if self._join_error:
             raise self._join_error
         return {"ok": True}
+
+    def users_info(self, user):
+        self.users_info_calls.append(user)
+        if user not in self._users:
+            raise RuntimeError("user_not_found")
+        return {"user": self._users[user]}
 
 
 def _client(monkeypatch) -> SlackClient:
@@ -84,3 +92,40 @@ def test_join_all_public_channels_idempotent_when_all_already_members(monkeypatc
 
     assert result == {"joined": [], "already_in": ["already-in"], "skipped_archived": [], "failed": []}
     assert fake.join_attempts == []
+
+
+def test_get_user_display_name_prefers_display_name(monkeypatch):
+    client = _client(monkeypatch)
+    fake = _FakeWebClient(users={"U1": {"profile": {"display_name": "Simon", "real_name": "Simon Ting"}}})
+    client._client = fake
+
+    assert client.get_user_display_name("U1") == "Simon"
+
+
+def test_get_user_display_name_falls_back_to_real_name_when_no_display_name(monkeypatch):
+    client = _client(monkeypatch)
+    fake = _FakeWebClient(users={"U1": {"profile": {"display_name": ""}, "real_name": "Simon Ting"}})
+    client._client = fake
+
+    assert client.get_user_display_name("U1") == "Simon Ting"
+
+
+def test_get_user_display_name_falls_back_to_raw_id_on_lookup_failure(monkeypatch):
+    # Deactivated user, missing scope, bad ID -- a name-resolution hiccup
+    # must never break the message content itself.
+    client = _client(monkeypatch)
+    fake = _FakeWebClient(users={})
+    client._client = fake
+
+    assert client.get_user_display_name("U_GONE") == "U_GONE"
+
+
+def test_get_user_display_name_caches_per_instance(monkeypatch):
+    client = _client(monkeypatch)
+    fake = _FakeWebClient(users={"U1": {"profile": {"display_name": "Simon"}}})
+    client._client = fake
+
+    assert client.get_user_display_name("U1") == "Simon"
+    assert client.get_user_display_name("U1") == "Simon"
+
+    assert fake.users_info_calls == ["U1"]  # second call served from cache, not a second API hit

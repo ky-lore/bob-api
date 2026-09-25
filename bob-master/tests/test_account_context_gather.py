@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.tasks.account_context_gather import (
+    _slack_sender_name,
     business_hours_cutoff,
     extract_channel_client_name,
     gather_atlas_context,
@@ -53,6 +54,26 @@ class _FakeSlack:
             raise RuntimeError("slack down")
         return self._messages
 
+    def get_user_display_name(self, user_id):
+        return {"U1": "Jordan"}.get(user_id, user_id)
+
+
+def test_slack_sender_name_resolves_a_user_id():
+    slack = _FakeSlack()
+    assert _slack_sender_name(slack, {"text": "hi", "user": "U1"}) == "Jordan"
+
+
+def test_slack_sender_name_uses_the_bot_username_when_theres_no_user_id():
+    # Bot/webhook messages carry their own "username" directly -- there's no
+    # Slack user ID to resolve, and users.info doesn't accept a bot_id.
+    slack = _FakeSlack()
+    assert _slack_sender_name(slack, {"text": "deploy succeeded", "username": "CI Bot"}) == "CI Bot"
+
+
+def test_slack_sender_name_falls_back_to_unknown_for_an_unattributed_message():
+    slack = _FakeSlack()
+    assert _slack_sender_name(slack, {"text": "mystery message"}) == "Unknown"
+
 
 def test_gather_rich_context_pulls_card_and_subtask_comments():
     clickup = _FakeClickUp(
@@ -76,13 +97,16 @@ def test_gather_rich_context_pulls_card_and_subtask_comments():
 
 def test_gather_rich_context_pulls_full_slack_channel_history_when_matched():
     clickup = _FakeClickUp()
-    slack = _FakeSlack(messages=[{"text": "hey team, launching soon"}, {"text": "still waiting on assets"}])
+    slack = _FakeSlack(messages=[
+        {"text": "hey team, launching soon", "user": "U1"},
+        {"text": "still waiting on assets", "user": "U1"},
+    ])
     channels = [{"id": "C123", "name": "internal-acme-co"}, {"id": "C456", "name": "internal-beta-llc"}]
 
     result = gather_rich_context("Acme Co", None, clickup, slack, channels)
 
-    assert "[Slack #internal-acme-co] hey team, launching soon" in result.context
-    assert "[Slack #internal-acme-co] still waiting on assets" in result.context
+    assert "[Slack #internal-acme-co] Jordan: hey team, launching soon" in result.context
+    assert "[Slack #internal-acme-co] Jordan: still waiting on assets" in result.context
     assert result.slack_channel_matched == "internal-acme-co"
     assert result.slack_match_confidence == "exact"
     assert result.slack_match_score == 1.0
@@ -100,14 +124,14 @@ def test_gather_rich_context_filters_out_slack_system_message_noise():
         messages=[
             {"text": "<@U0BLXKX8LS1> has joined the channel", "subtype": "channel_join"},
             {"text": "set the channel topic", "subtype": "channel_topic"},
-            {"text": "hey team, real update here"},
+            {"text": "hey team, real update here", "user": "U1"},
         ]
     )
     channels = [{"id": "C123", "name": "internal-acme-co"}]
 
     result = gather_rich_context("Acme Co", None, clickup, slack, channels)
 
-    assert result.context == ["[Slack #internal-acme-co] hey team, real update here"]
+    assert result.context == ["[Slack #internal-acme-co] Jordan: hey team, real update here"]
     assert result.slack_message_count == 1
 
 
@@ -116,12 +140,12 @@ def test_gather_rich_context_accepts_ambiguous_confidence_slack_matches():
     # extra context, not a wrong account correlation, so "ambiguous" is good
     # enough here even though it isn't for ClickUp/retention board matching.
     clickup = _FakeClickUp()
-    slack = _FakeSlack(messages=[{"text": "quick update on the account"}])
+    slack = _FakeSlack(messages=[{"text": "quick update on the account", "user": "U1"}])
     channels = [{"id": "C1", "name": "internal-roof-city-pros"}]  # scores ~0.76, "ambiguous"
 
     result = gather_rich_context("Roof City Professionals", None, clickup, slack, channels)
 
-    assert "[Slack #internal-roof-city-pros] quick update on the account" in result.context
+    assert "[Slack #internal-roof-city-pros] Jordan: quick update on the account" in result.context
     assert result.slack_channel_matched == "internal-roof-city-pros"
     assert result.slack_match_confidence == "ambiguous"
     assert result.slack_match_score is not None and 0.72 <= result.slack_match_score < 0.85
@@ -215,7 +239,7 @@ def test_gather_atlas_context_walks_folder_lists_tasks_and_comments():
             "task2": [{"comment_text": "campaign live, watching CPA", "date": _recent_ms(2)}],
         },
     )
-    slack = _FakeSlack(messages=[{"text": "quick check-in from the team"}])
+    slack = _FakeSlack(messages=[{"text": "quick check-in from the team", "user": "U1"}])
 
     result = gather_atlas_context("folder1", "C0BEN1V1J0H", clickup, slack)
 
@@ -224,7 +248,7 @@ def test_gather_atlas_context_walks_folder_lists_tasks_and_comments():
     assert result.clickup_comment_count == 2
     assert result.clickup_ok is True
 
-    assert "[Slack #C0BEN1V1J0H] quick check-in from the team" in result.context
+    assert "[Slack #C0BEN1V1J0H] Jordan: quick check-in from the team" in result.context
     assert result.slack_channel_matched == "C0BEN1V1J0H"
     assert result.slack_match_confidence == "atlas_exact_id"
     assert result.slack_match_score == 1.0

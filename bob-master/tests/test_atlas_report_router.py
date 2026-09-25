@@ -812,6 +812,51 @@ def test_pulse_renders_evidence_quotes_under_a_dropdown_with_source_icons(tmp_pa
     # Real ask: "put it underneath the clickup dropdown" -- ClickUp's
     # disclosure must come first in document order.
     assert text.index("Recent ClickUp activity") < text.index("Communication context")
+    # Older stored runs have no "speaker" key on their evidence dicts at all
+    # (added 2026-09-25) -- must degrade gracefully, not print a literal
+    # "None:" in front of the quote.
+    assert "None:" not in text
+
+
+def test_pulse_evidence_shows_speaker_name_when_present(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account(
+        "Attributed Co", "on_track",
+        evidence=[{"source": "slack", "speaker": "Simon Ting", "quote": "we shipped the fix this morning"}],
+    )
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    assert '<span class="evidence-speaker">Simon Ting:</span>' in resp.text
+
+
+def test_pulse_evidence_hides_speaker_prefix_when_unknown(tmp_path):
+    client, session_factory = _client_and_session_factory(tmp_path)
+    db = session_factory()
+    account = _sample_account(
+        "Unattributed Co", "on_track",
+        evidence=[{"source": "zoom", "speaker": "Unknown", "quote": "all good here"}],
+    )
+    db.add(AtlasReportRun(
+        run_at=datetime(2026, 9, 21, 9, 0, 0), limit_used=None,
+        report_json=json.dumps({"count": 1, "accounts": [account], "narrative_batches": []}),
+    ))
+    db.commit()
+    db.close()
+
+    resp = client.get("/reports/atlas-account-status/pulse")
+
+    assert resp.status_code == 200
+    assert '<span class="evidence-speaker">' not in resp.text
+    assert "all good here" in resp.text
 
 
 def test_pulse_hides_evidence_list_when_none(tmp_path):

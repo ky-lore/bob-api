@@ -159,21 +159,33 @@ _REPORT_TOOL_SCHEMA = {
                                 "-- NOT ClickUp (that has its own separate raw-activity view elsewhere). "
                                 "Every quote MUST be copied verbatim from the Slack/Zoom context you were "
                                 "given, character for character -- never paraphrase, summarize, or "
-                                "construct a quote that sounds plausible but wasn't actually said. Return "
-                                "an empty list if nothing in the Slack/Zoom context clearly supports your "
-                                "summary -- an empty list is correct and expected for a quiet account, not "
-                                "a failure."
+                                "construct a quote that sounds plausible but wasn't actually said. Also "
+                                "name who said it (see the item schema's speaker field) -- both the Slack "
+                                "and Zoom context lines you're given carry a 'Name: ...' attribution, so "
+                                "this should always be findable, not guessed. Return an empty list if "
+                                "nothing in the Slack/Zoom context clearly supports your summary -- an "
+                                "empty list is correct and expected for a quiet account, not a failure."
                             ),
                             "items": {
                                 "type": "object",
                                 "properties": {
                                     "source": {"type": "string", "enum": ["slack", "zoom"]},
+                                    "speaker": {
+                                        "type": "string",
+                                        "description": (
+                                            "Whoever said or wrote the quote, exactly as named in the "
+                                            "context you were given -- the name before the colon on a "
+                                            "'[Slack #channel] Name: ...' line, or the speaker label on a "
+                                            "'[Zoom call, ...] Name: ...' line. 'Unknown' if the context "
+                                            "genuinely doesn't attribute the line to anyone."
+                                        ),
+                                    },
                                     "quote": {
                                         "type": "string",
                                         "description": "Copied verbatim from the given context -- see the array description.",
                                     },
                                 },
-                                "required": ["source", "quote"],
+                                "required": ["source", "speaker", "quote"],
                             },
                         },
                     },
@@ -208,8 +220,11 @@ _REPORT_SYSTEM_PROMPT = (
     "(4) evidence: 0-3 short quotes from the Slack messages or Zoom call transcript lines (not ClickUp) "
     "that most directly support your status/recent_work — see the tool schema for the exact bar. Every "
     "quote must be copied verbatim, character for character, from the context you were given — inventing "
-    "a plausible-sounding quote that wasn't actually said is worse than providing none at all. Empty is "
-    "the correct answer whenever nothing in the Slack/Zoom context clearly supports your summary. "
+    "a plausible-sounding quote that wasn't actually said is worse than providing none at all. Every quote "
+    "also needs its speaker — the given Slack/Zoom context lines are already attributed ('Name: ...'), so "
+    "read off the real name rather than guessing; use 'Unknown' only if a line genuinely isn't attributed "
+    "to anyone. Empty is the correct answer whenever nothing in the Slack/Zoom context clearly supports "
+    "your summary. "
     "Do not invent facts not present in the input. If signals conflict, say so plainly rather than "
     "silently picking a side. No greetings, no preamble, no markdown. You MUST produce one entry per "
     "account given."
@@ -401,7 +416,13 @@ def _verify_evidence_quotes(reports: list[dict], accounts_by_name: dict[str, dic
     quote that sounds plausible is worse than no evidence at all -- it reads
     as verified when it isn't. Pure string matching, no extra API call --
     same skeptical-of-raw-LLM-output posture as _coerce_list's double-
-    encoding guard and the health override's "LLM said X" tooltip."""
+    encoding guard and the health override's "LLM said X" tooltip.
+
+    speaker (2026-09-25) gets the same skepticism but a softer penalty: a
+    quote that's genuinely verbatim but mis-attributed is still real
+    evidence, just imprecisely labeled, so a speaker name that doesn't
+    actually appear anywhere in the account's context downgrades to
+    "Unknown" rather than discarding the whole (verified) quote."""
     for r in reports:
         if not isinstance(r, dict):
             continue
@@ -413,8 +434,12 @@ def _verify_evidence_quotes(reports: list[dict], accounts_by_name: dict[str, dic
                 continue
             quote = (e.get("quote") or "").strip()
             source = e.get("source")
-            if quote and source in ("slack", "zoom") and _normalize_for_match(quote) in context_blob:
-                verified.append({"source": source, "quote": quote})
+            if not (quote and source in ("slack", "zoom") and _normalize_for_match(quote) in context_blob):
+                continue
+            speaker = (e.get("speaker") or "").strip() or "Unknown"
+            if speaker != "Unknown" and _normalize_for_match(speaker) not in context_blob:
+                speaker = "Unknown"
+            verified.append({"source": source, "speaker": speaker, "quote": quote})
         r["evidence"] = verified
 
 

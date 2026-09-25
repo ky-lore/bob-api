@@ -249,6 +249,7 @@
   .evidence-item { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; color: var(--ink-muted); line-height: 1.5; }
   .evidence-item .platform-icon { margin-top: 1px; }
   .evidence-item q { quotes: "\201C" "\201D"; font-style: italic; }
+  .evidence-speaker { font-weight: 600; font-style: normal; color: var(--ink); }
 
   .card-foot {
     display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px;
@@ -518,7 +519,7 @@
               {% for e in a.evidence %}
                 <li class="evidence-item">
                   <img class="platform-icon" src="{{ logo_urls[e.source] }}" alt="" onerror="this.style.display='none'">
-                  <q>{{ e.quote }}</q>
+                  <span>{% if e.speaker and e.speaker != "Unknown" %}<span class="evidence-speaker">{{ e.speaker }}:</span> {% endif %}<q>{{ e.quote }}</q></span>
                 </li>
               {% endfor %}
             </ul>

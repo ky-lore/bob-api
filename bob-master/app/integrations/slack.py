@@ -40,6 +40,11 @@ class SlackClient:
             token=get_settings().slack_bot_token,
             retry_handlers=[RateLimitErrorRetryHandler(max_retry_count=3)],
         )
+        # Per-instance, not per-call -- the SAME SlackClient is reused across
+        # every account in a Pulse run (see app/tasks/atlas_report.py), so a
+        # user who posts in several accounts' channels only ever costs one
+        # real users.info call, not one per message.
+        self._user_name_cache: dict[str, str] = {}
 
     def send_dm(self, user_id: str, text: str) -> dict[str, Any]:
         dm = self._client.conversations_open(users=[user_id])
@@ -72,6 +77,30 @@ class SlackClient:
             if not cursor:
                 break
         return messages
+
+    def get_user_display_name(self, user_id: str) -> str:
+        """Resolves a raw Slack user ID (the `user` field on a message from
+        channel_history) to a human-readable name, for attributing evidence
+        quotes to whoever actually said them (2026-09-25). users.info per
+        unique ID, not users.list -- most workspace members never post in
+        any one account's channel, so fetching the whole directory up front
+        would be mostly wasted calls. Falls back to the raw ID on any
+        failure (deactivated user, missing scope, bad ID) -- a name lookup
+        hiccup should never break the message content itself."""
+        if user_id not in self._user_name_cache:
+            try:
+                profile = self._client.users_info(user=user_id)["user"]
+                name = (
+                    profile.get("profile", {}).get("display_name")
+                    or profile.get("profile", {}).get("real_name")
+                    or profile.get("real_name")
+                    or profile.get("name")
+                    or user_id
+                )
+                self._user_name_cache[user_id] = name
+            except Exception:
+                self._user_name_cache[user_id] = user_id
+        return self._user_name_cache[user_id]
 
     def join_channel(self, channel_id: str) -> dict[str, Any]:
         """Requires the channels:join bot scope. Public channels only — Slack has

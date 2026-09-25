@@ -169,6 +169,21 @@ def _add_clickup_context(clickup: ClickUpClient, card_id: str, result: AccountCo
                 result.clickup_comment_count += 1
 
 
+def _slack_sender_name(slack: SlackClient, message: dict) -> str:
+    """Human-readable sender for one Slack message, so evidence quotes can
+    say who actually said something (2026-09-25), not just which channel it
+    came from. A bot/webhook message carries its own "username" directly
+    (there's no Slack user ID to resolve, and users.info doesn't accept a
+    bot_id); a normal message carries a "user" ID, resolved+cached via
+    SlackClient.get_user_display_name. "Unknown" is the honest fallback for
+    a message shape that has neither -- rare, but soft-fail rather than
+    crash the whole gather over one weird message."""
+    user_id = message.get("user")
+    if user_id:
+        return slack.get_user_display_name(user_id)
+    return message.get("username") or "Unknown"
+
+
 def _add_channel_messages(
     slack: SlackClient, channel_id: str, channel_label: str, result: AccountContextResult, cutoff: datetime
 ) -> None:
@@ -189,7 +204,8 @@ def _add_channel_messages(
             continue
         text = (m.get("text") or "").strip()
         if text:
-            result.context.append(f"[Slack #{channel_label}] {text}")
+            sender = _slack_sender_name(slack, m)
+            result.context.append(f"[Slack #{channel_label}] {sender}: {text}")
             result.slack_message_count += 1
 
 

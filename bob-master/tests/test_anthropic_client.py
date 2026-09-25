@@ -257,6 +257,69 @@ def test_synthesize_report_batch_keeps_evidence_quotes_verified_against_context(
             "health": "on_track",
             "status": "doing fine",
             "recent_work": "shipped a fix",
+            "evidence": [{"source": "slack", "speaker": "Simon", "quote": "we shipped the fix this morning"}],
+        }
+    ]
+    _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
+
+    result = anthropic_client._synthesize_report_batch(
+        [
+            {
+                "account": "Acme Co",
+                "day": 1,
+                "stage": "live",
+                "is_live": True,
+                "context": ["[Slack #acme] Simon: we shipped the fix this morning, all good now"],
+            }
+        ]
+    )
+
+    assert result["Acme Co"]["evidence"] == [
+        {"source": "slack", "speaker": "Simon", "quote": "we shipped the fix this morning"}
+    ]
+
+
+def test_synthesize_report_batch_downgrades_an_unverifiable_speaker_to_unknown(monkeypatch):
+    # A speaker name that isn't actually anywhere in the account's context is
+    # its own kind of hallucination risk (misattribution) -- but the quote
+    # itself is still real, verified evidence, so it's downgraded rather than
+    # dropped outright (unlike a fabricated quote, which IS dropped -- see
+    # test_synthesize_report_batch_drops_a_quote_not_actually_present_in_context).
+    reports = [
+        {
+            "account": "Acme Co",
+            "health": "on_track",
+            "status": "doing fine",
+            "recent_work": "shipped a fix",
+            "evidence": [{"source": "slack", "speaker": "Someone Who Never Posted", "quote": "we shipped the fix this morning"}],
+        }
+    ]
+    _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
+
+    result = anthropic_client._synthesize_report_batch(
+        [
+            {
+                "account": "Acme Co",
+                "day": 1,
+                "stage": "live",
+                "is_live": True,
+                "context": ["[Slack #acme] Simon: we shipped the fix this morning, all good now"],
+            }
+        ]
+    )
+
+    assert result["Acme Co"]["evidence"] == [
+        {"source": "slack", "speaker": "Unknown", "quote": "we shipped the fix this morning"}
+    ]
+
+
+def test_synthesize_report_batch_defaults_a_missing_speaker_to_unknown(monkeypatch):
+    reports = [
+        {
+            "account": "Acme Co",
+            "health": "on_track",
+            "status": "doing fine",
+            "recent_work": "shipped a fix",
             "evidence": [{"source": "slack", "quote": "we shipped the fix this morning"}],
         }
     ]
@@ -269,12 +332,14 @@ def test_synthesize_report_batch_keeps_evidence_quotes_verified_against_context(
                 "day": 1,
                 "stage": "live",
                 "is_live": True,
-                "context": ["Slack #acme: we shipped the fix this morning, all good now"],
+                "context": ["[Slack #acme] Simon: we shipped the fix this morning, all good now"],
             }
         ]
     )
 
-    assert result["Acme Co"]["evidence"] == [{"source": "slack", "quote": "we shipped the fix this morning"}]
+    assert result["Acme Co"]["evidence"] == [
+        {"source": "slack", "speaker": "Unknown", "quote": "we shipped the fix this morning"}
+    ]
 
 
 def test_synthesize_report_batch_drops_a_quote_not_actually_present_in_context(monkeypatch):
@@ -287,7 +352,7 @@ def test_synthesize_report_batch_drops_a_quote_not_actually_present_in_context(m
             "health": "on_track",
             "status": "doing fine",
             "recent_work": "shipped a fix",
-            "evidence": [{"source": "slack", "quote": "this was never actually said by anyone"}],
+            "evidence": [{"source": "slack", "speaker": "Simon", "quote": "this was never actually said by anyone"}],
         }
     ]
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
@@ -314,7 +379,7 @@ def test_synthesize_report_batch_drops_evidence_with_an_invalid_source(monkeypat
             "health": "on_track",
             "status": "doing fine",
             "recent_work": "shipped a fix",
-            "evidence": [{"source": "clickup", "quote": "shipped the fix"}],
+            "evidence": [{"source": "clickup", "speaker": "Simon", "quote": "shipped the fix"}],
         }
     ]
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
@@ -341,7 +406,7 @@ def test_synthesize_report_batch_evidence_match_is_case_and_whitespace_insensiti
             "health": "on_track",
             "status": "doing fine",
             "recent_work": "shipped a fix",
-            "evidence": [{"source": "zoom", "quote": "We   Shipped\nthe fix"}],
+            "evidence": [{"source": "zoom", "speaker": "SIMON", "quote": "We   Shipped\nthe fix"}],
         }
     ]
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
@@ -353,9 +418,9 @@ def test_synthesize_report_batch_evidence_match_is_case_and_whitespace_insensiti
                 "day": 1,
                 "stage": "live",
                 "is_live": True,
-                "context": ["Zoom call: we shipped the fix today"],
+                "context": ["[Zoom call] Simon: we shipped the fix today"],
             }
         ]
     )
 
-    assert result["Acme Co"]["evidence"] == [{"source": "zoom", "quote": "We   Shipped\nthe fix"}]
+    assert result["Acme Co"]["evidence"] == [{"source": "zoom", "speaker": "SIMON", "quote": "We   Shipped\nthe fix"}]
