@@ -10,7 +10,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import app.tasks.atlas_report as mod
-from app.db import get_engine, get_session_factory, init_db
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app.db import Base
 from app.models import ZoomCallRecord
 
 
@@ -130,16 +133,27 @@ def _setup(monkeypatch):
 
 
 @pytest.fixture
-def db_session(tmp_path, monkeypatch):
+def db_session(tmp_path):
     """Real (temp file) SQLite session, same convention as the daily audit's
     e2e tests -- needed for the Zoom-context tests, which query ZoomCallRecord
-    via real ORM chaining that a hand-rolled fake can't easily reproduce."""
+    via real ORM chaining that a hand-rolled fake can't easily reproduce.
+
+    Builds its own engine directly rather than going through
+    app.db.get_engine/get_settings (both @lru_cache'd process-wide, per
+    app/config.py and app/db.py) -- get_settings() in particular is never
+    cache_clear()'d anywhere, so a DATABASE_URL env var set here would only
+    ever take effect on whichever test in the whole run happens to call
+    get_settings() first; every db_session test after that would silently
+    share THAT test's tmp_path sqlite file instead of getting its own,
+    accumulating rows across tests until two happened to collide on the
+    same primary/unique key (confirmed the hard way, 2026-09-25, adding the
+    standup-context tests below -- two tests each using a literal
+    "standup-uuid-1" meeting_uuid passed in isolation but one failed with a
+    UNIQUE constraint violation when run after the other)."""
     db_path = tmp_path / "test.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
-    get_engine.cache_clear()
-    get_session_factory.cache_clear()
-    init_db()
-    session = get_session_factory()()
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
     yield session
     session.close()
 
@@ -326,6 +340,111 @@ def test_zoom_transcript_outside_the_window_is_excluded(monkeypatch, db_session)
     records, _ = mod.build_atlas_report(db=db_session)
 
     assert records[0]["zoom_call_count"] == 0
+
+
+def _standup_call(meeting_uuid, transcript_text, days_ago=1):
+    return ZoomCallRecord(
+        meeting_uuid=meeting_uuid,
+        host_email="chris@advancedmarketers.co",
+        topic=mod._STANDUP_TOPIC,
+        start_time=datetime.now(timezone.utc) - timedelta(days=days_ago),
+        atlas_account_id=None,
+        matched_company_name=None,
+        match_confidence=None,
+        transcript_text=transcript_text,
+        pulled_at=datetime.now(timezone.utc),
+    )
+
+
+def test_standup_mention_reaches_the_narrative_context_but_not_the_call_count(monkeypatch, db_session):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Vizeon Construction", atlas_id="vizeon-1")]
+    db_session.add(_standup_call(
+        "standup-uuid-1",
+        "WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.000\n"
+        "Chris: Vizeon asked to pause the campaign for a few weeks.",
+    ))
+    db_session.commit()
+
+    captured = []
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: (captured.extend(accounts) or {}, []),
+    )
+
+    records, _ = mod.build_atlas_report(db=db_session)
+
+    # Not a client-hosted call -- must not inflate the "N call transcripts
+    # this wk" chip, even though it did add real content to the LLM context.
+    assert records[0]["zoom_call_count"] == 0
+    standup_context = [c for c in captured[0]["context"] if mod._STANDUP_TOPIC in c]
+    assert len(standup_context) == 1
+    assert "pause the campaign" in standup_context[0]
+
+
+def test_standup_mention_outside_the_window_is_excluded(monkeypatch, db_session):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Vizeon Construction", atlas_id="vizeon-1")]
+    db_session.add(_standup_call(
+        "standup-uuid-stale",
+        "WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.000\nChris: Vizeon update from ages ago.",
+        days_ago=45,
+    ))
+    db_session.commit()
+    captured = []
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: (captured.extend(accounts) or {}, []),
+    )
+
+    records, _ = mod.build_atlas_report(db=db_session)
+
+    standup_context = [c for c in captured[0]["context"] if mod._STANDUP_TOPIC in c]
+    assert standup_context == []
+
+
+def test_standup_mentions_are_capped_per_account(monkeypatch, db_session):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Vizeon Construction", atlas_id="vizeon-1")]
+    for i in range(4):
+        db_session.add(_standup_call(
+            f"standup-uuid-{i}",
+            f"WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.000\nChris: Vizeon update number {i}.",
+            days_ago=i + 1,
+        ))
+    db_session.commit()
+    captured = []
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: (captured.extend(accounts) or {}, []),
+    )
+
+    mod.build_atlas_report(db=db_session)
+
+    standup_context = [c for c in captured[0]["context"] if mod._STANDUP_TOPIC in c]
+    assert len(standup_context) == mod._STANDUP_MENTION_LIMIT
+
+
+def test_short_first_word_company_name_skips_standup_matching_entirely(monkeypatch, db_session):
+    """Guards against noisy false-positive matches for short/generic first
+    words (e.g. "LG", "OC", "LA") -- see _standup_search_key."""
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("LG Electric", atlas_id="lg-1")]
+    db_session.add(_standup_call(
+        "standup-uuid-lg",
+        "WEBVTT\n\n1\n00:00:00.000 --> 00:00:02.000\nChris: lg is a common substring in lots of words.",
+    ))
+    db_session.commit()
+    captured = []
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: (captured.extend(accounts) or {}, []),
+    )
+
+    mod.build_atlas_report(db=db_session)
+
+    standup_context = [c for c in captured[0]["context"] if mod._STANDUP_TOPIC in c]
+    assert standup_context == []
 
 
 def test_run_and_store_atlas_report_persists_a_queryable_row(monkeypatch, db_session):

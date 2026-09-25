@@ -42,6 +42,7 @@ from app.integrations.clickup import ClickUpClient
 from app.integrations.slack import SlackClient
 from app.models import AccountHealthOverride, AtlasReportRun, ZoomCallRecord
 from app.tasks.account_context_gather import gather_atlas_context
+from app.tasks.account_name_matching import normalize
 from app.tasks.daily_go_live_audit import _days_since_atlas_created_at
 from app.tasks.zoom_call_sync import format_transcript_for_context
 
@@ -56,6 +57,21 @@ _ZOOM_CONTEXT_CALL_LIMIT = 3
 # gather_atlas_context's recent_activity_hours docstring for why the LLM
 # still sees the full window regardless of this.
 _RECENT_CLICKUP_ACTIVITY_HOURS = 48
+
+# The internal "Team Leads Daily" standup (real Zoom topic: "Daily Leads
+# Standup", host chris@ -- confirmed 2026-09-24 against real recordings) is
+# team leads walking accounts one by one: campaign pauses, blockers, GBP/ad
+# status -- real signal no client-facing source (ClickUp/Slack/the client's
+# own Zoom calls) ever captures. Unlike a client-hosted call, this meeting's
+# own Zoom topic never names any one client, so zoom_call_sync's topic-based
+# fuzzy match can't attribute it -- these transcripts otherwise just sit in
+# the unassigned backlog (see app/routers/zoom_review.py). Matched by
+# keyword instead, per account, at report time.
+_STANDUP_TOPIC = "Daily Leads Standup"
+# Cap per account, same reasoning as _ZOOM_CONTEXT_CALL_LIMIT -- a handful
+# of accounts get discussed most days; nobody needs more than 2 snippets.
+_STANDUP_MENTION_LIMIT = 2
+_STANDUP_SNIPPET_CHARS = 500
 
 
 def _compress_google_ads_summary(spend: dict[str, Any]) -> dict[str, Any]:
@@ -145,6 +161,71 @@ def _add_zoom_context(db: Session | None, atlas_id: str | None, cutoff: datetime
     return len(calls)
 
 
+def _load_recent_standups(db: Session | None, cutoff: datetime) -> list[tuple[str, str]]:
+    """One query + one transcript-cleaning pass for the whole run, not per
+    account -- format_transcript_for_context on a handful of standup
+    transcripts is cheap; redoing it up to 148 times (once per account in
+    build_atlas_report's loop) would not be. Returns (date, cleaned_text)
+    pairs, most recent first. db=None skips silently, same soft-fail
+    contract as every other source here."""
+    if db is None:
+        return []
+    calls = (
+        db.query(ZoomCallRecord)
+        .filter(ZoomCallRecord.topic == _STANDUP_TOPIC, ZoomCallRecord.start_time >= cutoff)
+        .order_by(ZoomCallRecord.start_time.desc())
+        .all()
+    )
+    return [
+        (call.start_time.date().isoformat(), format_transcript_for_context(call.transcript_text or "", max_chars=500_000))
+        for call in calls
+    ]
+
+
+def _standup_search_key(company_name: str) -> str | None:
+    """The first word of normalize()'d company name, used as a lightweight
+    keyword to spot this account being discussed in the standup transcript.
+    Best-effort and lossy on purpose -- same posture as the rest of this
+    codebase's fuzzy matching (see account_name_matching.py's module
+    docstring): a short/generic first word (under 4 chars -- "OC", "LA",
+    "LG", ...) is skipped entirely rather than risking false hits across
+    unrelated accounts. Real misses (a client discussed by nickname, or a
+    company named after its second word) are an accepted gap, not a bug --
+    this only ever adds signal on top of the real context sources, never
+    replaces them."""
+    words = normalize(company_name).split()
+    if not words or len(words[0]) < 4:
+        return None
+    return words[0]
+
+
+def _add_standup_mentions(company_name: str, standups: list[tuple[str, str]], context: list[str]) -> int:
+    """Best-effort: appends up to _STANDUP_MENTION_LIMIT snippets of this
+    account being discussed in the internal Daily Leads Standup (see
+    _STANDUP_TOPIC's comment above). Tagged with the SAME [Zoom call, ...]
+    prefix _add_zoom_context uses -- this genuinely IS Zoom call transcript
+    content, just from a different meeting than any client-hosted call, so
+    it needs no changes to the evidence-quote schema/UI (still
+    source="zoom" if the LLM cites it -- see anthropic_client.py)."""
+    key = _standup_search_key(company_name)
+    if not key:
+        return 0
+    key_lower = key.lower()
+    added = 0
+    for call_date, cleaned in standups:
+        if added >= _STANDUP_MENTION_LIMIT:
+            break
+        idx = cleaned.lower().find(key_lower)
+        if idx == -1:
+            continue
+        start = max(0, idx - _STANDUP_SNIPPET_CHARS // 2)
+        end = min(len(cleaned), idx + _STANDUP_SNIPPET_CHARS // 2)
+        snippet = cleaned[start:end].strip()
+        context.append(f"[Zoom call, {_STANDUP_TOPIC}, {call_date}] …{snippet}…")
+        added += 1
+    return added
+
+
 def _fetch_health_overrides(db: Session | None) -> dict[str, AccountHealthOverride]:
     """One query up front rather than one per account (148 individual
     lookups would be wasteful) -- db=None just skips overrides entirely,
@@ -202,6 +283,7 @@ def build_atlas_report(
     google_ads_client = GoogleAdsClient()
     meta_ads_client = MetaAdsClient()
     zoom_cutoff = datetime.now(timezone.utc) - timedelta(days=context_window_days)
+    standups = _load_recent_standups(db, zoom_cutoff)
 
     records: list[dict[str, Any]] = []
     narrative_inputs: list[dict[str, Any]] = []
@@ -223,7 +305,13 @@ def build_atlas_report(
             window_days=context_window_days,
             recent_activity_hours=_RECENT_CLICKUP_ACTIVITY_HOURS,
         )
+        # zoom_call_count feeds the "N call transcripts this wk" chip in
+        # account_pulse.html, which reads as "calls WITH this client" -- so
+        # standup mentions (internal chatter ABOUT the client, not a call
+        # with them) go straight into the LLM's context below but are
+        # deliberately NOT counted here, to avoid that chip lying.
         zoom_call_count = _add_zoom_context(db, atlas_id, zoom_cutoff, ctx_result.context)
+        _add_standup_mentions(name, standups, ctx_result.context)
 
         google_ads_summary: dict[str, Any] | None = None
         google_ads_error: str | None = None
