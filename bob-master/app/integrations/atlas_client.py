@@ -57,3 +57,15 @@ class AtlasClient:
         resp = self._client.post(f"/api/accounts/{atlas_id}/campaigns", json=payload)
         resp.raise_for_status()
         return resp.json() if resp.content else {}
+
+    def post_admin_tasks(self, atlas_id: str, tasks: list[dict[str, Any]]) -> dict[str, Any]:
+        """Bulk-upserts standup action items (ClickUp tasks tagged `action`)
+        for one account into Atlas's AdminTask collection (2026-09-28) --
+        same push-direction/reverse-of-get_all_accounts idea as post_campaigns,
+        but upserted by clickupTaskId rather than append-only, since a task's
+        status/due-date changes over time. See app/tasks/standup_action_items.py
+        for the payload shape (one dict per task: clickupTaskId, title,
+        assignee, dueDate, status, sourceMeeting, url)."""
+        resp = self._client.post(f"/api/accounts/{atlas_id}/admin-tasks", json={"tasks": tasks})
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}

@@ -48,6 +48,7 @@ class ClickUpClient:
             timeout=30.0,
             transport=_RetryOn429Transport(),
         )
+        self._workspace_id = settings.clickup_workspace_id
 
     def get_list_tasks(self, list_id: str, *, include_closed: bool = False, page: int = 0) -> dict[str, Any]:
         resp = self._client.get(
@@ -118,3 +119,27 @@ class ClickUpClient:
         resp = self._client.get("/task/bulk_time_in_status/task_ids", params={"task_ids": task_ids})
         resp.raise_for_status()
         return resp.json()
+
+    def get_team_tasks_by_tag(self, tag: str) -> list[dict[str, Any]]:
+        """Every task workspace-wide carrying `tag`, regardless of which
+        list/folder/space it lives in -- unlike every other method here,
+        which needs a list/folder/task id already in hand. Needed because a
+        standup action item could land in any one of ~130+ client folders;
+        there's no per-client id to scope the search to ahead of time (see
+        app/tasks/standup_action_items.py). Paginates to completion (confirmed
+        ClickUp returns up to 100/page here, same as get_list_tasks)."""
+        tasks: list[dict[str, Any]] = []
+        page = 0
+        while True:
+            resp = self._client.get(
+                f"/team/{self._workspace_id}/task",
+                params={"tags[]": tag, "page": page},
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            page_tasks = body.get("tasks", [])
+            tasks.extend(page_tasks)
+            if body.get("last_page", True) or not page_tasks:
+                break
+            page += 1
+        return tasks
