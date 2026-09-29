@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     # --- Scheduler ---
     # Original cadence per docs/SCHEDULED_TASKS_REGISTRY_SNAPSHOT.md: "0 7 * * 1-5" (weekdays 7:01 AM).
     daily_go_live_audit_cron: str = "0 7 * * 1-5"
+    # 8 PM Pacific, every day (2026-09-29) -- zoom_call_sync.py's sync_zoom_calls
+    # defaults to pulling "yesterday" in UTC terms; firing this late in the
+    # Pacific evening means UTC has already rolled over to the next calendar
+    # day (Pacific is always 7-8h behind UTC), so UTC-"yesterday" lands on the
+    # SAME Pacific calendar day this job runs on -- i.e. same-day capture of
+    # that day's calls, not actually a day behind, with several hours' buffer
+    # after any call ends for Zoom to finish generating its transcript. See
+    # scheduler.py's _SCHEDULE_TIMEZONE comment for the underlying UTC/Pacific
+    # gotcha this relies on. Every day, not just weekdays -- client calls
+    # (unlike the internal standup) aren't confined to business days.
+    zoom_call_sync_cron: str = "0 20 * * *"
 
     # --- Debug knob (Bob, 2026-08-06) — TEMPORARY: caps the Atlas account
     # universe to a random N so a full run doesn't take minutes while the
