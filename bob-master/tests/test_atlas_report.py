@@ -5,6 +5,7 @@ shape (enabled campaigns only, not full REMOVED history), the deterministic
 combined ad_spend, the health/status/recent_work split reaching each record,
 the Zoom transcript wiring, and soft-fail behavior when a customer_id is bad.
 """
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -720,6 +721,7 @@ def test_run_and_store_atlas_report_pushes_a_pulse_run_to_atlas(monkeypatch, db_
     assert pushed["runId"] == run.id
     assert pushed["count"] == 1
     assert pushed["accounts"][0]["company_name"] == "Pushed Co"
+    assert json.loads(run.report_json)["pulse_push"] == {"ok": True, "error": None}
 
 
 def test_run_and_store_atlas_report_soft_fails_when_the_pulse_push_errors(monkeypatch, db_session):
@@ -729,9 +731,12 @@ def test_run_and_store_atlas_report_soft_fails_when_the_pulse_push_errors(monkey
     monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
 
     # Must not raise -- Bob's own run already succeeded and is stored; an
-    # Atlas outage on the push must never surface as a failure here.
+    # Atlas outage on the push must never surface as a failure here. The
+    # real error still needs to be readable afterward though (see
+    # pulse_push's docstring) rather than just vanishing into a bare except.
     run = mod.run_and_store_atlas_report(db_session)
 
     assert run.id is not None
     from app.models import AtlasReportRun as _Model
     assert db_session.query(_Model).filter_by(id=run.id).one() is not None
+    assert json.loads(run.report_json)["pulse_push"] == {"ok": False, "error": "Atlas is down"}

@@ -436,9 +436,23 @@ def run_and_store_atlas_report(db: Session, limit: int | None = None, on_progres
     # same posture as every other external push in this codebase: an Atlas
     # outage (or the retries in post_pulse_run exhausting) must never break
     # Bob's own Pulse run, which already succeeded and is stored above.
+    # pulse_push (2026-09-29) records the outcome back onto the stored run so
+    # it's visible via GET .../latest -- a bare swallowed exception here left
+    # a failed push completely invisible; this repo has no Railway log access
+    # from a dev session, so this is the only way to see a real error message
+    # after the fact instead of just re-guessing at the cause.
+    pulse_push_ok = True
+    pulse_push_error: str | None = None
     try:
         AtlasClient().post_pulse_run(_pulse_run_payload(run, records))
-    except Exception:
-        pass
+    except Exception as exc:
+        pulse_push_ok = False
+        pulse_push_error = str(exc)
+
+    data = json.loads(run.report_json)
+    data["pulse_push"] = {"ok": pulse_push_ok, "error": pulse_push_error}
+    run.report_json = json.dumps(data)
+    db.commit()
+    db.refresh(run)
 
     return run
