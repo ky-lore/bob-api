@@ -99,13 +99,49 @@ class ClickUpClient:
         resp.raise_for_status()
         return resp.json()
 
-    def create_task(self, list_id: str, name: str, *, description: str = "", tags: list[str] | None = None) -> dict[str, Any]:
+    def create_task(
+        self,
+        list_id: str,
+        name: str,
+        *,
+        description: str = "",
+        tags: list[str] | None = None,
+        assignees: list[int] | None = None,
+        due_date_ms: int | None = None,
+        start_date_ms: int | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"name": name, "description": description}
         if tags:
             payload["tags"] = tags
+        if assignees:
+            payload["assignees"] = assignees
+        if due_date_ms is not None:
+            payload["due_date"] = due_date_ms
+            payload["due_date_time"] = True
+        if start_date_ms is not None:
+            payload["start_date"] = start_date_ms
+            payload["start_date_time"] = True
         resp = self._client.post(f"/list/{list_id}/task", json=payload)
         resp.raise_for_status()
         return resp.json()
+
+    def find_member_by_email(self, email: str) -> dict[str, Any] | None:
+        """Looks up a workspace member by email (2026-09-28) -- for turning
+        an Atlas staff member's email into a ClickUp assignee id when
+        creating a task from Command Center. Returns the raw ClickUp user
+        object ({id, username, email, ...}) or None if no member in THIS
+        workspace (self._workspace_id) has that email. Confirmed shape:
+        GET /team returns {"teams": [{"id", "members": [{"user": {...}}]}]}."""
+        resp = self._client.get("/team")
+        resp.raise_for_status()
+        for team in resp.json().get("teams", []):
+            if str(team.get("id")) != str(self._workspace_id):
+                continue
+            for member in team.get("members", []):
+                user = member.get("user", {})
+                if (user.get("email") or "").lower() == (email or "").lower():
+                    return user
+        return None
 
     def create_subtask(self, parent_task_id: str, name: str, *, list_id: str) -> dict[str, Any]:
         resp = self._client.post(

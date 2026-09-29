@@ -46,14 +46,17 @@ def _task_payload(task: dict[str, Any]) -> dict[str, Any]:
     assignees = task.get("assignees") or []
     assignee_name = assignees[0].get("username", "") if assignees else ""
     due_date_ms = task.get("due_date")
+    start_date_ms = task.get("start_date")
     return {
         "clickupTaskId": task["id"],
         "title": task.get("name") or "(untitled)",
         "assignee": assignee_name,
-        # ClickUp due_date is an epoch-ms string (or None); Atlas's admin-tasks
-        # route does `new Date(dueDate)`, which parses an ISO string, not raw
-        # ms -- convert here rather than push a value the other side can't read.
+        # ClickUp due_date/start_date are epoch-ms strings (or None); Atlas's
+        # admin-tasks route does `new Date(...)`, which parses an ISO string,
+        # not raw ms -- convert here rather than push a value the other side
+        # can't read.
         "dueDate": _ms_to_iso(due_date_ms) if due_date_ms else None,
+        "startDate": _ms_to_iso(start_date_ms) if start_date_ms else None,
         "status": "done" if task.get("status", {}).get("type") == "closed" else "open",
         "sourceMeeting": _SOURCE_MEETING,
         "url": task.get("url", ""),

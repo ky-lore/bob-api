@@ -46,13 +46,14 @@ def _account(atlas_id, folder_id, *, is_active=True):
     return {"id": atlas_id, "isActive": is_active, "integrations": {"clickupFolderId": folder_id}}
 
 
-def _clickup_task(task_id, folder_id, *, name="Do the thing", assignees=None, due_date=None, closed=False, url=""):
+def _clickup_task(task_id, folder_id, *, name="Do the thing", assignees=None, due_date=None, start_date=None, closed=False, url=""):
     return {
         "id": task_id,
         "name": name,
         "folder": {"id": folder_id, "name": "some folder"},
         "assignees": assignees or [],
         "due_date": due_date,
+        "start_date": start_date,
         "status": {"type": "closed" if closed else "open"},
         "url": url,
     }
@@ -85,6 +86,7 @@ def test_matches_tasks_by_folder_id_and_pushes_to_atlas(monkeypatch):
         "title": "Confirm payment method",
         "assignee": "Simon Ting",
         "dueDate": None,
+        "startDate": None,
         "status": "open",
         "sourceMeeting": "Daily Leads Standup",
         "url": "https://app.clickup.com/t/task-1",
@@ -153,6 +155,18 @@ def test_due_date_is_converted_from_epoch_ms_to_iso(monkeypatch):
 
     _, tasks = _FakeAtlasClient.pushed[0]
     assert tasks[0]["dueDate"] == "2026-09-29T00:00:00+00:00"
+
+
+def test_start_date_is_converted_from_epoch_ms_to_iso(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_account("atlas-1", "folder-1")]
+    # 2026-09-14T00:00:00Z
+    _FakeClickUpClient.tasks = [_clickup_task("task-1", "folder-1", start_date="1789344000000")]
+
+    mod.sync_standup_action_items()
+
+    _, tasks = _FakeAtlasClient.pushed[0]
+    assert tasks[0]["startDate"] == "2026-09-14T00:00:00+00:00"
 
 
 def test_task_with_no_assignees_gets_an_empty_string_assignee(monkeypatch):

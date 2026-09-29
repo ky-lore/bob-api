@@ -9,6 +9,7 @@ from adspend.main import app as adspend_app
 from app.db import get_session_factory, init_db
 from app.routers import (
     admin,
+    admin_task_create,
     atlas_campaign_push,
     atlas_report,
     dashboard,
@@ -36,6 +37,7 @@ app.include_router(atlas_campaign_push.router)
 app.include_router(zoom_call_sync.router)
 app.include_router(zoom_review.router)
 app.include_router(standup_action_items.router)
+app.include_router(admin_task_create.router)
 # adspend (2026-08-06) mounted under this same deployment rather than run as
 # its own Railway service -- one base URL for every consumer, current and
 # future, instead of managing several. Its code (adspend/) stays a
