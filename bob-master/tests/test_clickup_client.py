@@ -122,24 +122,24 @@ class _FakeHttpClient:
         return self._responses.pop(0)
 
 
-def _task(task_id, tag="action"):
-    return {"id": task_id, "name": f"task {task_id}", "tags": [{"name": tag}]}
+def _task(task_id, name=None):
+    return {"id": task_id, "name": name or f"task {task_id}"}
 
 
-def test_get_team_tasks_by_tag_uses_the_configured_workspace_id(monkeypatch):
+def test_get_all_team_tasks_uses_the_configured_workspace_id(monkeypatch):
     client = _client(monkeypatch)
     fake = _FakeHttpClient([_FakeResponse({"tasks": [_task("1")], "last_page": True})])
     client._client = fake
 
-    tasks = client.get_team_tasks_by_tag("action")
+    tasks = client.get_all_team_tasks()
 
     assert [t["id"] for t in tasks] == ["1"]
     url, params = fake.calls[0]
     assert url == f"/team/{client._workspace_id}/task"
-    assert params == {"tags[]": "action", "page": 0}
+    assert params == {"page": 0}
 
 
-def test_get_team_tasks_by_tag_paginates_to_completion(monkeypatch):
+def test_get_all_team_tasks_paginates_to_completion(monkeypatch):
     client = _client(monkeypatch)
     fake = _FakeHttpClient([
         _FakeResponse({"tasks": [_task("1"), _task("2")], "last_page": False}),
@@ -147,19 +147,19 @@ def test_get_team_tasks_by_tag_paginates_to_completion(monkeypatch):
     ])
     client._client = fake
 
-    tasks = client.get_team_tasks_by_tag("action")
+    tasks = client.get_all_team_tasks()
 
     assert [t["id"] for t in tasks] == ["1", "2", "3"]
     assert [params["page"] for _, params in fake.calls] == [0, 1]
 
 
-def test_get_team_tasks_by_tag_stops_on_an_empty_page_even_if_last_page_is_missing(monkeypatch):
+def test_get_all_team_tasks_stops_on_an_empty_page_even_if_last_page_is_missing(monkeypatch):
     # Defensive: don't loop forever if a response is missing last_page entirely.
     client = _client(monkeypatch)
     fake = _FakeHttpClient([_FakeResponse({"tasks": []})])
     client._client = fake
 
-    tasks = client.get_team_tasks_by_tag("action")
+    tasks = client.get_all_team_tasks()
 
     assert tasks == []
     assert len(fake.calls) == 1

@@ -1,10 +1,13 @@
 """
 Tests app.tasks.admin_task_create.create_admin_task against fake Atlas/ClickUp
-clients -- proves Delivery-list targeting, email->assignee resolution (and
-that an unresolvable email doesn't block creation), due/start date epoch-ms
-conversion, the immediate reflect-into-Atlas push, and the three real setup
-errors (unknown account, no ClickUp folder, no Delivery list) surfacing as
-ValueError for the router to turn into a 400.
+clients -- proves Delivery-list targeting, the "Admin: " name-filter prefix
+(2026-09-29, replacing an "action" ClickUp tag -- see the module docstring)
+and that it's not doubled when a title already contains "admin",
+email->assignee resolution (and that an unresolvable email doesn't block
+creation), due/start date epoch-ms conversion, the immediate
+reflect-into-Atlas push, and the three real setup errors (unknown account, no
+ClickUp folder, no Delivery list) surfacing as ValueError for the router to
+turn into a 400.
 """
 import pytest
 
@@ -69,10 +72,20 @@ def test_creates_task_in_the_delivery_prefixed_list(monkeypatch):
     result = mod.create_admin_task("atlas-1", "Confirm domain access")
 
     assert _FakeClickUpClient.created[0]["list_id"] == "list-delivery"
-    assert _FakeClickUpClient.created[0]["name"] == "Confirm domain access"
-    assert _FakeClickUpClient.created[0]["tags"] == ["action"]
+    assert _FakeClickUpClient.created[0]["name"] == "Admin: Confirm domain access"
+    assert _FakeClickUpClient.created[0]["tags"] is None
     assert result["clickupTaskId"] == "new-task-1"
     assert result["url"] == "https://app.clickup.com/t/new-task-1"
+
+
+def test_title_already_containing_admin_is_not_double_prefixed(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_account("atlas-1", "folder-1")]
+    _FakeClickUpClient.folder_lists = {"folder-1": [{"id": "list-1", "name": "Delivery"}]}
+
+    mod.create_admin_task("atlas-1", "admin: confirm domain access")
+
+    assert _FakeClickUpClient.created[0]["name"] == "admin: confirm domain access"
 
 
 def test_delivery_list_match_is_case_insensitive_prefix(monkeypatch):

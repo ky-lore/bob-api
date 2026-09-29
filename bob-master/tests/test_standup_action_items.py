@@ -1,9 +1,11 @@
 """
 Tests app.tasks.standup_action_items.sync_standup_action_items against fake
 ClickUp + Atlas clients -- proves folder-id matching (the join key between a
-ClickUp task and the Atlas account that owns its folder), the closed/open
-status mapping, epoch-ms -> ISO due-date conversion, and per-account soft-fail
-on push (one account's Atlas push failing must never block the rest).
+ClickUp task and the Atlas account that owns its folder), the name-substring
+filter (2026-09-29, replacing an earlier ClickUp-tag filter -- see the
+module's docstring), the closed/open status mapping, epoch-ms -> ISO
+due-date conversion, and per-account soft-fail on push (one account's Atlas
+push failing must never block the rest).
 """
 import app.tasks.standup_action_items as mod
 
@@ -23,9 +25,12 @@ class _FakeAtlasClient:
 
 
 class _FakeClickUpClient:
+    """Returns every fixture task unconditionally, same as the real
+    get_all_team_tasks -- the name-substring filtering under test happens in
+    sync_standup_action_items itself, not here."""
     tasks: list = []
 
-    def get_team_tasks_by_tag(self, tag):
+    def get_all_team_tasks(self):
         return _FakeClickUpClient.tasks
 
 
@@ -46,7 +51,7 @@ def _account(atlas_id, folder_id, *, is_active=True):
     return {"id": atlas_id, "isActive": is_active, "integrations": {"clickupFolderId": folder_id}}
 
 
-def _clickup_task(task_id, folder_id, *, name="Do the thing", assignees=None, due_date=None, start_date=None, closed=False, url=""):
+def _clickup_task(task_id, folder_id, *, name="Admin: Do the thing", assignees=None, due_date=None, start_date=None, closed=False, url=""):
     return {
         "id": task_id,
         "name": name,
@@ -65,7 +70,7 @@ def test_matches_tasks_by_folder_id_and_pushes_to_atlas(monkeypatch):
     _FakeClickUpClient.tasks = [
         _clickup_task(
             "task-1", "folder-1",
-            name="Confirm payment method",
+            name="Admin: Confirm payment method",
             assignees=[{"username": "Simon Ting"}],
             url="https://app.clickup.com/t/task-1",
         )
@@ -83,7 +88,7 @@ def test_matches_tasks_by_folder_id_and_pushes_to_atlas(monkeypatch):
     assert atlas_id == "atlas-1"
     assert tasks == [{
         "clickupTaskId": "task-1",
-        "title": "Confirm payment method",
+        "title": "Admin: Confirm payment method",
         "assignee": "Simon Ting",
         "dueDate": None,
         "startDate": None,
@@ -180,11 +185,41 @@ def test_task_with_no_assignees_gets_an_empty_string_assignee(monkeypatch):
     assert tasks[0]["assignee"] == ""
 
 
-def test_custom_tag_is_passed_through_to_the_clickup_client(monkeypatch):
+def test_tasks_without_the_name_filter_are_excluded(monkeypatch):
     _setup(monkeypatch)
-    calls = []
-    _FakeClickUpClient.get_team_tasks_by_tag = lambda self, tag: calls.append(tag) or []
+    _FakeAtlasClient.accounts = [_account("atlas-1", "folder-1")]
+    _FakeClickUpClient.tasks = [
+        _clickup_task("task-1", "folder-1", name="Admin: follow up on billing"),
+        _clickup_task("task-2", "folder-1", name="Unrelated ClickUp task, not a standup item"),
+    ]
 
-    mod.sync_standup_action_items(tag="custom-tag")
+    result = mod.sync_standup_action_items()
 
-    assert calls == ["custom-tag"]
+    assert result["tasks_found"] == 1
+    _, tasks = _FakeAtlasClient.pushed[0]
+    assert [t["clickupTaskId"] for t in tasks] == ["task-1"]
+
+
+def test_name_filter_match_is_case_insensitive(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_account("atlas-1", "folder-1")]
+    _FakeClickUpClient.tasks = [_clickup_task("task-1", "folder-1", name="ADMIN: follow up on billing")]
+
+    result = mod.sync_standup_action_items()
+
+    assert result["tasks_found"] == 1
+
+
+def test_custom_name_filter_is_honored(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_account("atlas-1", "folder-1")]
+    _FakeClickUpClient.tasks = [
+        _clickup_task("task-1", "folder-1", name="Admin: follow up on billing"),
+        _clickup_task("task-2", "folder-1", name="Custom-tag: follow up on billing"),
+    ]
+
+    result = mod.sync_standup_action_items(name_filter="custom-tag")
+
+    assert result["tasks_found"] == 1
+    _, tasks = _FakeAtlasClient.pushed[0]
+    assert [t["clickupTaskId"] for t in tasks] == ["task-2"]

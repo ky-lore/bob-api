@@ -7,9 +7,13 @@ Center "create action task" UI.
 Lands in whatever list inside the account's ClickUp folder is named
 "Delivery..." -- a real, existing per-client convention (confirmed with
 Chris, 2026-09-28: "should always be a list prefixed Delivery"), not
-something invented here. Tagged `action` so it immediately flows into the
-regular sync/relay (standup_action_items.py) the same as any other action
-item from then on -- this isn't a parallel system.
+something invented here. Title gets an "Admin: " prefix (2026-09-29,
+replacing an "action" ClickUp tag -- see standup_action_items.py's module
+docstring for why) so it matches _NAME_FILTER and keeps flowing through the
+regular sync/relay the same as any other action item from then on -- this
+isn't a parallel system, and without the prefix a future re-sync could never
+find this task again to pick up a status change (e.g. marking it done once
+it's closed in ClickUp).
 
 Also reflects the created task straight into Atlas's AdminTask collection
 via the existing post_admin_tasks push, rather than waiting for the next
@@ -23,9 +27,18 @@ from typing import Any
 
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.clickup import ClickUpClient
+from app.tasks.standup_action_items import _NAME_FILTER
 
-_TAG = "action"
 _SOURCE_MEETING = "Daily Leads Standup"
+
+
+def _with_name_filter(title: str) -> str:
+    """Prefixes `title` with _NAME_FILTER unless it's already present
+    somewhere in it (case-insensitive) -- avoids a double "Admin: Admin: ..."
+    if someone types their own "admin" into the Command Center title field."""
+    if _NAME_FILTER.lower() in title.lower():
+        return title
+    return f"{_NAME_FILTER.capitalize()}: {title}"
 
 
 def _iso_to_ms(iso: str) -> int:
@@ -77,8 +90,7 @@ def create_admin_task(
 
     task = clickup.create_task(
         list_id,
-        title,
-        tags=[_TAG],
+        _with_name_filter(title),
         assignees=assignee_ids or None,
         due_date_ms=_iso_to_ms(due_date) if due_date else None,
         start_date_ms=_iso_to_ms(start_date) if start_date else None,

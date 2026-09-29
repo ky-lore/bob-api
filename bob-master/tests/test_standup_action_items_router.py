@@ -25,11 +25,11 @@ def _wait_for_job(client, job_id, timeout=5.0):
     return status_response
 
 
-def test_trigger_defaults_tag_to_action_and_returns_job_results(monkeypatch):
+def test_trigger_defaults_name_filter_to_admin_and_returns_job_results(monkeypatch):
     captured = {}
 
-    def _fake(tag="action"):
-        captured["tag"] = tag
+    def _fake(name_filter="admin"):
+        captured["name_filter"] = name_filter
         return {"tasks_found": 3, "accounts_matched": 2, "accounts_unmatched": 0, "pushed": 3, "user_errors": []}
 
     monkeypatch.setattr(router_mod, "sync_standup_action_items", _fake)
@@ -40,25 +40,25 @@ def test_trigger_defaults_tag_to_action_and_returns_job_results(monkeypatch):
 
     body = _wait_for_job(client, trigger_response["job_id"])
 
-    assert captured["tag"] == "action"
+    assert captured["name_filter"] == "admin"
     assert body["job_status"] == "done"
     assert body["pushed"] == 3
 
 
-def test_trigger_passes_through_a_custom_tag(monkeypatch):
+def test_trigger_passes_through_a_custom_name_filter(monkeypatch):
     captured = {}
 
-    def _fake(tag="action"):
-        captured["tag"] = tag
+    def _fake(name_filter="admin"):
+        captured["name_filter"] = name_filter
         return {"tasks_found": 0, "accounts_matched": 0, "accounts_unmatched": 0, "pushed": 0, "user_errors": []}
 
     monkeypatch.setattr(router_mod, "sync_standup_action_items", _fake)
     client = TestClient(app)
 
-    trigger_response = client.post("/tasks/standup-action-items/run", params={"tag": "custom-tag"}).json()
+    trigger_response = client.post("/tasks/standup-action-items/run", params={"name_filter": "custom-tag"}).json()
     _wait_for_job(client, trigger_response["job_id"])
 
-    assert captured["tag"] == "custom-tag"
+    assert captured["name_filter"] == "custom-tag"
 
 
 def test_unknown_job_id_returns_404():

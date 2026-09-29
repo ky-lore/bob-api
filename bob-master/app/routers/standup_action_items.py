@@ -17,9 +17,9 @@ router = APIRouter()
 
 @router.post("/tasks/standup-action-items/run")
 def trigger_standup_action_items_sync(
-    tag: str = Query(default="action", description="ClickUp tag to poll workspace-wide"),
+    name_filter: str = Query(default="admin", description="Case-insensitive substring to match against ClickUp task names, workspace-wide"),
 ) -> dict:
-    job_id = start_job(lambda: sync_standup_action_items(tag=tag))
+    job_id = start_job(lambda: sync_standup_action_items(name_filter=name_filter))
     return {"job_id": job_id, "job_status": "running"}
 
 

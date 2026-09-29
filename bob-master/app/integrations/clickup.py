@@ -156,20 +156,31 @@ class ClickUpClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_team_tasks_by_tag(self, tag: str) -> list[dict[str, Any]]:
-        """Every task workspace-wide carrying `tag`, regardless of which
-        list/folder/space it lives in -- unlike every other method here,
-        which needs a list/folder/task id already in hand. Needed because a
-        standup action item could land in any one of ~130+ client folders;
-        there's no per-client id to scope the search to ahead of time (see
+    def get_all_team_tasks(self) -> list[dict[str, Any]]:
+        """Every task workspace-wide, regardless of which list/folder/space
+        it lives in -- unlike every other method here, which needs a
+        list/folder/task id already in hand. Needed because a standup action
+        item could land in any one of ~130+ client folders; there's no
+        per-client id to scope the search to ahead of time (see
         app/tasks/standup_action_items.py). Paginates to completion (confirmed
-        ClickUp returns up to 100/page here, same as get_list_tasks)."""
+        ClickUp returns up to 100/page here, same as get_list_tasks).
+
+        Used to filter server-side by `tags[]` (2026-09-28); switched
+        (2026-09-29, Chris: wants the filter to just be the string "admin"
+        inside the task name, not a tag someone has to remember to apply)
+        to pulling everything and matching client-side in
+        standup_action_items.py instead -- ClickUp's filtered-team-tasks
+        endpoint has no server-side "name contains" filter to push this
+        down into. Fine at this workspace's scale: this is a handful of
+        paginated list-calls total, not the per-account comment fan-out
+        that actually stresses ClickUp's rate limit (see
+        account_context_gather.py's module docstring)."""
         tasks: list[dict[str, Any]] = []
         page = 0
         while True:
             resp = self._client.get(
                 f"/team/{self._workspace_id}/task",
-                params={"tags[]": tag, "page": page},
+                params={"page": page},
             )
             resp.raise_for_status()
             body = resp.json()
