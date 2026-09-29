@@ -45,9 +45,17 @@ def _atlas_account(
 
 class _FakeAtlasClient:
     accounts: list = []
+    pulse_run_calls: list = []
+    pulse_run_raises: Exception | None = None
 
     def get_all_accounts(self):
         return _FakeAtlasClient.accounts
+
+    def post_pulse_run(self, payload):
+        _FakeAtlasClient.pulse_run_calls.append(payload)
+        if _FakeAtlasClient.pulse_run_raises:
+            raise _FakeAtlasClient.pulse_run_raises
+        return {}
 
 
 class _FakeClickUp:
@@ -125,6 +133,8 @@ def _setup(monkeypatch):
     monkeypatch.setattr(mod, "GoogleAdsClient", _FakeGoogleAdsClient)
     monkeypatch.setattr(mod, "MetaAdsClient", _FakeMetaAdsClient)
     _FakeAtlasClient.accounts = []
+    _FakeAtlasClient.pulse_run_calls = []
+    _FakeAtlasClient.pulse_run_raises = None
     _FakeGoogleAdsClient.responses = {}
     _FakeMetaAdsClient.responses = {}
     _FakeClickUp.lists = []
@@ -628,3 +638,100 @@ def test_missing_evidence_key_defaults_to_an_empty_list_on_the_record(monkeypatc
     records, _ = mod.build_atlas_report()
 
     assert records[0]["evidence"] == []
+
+
+def _fake_run(run_id=1, run_at=None):
+    return mod.AtlasReportRun(id=run_id, run_at=run_at or datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone.utc))
+
+
+def test_pulse_run_payload_keeps_enabled_campaigns_and_totals_untrimmed():
+    """2026-09-28: reversed from the original trim-before-push design -- Chris
+    wants complete Pulse visibility stored in Atlas's PulseRun, not just totals
+    with campaign detail left to a second live CampaignSnapshot fetch."""
+    record = {
+        "atlas_id": "acme-1",
+        "company_name": "Acme Co",
+        "google_ads": {"total_cost": 50.0, "enabled_campaigns": [{"name": "Active"}]},
+        "meta_ads": {"total_cost": 30.0, "enabled_campaigns": [{"name": "Active Meta"}]},
+        "recent_clickup_activity": [],
+    }
+
+    payload = mod._pulse_run_payload(_fake_run(run_id=7), [record])
+
+    assert payload["runId"] == 7
+    assert payload["runAt"] == "2026-09-28T12:00:00+00:00"
+    assert payload["count"] == 1
+    account = payload["accounts"][0]
+    assert account["google_ads"]["enabled_campaigns"] == [{"name": "Active"}]
+    assert account["google_ads"]["total_cost"] == 50.0
+    assert account["meta_ads"]["enabled_campaigns"] == [{"name": "Active Meta"}]
+    assert account["meta_ads"]["total_cost"] == 30.0
+
+
+def test_pulse_run_payload_leaves_null_ad_platforms_alone():
+    record = {"atlas_id": "x", "company_name": "No Ads Co", "google_ads": None, "meta_ads": None, "recent_clickup_activity": []}
+
+    payload = mod._pulse_run_payload(_fake_run(), [record])
+
+    assert payload["accounts"][0]["google_ads"] is None
+    assert payload["accounts"][0]["meta_ads"] is None
+
+
+def test_pulse_run_payload_keeps_the_full_recent_clickup_activity_list():
+    activity = [{"task_id": str(i), "task_name": "t", "text": "hi", "date_ms": "0"} for i in range(30)]
+    record = {"atlas_id": "x", "company_name": "Busy Co", "google_ads": None, "meta_ads": None, "recent_clickup_activity": activity}
+
+    payload = mod._pulse_run_payload(_fake_run(), [record])
+
+    assert len(payload["accounts"][0]["recent_clickup_activity"]) == 30
+
+
+def test_pulse_run_payload_does_not_truncate_a_long_comment_text():
+    long_text = "x" * 5000
+    activity = [{"task_id": "1", "task_name": "Chatty task", "text": long_text, "date_ms": "0"}]
+    record = {"atlas_id": "x", "company_name": "Chatty Co", "google_ads": None, "meta_ads": None, "recent_clickup_activity": activity}
+
+    payload = mod._pulse_run_payload(_fake_run(), [record])
+
+    assert payload["accounts"][0]["recent_clickup_activity"][0]["text"] == long_text
+
+
+def test_pulse_run_payload_excludes_narrative_batches():
+    record = {"atlas_id": "x", "company_name": "Co", "google_ads": None, "meta_ads": None, "recent_clickup_activity": []}
+
+    payload = mod._pulse_run_payload(_fake_run(), [record])
+
+    assert "narrative_batches" not in payload
+    assert set(payload["accounts"][0].keys()) == set(record.keys())
+
+
+def test_run_and_store_atlas_report_pushes_a_pulse_run_to_atlas(monkeypatch, db_session):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Pushed Co", atlas_id="pushed-1")]
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: ({"Pushed Co": {"health": "on_track", "status": "x", "recent_work": "y"}}, []),
+    )
+
+    run = mod.run_and_store_atlas_report(db_session)
+
+    assert len(_FakeAtlasClient.pulse_run_calls) == 1
+    pushed = _FakeAtlasClient.pulse_run_calls[0]
+    assert pushed["runId"] == run.id
+    assert pushed["count"] == 1
+    assert pushed["accounts"][0]["company_name"] == "Pushed Co"
+
+
+def test_run_and_store_atlas_report_soft_fails_when_the_pulse_push_errors(monkeypatch, db_session):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Still Saved Co", atlas_id="still-saved-1")]
+    _FakeAtlasClient.pulse_run_raises = RuntimeError("Atlas is down")
+    monkeypatch.setattr(mod, "synthesize_account_reports", lambda accounts, on_batch_done=None: ({}, []))
+
+    # Must not raise -- Bob's own run already succeeded and is stored; an
+    # Atlas outage on the push must never surface as a failure here.
+    run = mod.run_and_store_atlas_report(db_session)
+
+    assert run.id is not None
+    from app.models import AtlasReportRun as _Model
+    assert db_session.query(_Model).filter_by(id=run.id).one() is not None

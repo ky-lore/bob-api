@@ -28,6 +28,7 @@ before assuming either field name — see chat history, 2026-09-17/18.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -69,3 +70,23 @@ class AtlasClient:
         resp = self._client.post(f"/api/accounts/{atlas_id}/admin-tasks", json={"tasks": tasks})
         resp.raise_for_status()
         return resp.json() if resp.content else {}
+
+    def post_pulse_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Pushes a full Pulse run into Atlas's PulseRun collection for the
+        Command Center (2026-09-28) -- store-and-forward, same posture as
+        post_campaigns/post_admin_tasks. Unlike those (called per-account, so
+        one account's failure doesn't touch the rest), this is ONE bulk POST
+        for the entire run -- losing this single request loses the whole
+        run's worth of data, not one account's slice, so it gets real retries
+        where the other push methods here don't."""
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                resp = self._client.post("/api/pulse-runs", json=payload)
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 2:
+                    time.sleep(2**attempt)
+        raise last_exc

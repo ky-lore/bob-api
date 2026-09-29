@@ -74,6 +74,7 @@ _STANDUP_MENTION_LIMIT = 2
 _STANDUP_SNIPPET_CHARS = 500
 
 
+
 def _compress_google_ads_summary(spend: dict[str, Any]) -> dict[str, Any]:
     return {
         "customer_id": spend["customer_id"],
@@ -392,6 +393,27 @@ def build_atlas_report(
     return records, batch_results
 
 
+def _pulse_run_payload(run: AtlasReportRun, records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Builds what actually gets pushed to Atlas's Command Center (2026-09-28)
+    -- distinct from what Bob keeps for itself in report_json only in that
+    narrative_batches is never included (Bob-internal batch diagnostics, not
+    part of `records` in the first place). Everything else -- including
+    `enabled_campaigns` on google_ads/meta_ads and the full
+    recent_clickup_activity list -- is pushed through UNTRIMMED (changed
+    2026-09-28, per Chris: "complete, full pulse visibility stored in here").
+    This is a deliberate reversal of this function's original trim-before-push
+    design: Command Center's meeting-mode focus view reads campaign-level ad
+    detail straight off the stored PulseRun now, instead of a second live
+    fetch to Atlas's own CampaignSnapshot -- Atlas is still store-and-forward
+    (no reshaping/validation on ITS end), it's just storing the whole thing."""
+    return {
+        "runId": run.id,
+        "runAt": run.run_at.isoformat(),
+        "count": len(records),
+        "accounts": records,
+    }
+
+
 def run_and_store_atlas_report(db: Session, limit: int | None = None, on_progress=None) -> AtlasReportRun:
     """Runs build_atlas_report and persists the result as a new AtlasReportRun
     row (2026-09-18) -- the durable counterpart to the manual-trigger
@@ -409,4 +431,14 @@ def run_and_store_atlas_report(db: Session, limit: int | None = None, on_progres
     db.add(run)
     db.commit()
     db.refresh(run)
+
+    # Push this run into Atlas's Command Center (2026-09-28) -- soft-fail,
+    # same posture as every other external push in this codebase: an Atlas
+    # outage (or the retries in post_pulse_run exhausting) must never break
+    # Bob's own Pulse run, which already succeeded and is stored above.
+    try:
+        AtlasClient().post_pulse_run(_pulse_run_payload(run, records))
+    except Exception:
+        pass
+
     return run
