@@ -29,6 +29,7 @@ history is real, but it's not what Atlas wants to display.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -45,6 +46,8 @@ from app.tasks.account_context_gather import gather_atlas_context
 from app.tasks.account_name_matching import normalize
 from app.tasks.daily_go_live_audit import _days_since_atlas_created_at
 from app.tasks.zoom_call_sync import format_transcript_for_context
+
+logger = logging.getLogger(__name__)
 
 # Same reasoning as daily_go_live_audit.py's _ZOOM_CONTEXT_CALL_LIMIT -- cap
 # regardless of window so an unusually call-heavy account this week can't
@@ -289,6 +292,10 @@ def build_atlas_report(
     records: list[dict[str, Any]] = []
     narrative_inputs: list[dict[str, Any]] = []
     total_accounts = len(atlas_accounts)
+    logger.info(
+        "pulse: starting gather for %d active accounts (limit=%s, %d standup transcripts in window)",
+        total_accounts, limit, len(standups),
+    )
 
     for i, account in enumerate(atlas_accounts):
         name = account.get("companyName")
@@ -322,6 +329,7 @@ def build_atlas_report(
                 google_ads_summary = _compress_google_ads_summary(spend)
             except Exception as exc:
                 google_ads_error = str(exc)
+                logger.warning("pulse: google ads pull failed for %s (%s): %s", name, customer_id, exc)
 
         meta_ads_summary: dict[str, Any] | None = None
         meta_ads_error: str | None = None
@@ -331,6 +339,7 @@ def build_atlas_report(
                 meta_ads_summary = _compress_meta_ads_summary(meta_spend)
             except Exception as exc:
                 meta_ads_error = str(exc)
+                logger.warning("pulse: meta ads pull failed for %s (%s): %s", name, meta_ad_account_id, exc)
 
         # Atlas's own stage, not ad spend on any platform -- same convention
         # daily_go_live_audit.py settled on (see its module docstring): spend
@@ -363,7 +372,9 @@ def build_atlas_report(
             "context": ctx_result.context,
         })
         _report(on_progress, {"phase": "gathering", "completed": i + 1, "total": total_accounts, "account": name})
+        logger.info("pulse: gathered %d/%d — %s", i + 1, total_accounts, name)
 
+    logger.info("pulse: gather complete, %d accounts; starting synthesis", len(records))
     _report(on_progress, {"phase": "synthesizing", "completed": 0, "total": None})
     reports, batch_results = synthesize_account_reports(
         narrative_inputs,
@@ -390,6 +401,11 @@ def build_atlas_report(
             record["health_overridden"] = False
             record["health_override_reason"] = None
 
+    failed_batches = sum(1 for b in batch_results if not b["ok"])
+    logger.info(
+        "pulse: build complete, %d accounts, %d/%d narrative batches ok",
+        len(records), len(batch_results) - failed_batches, len(batch_results),
+    )
     return records, batch_results
 
 
@@ -431,6 +447,7 @@ def run_and_store_atlas_report(db: Session, limit: int | None = None, on_progres
     db.add(run)
     db.commit()
     db.refresh(run)
+    logger.info("pulse: run %s persisted (%d accounts)", run.id, len(records))
 
     # Push this run into Atlas's Command Center (2026-09-28) -- soft-fail,
     # same posture as every other external push in this codebase: an Atlas
@@ -445,9 +462,11 @@ def run_and_store_atlas_report(db: Session, limit: int | None = None, on_progres
     pulse_push_error: str | None = None
     try:
         AtlasClient().post_pulse_run(_pulse_run_payload(run, records))
+        logger.info("pulse: run %s pushed to Atlas Command Center", run.id)
     except Exception as exc:
         pulse_push_ok = False
         pulse_push_error = str(exc)
+        logger.exception("pulse: run %s Command Center push failed", run.id)
 
     data = json.loads(run.report_json)
     data["pulse_push"] = {"ok": pulse_push_ok, "error": pulse_push_error}

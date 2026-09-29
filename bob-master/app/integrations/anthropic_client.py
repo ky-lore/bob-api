@@ -26,11 +26,14 @@ instead of taking down the whole run.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import anthropic
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _TOOL_NAME = "submit_narratives"
 NO_ACTION_NEEDED = "No action needed"
@@ -271,6 +274,7 @@ def _run_in_batches(
     batch_results: list[dict[str, Any]] = []
     batch_errors: list[str] = []
     total_batches = (len(accounts) + _BATCH_SIZE - 1) // _BATCH_SIZE
+    logger.info("synthesis: starting %d accounts across %d batches", len(accounts), total_batches)
 
     for i in range(0, len(accounts), _BATCH_SIZE):
         batch = accounts[i : i + _BATCH_SIZE]
@@ -287,6 +291,10 @@ def _run_in_batches(
                     "error": None,
                 }
             )
+            logger.info(
+                "synthesis: batch %d/%d ok (%d/%d accounts narrated)",
+                batch_index + 1, total_batches, len(batch_data), len(batch),
+            )
         except Exception as exc:
             error_message = str(exc)
             batch_errors.append(f"batch {batch_index + 1} ({len(batch)} accounts): {error_message}")
@@ -299,6 +307,7 @@ def _run_in_batches(
                     "error": error_message,
                 }
             )
+            logger.exception("synthesis: batch %d/%d failed", batch_index + 1, total_batches)
         if on_batch_done is not None:
             try:
                 on_batch_done(len(batch_results), total_batches)
@@ -307,6 +316,7 @@ def _run_in_batches(
 
     if not results and batch_errors:
         raise RuntimeError("; ".join(batch_errors))
+    logger.info("synthesis: finished, %d/%d accounts narrated across %d batches", len(results), len(accounts), total_batches)
     return results, batch_results
 
 

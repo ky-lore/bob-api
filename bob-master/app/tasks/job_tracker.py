@@ -15,9 +15,12 @@ going, and what happened" for whoever triggered it.
 from __future__ import annotations
 
 import inspect
+import logging
 import threading
 import uuid
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 _jobs: dict[str, dict[str, Any]] = {}
@@ -40,6 +43,7 @@ def start_job(fn: Callable[[], dict[str, Any]] | Callable[[Callable[[Any], None]
     job_id = uuid.uuid4().hex
     with _lock:
         _jobs[job_id] = {"status": "running", "result": None, "error": None, "progress": None}
+    logger.info("job %s: started (fn=%s)", job_id, getattr(fn, "__qualname__", fn))
 
     wants_progress = len(inspect.signature(fn).parameters) > 0
 
@@ -53,9 +57,16 @@ def start_job(fn: Callable[[], dict[str, Any]] | Callable[[Callable[[Any], None]
             result = fn(_report_progress) if wants_progress else fn()
             with _lock:
                 _jobs[job_id] = {"status": "done", "result": result, "error": None, "progress": None}
+            logger.info("job %s: done", job_id)
         except Exception as exc:
             with _lock:
                 _jobs[job_id] = {"status": "error", "result": None, "error": str(exc), "progress": None}
+            # Full traceback, not just str(exc) -- this is the one place a
+            # background job's failure reason survives job_tracker's own
+            # in-memory, per-process amnesia (see module docstring): even if
+            # nobody polls get_job() before the process restarts, the real
+            # cause is still in Railway's log stream.
+            logger.exception("job %s: failed", job_id)
 
     threading.Thread(target=_run, daemon=True).start()
     return job_id

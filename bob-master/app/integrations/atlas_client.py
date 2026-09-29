@@ -28,12 +28,15 @@ before assuming either field name — see chat history, 2026-09-17/18.
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
 import httpx
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class AtlasClient:
@@ -84,9 +87,11 @@ class AtlasClient:
             try:
                 resp = self._client.post("/api/pulse-runs", json=payload)
                 resp.raise_for_status()
+                logger.info("post_pulse_run: succeeded on attempt %d/3", attempt + 1)
                 return resp.json() if resp.content else {}
             except Exception as exc:
                 last_exc = exc
+                logger.warning("post_pulse_run: attempt %d/3 failed: %s", attempt + 1, exc)
                 if attempt < 2:
                     time.sleep(2**attempt)
         raise last_exc

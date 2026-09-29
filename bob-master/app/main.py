@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -21,12 +22,32 @@ from app.scheduler import start_scheduler
 from app.tasks.daily_go_live_audit import run_daily_go_live_audit
 from app.tasks.job_tracker import get_job, start_job
 
+# Root logging config (2026-09-29) -- there was previously NO logging
+# module usage anywhere in this app, so a background job that died mid-run
+# (crash, OOM, Railway restart) left zero durable trace: job_tracker is
+# in-memory only (see its own docstring) and vanishes with the process that
+# was tracking it, which is exactly what made a real stuck/killed Pulse run
+# indistinguishable from "still going" until it was too late to tell. This
+# basicConfig call configures the ROOT logger, so every module's
+# `logging.getLogger(__name__)` call anywhere in this app propagates here
+# and reaches stdout -- which Railway captures and keeps regardless of
+# whether the process that emitted it is still alive. Must run before
+# anything else logs (import time, top of this module) for that guarantee
+# to actually hold.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Bob starting up")
     init_db()
     start_scheduler()
     yield
+    logger.info("Bob shutting down")
 
 
 app = FastAPI(title="Bob", lifespan=lifespan)
