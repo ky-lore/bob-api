@@ -740,3 +740,60 @@ def test_run_and_store_atlas_report_soft_fails_when_the_pulse_push_errors(monkey
     from app.models import AtlasReportRun as _Model
     assert db_session.query(_Model).filter_by(id=run.id).one() is not None
     assert json.loads(run.report_json)["pulse_push"] == {"ok": False, "error": "Atlas is down"}
+
+
+def test_accounts_filter_narrows_the_gathered_universe_before_gathering(monkeypatch):
+    # 2026-09-29: app/tasks/cmdctr_report.py's whole reason for existing --
+    # proves a filtered-out account never even reaches the gather/ad-spend
+    # loop (not just that its record gets dropped afterward), by using a
+    # bad customer_id that would raise if ever actually pulled.
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [
+        _atlas_account("Onboarding Co", atlas_id="onboarding-1", stage="onboarding"),
+        _atlas_account("Development Co", atlas_id="development-1", stage="development"),
+        _atlas_account("Live Co", atlas_id="live-1", stage="live", google_ads_customer_id="bad-id-would-raise"),
+    ]
+    monkeypatch.setattr(
+        mod, "synthesize_account_reports",
+        lambda accounts, on_batch_done=None: (
+            {a["account"]: {"health": "on_track", "status": "x", "recent_work": "y"} for a in accounts}, [],
+        ),
+    )
+
+    records, _ = mod.build_atlas_report(accounts_filter=lambda a: (a.get("stage") or "").lower() in {"onboarding", "development"})
+
+    assert {r["company_name"] for r in records} == {"Onboarding Co", "Development Co"}
+
+
+def test_batch_size_and_max_tokens_cap_are_threaded_through_to_synthesis(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", atlas_id="acme-123")]
+    captured = {}
+
+    def _fake_synthesize(accounts, on_batch_done=None, **kwargs):
+        captured.update(kwargs)
+        return {"Acme Co": {"health": "on_track", "status": "x", "recent_work": "y"}}, []
+
+    monkeypatch.setattr(mod, "synthesize_account_reports", _fake_synthesize)
+
+    mod.build_atlas_report(batch_size=25, max_tokens_cap=16384)
+
+    assert captured == {"batch_size": 25, "max_tokens_cap": 16384}
+
+
+def test_batch_size_and_max_tokens_cap_default_to_not_being_passed(monkeypatch):
+    # The weekly full-universe run's unchanged behavior -- synthesize_account_reports's
+    # OWN defaults should decide, not an explicit None forwarded down.
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", atlas_id="acme-123")]
+    captured = {}
+
+    def _fake_synthesize(accounts, on_batch_done=None, **kwargs):
+        captured.update(kwargs)
+        return {"Acme Co": {"health": "on_track", "status": "x", "recent_work": "y"}}, []
+
+    monkeypatch.setattr(mod, "synthesize_account_reports", _fake_synthesize)
+
+    mod.build_atlas_report()
+
+    assert captured == {}

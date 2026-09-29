@@ -216,6 +216,26 @@ class AtlasReportRun(Base):
     report_json: Mapped[str] = mapped_column(Text)
 
 
+class CmdctrRun(Base):
+    """One row per app/tasks/cmdctr_report.py run (2026-09-29) -- Command
+    Center's fast-refresh pipeline, deliberately a SEPARATE table from
+    AtlasReportRun, not a second row type in it. AtlasReportRun.run_at
+    ordering is what GET .../latest and .../pulse key off of for the
+    exec-facing full-universe dashboard; if an hourly 5-10-account CMDCTR
+    run landed in that same table, it would become the "latest" row between
+    real weekly Pulse runs and silently break that dashboard. Same
+    report_json-blob convention as AtlasReportRun (see its docstring) --
+    {"count", "accounts", "narrative_batches", "pulse_push"}, no
+    limit_used (CMDCTR's account set is always the full pipeline-stage
+    filter, never a debug cap)."""
+
+    __tablename__ = "cmdctr_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    report_json: Mapped[str] = mapped_column(Text)
+
+
 class AccountHealthOverride(Base):
     """A human's manual correction to Pulse's LLM-derived health chip
     (2026-09-21, Bob: "some are under-flagged and some are over-flagged").

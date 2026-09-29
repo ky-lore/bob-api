@@ -83,7 +83,7 @@ def test_synthesize_account_narratives_empty_input_returns_empty_without_calling
 
 
 def test_synthesize_account_reports_returns_status_and_recent_work_per_account(monkeypatch):
-    def _fake_report_batch(batch):
+    def _fake_report_batch(batch, max_tokens_cap=None):
         return {a["account"]: {"status": f"status {a['account']}", "recent_work": f"work {a['account']}"} for a in batch}
 
     monkeypatch.setattr(anthropic_client, "_synthesize_report_batch", _fake_report_batch)
@@ -97,7 +97,7 @@ def test_synthesize_account_reports_returns_status_and_recent_work_per_account(m
 
 
 def test_on_batch_done_fires_after_every_batch_success_or_failure(monkeypatch):
-    def _fake_report_batch(batch):
+    def _fake_report_batch(batch, max_tokens_cap=None):
         if batch[0]["account"] == "Account 20":
             raise RuntimeError("boom")
         return {a["account"]: {"health": "on_track", "status": "ok", "recent_work": "ok"} for a in batch}
@@ -112,7 +112,7 @@ def test_on_batch_done_fires_after_every_batch_success_or_failure(monkeypatch):
 
 
 def test_on_batch_done_error_does_not_break_the_batching_run(monkeypatch):
-    def _fake_report_batch(batch):
+    def _fake_report_batch(batch, max_tokens_cap=None):
         return {a["account"]: {"health": "on_track", "status": "ok", "recent_work": "ok"} for a in batch}
 
     monkeypatch.setattr(anthropic_client, "_synthesize_report_batch", _fake_report_batch)
@@ -128,7 +128,7 @@ def test_on_batch_done_error_does_not_break_the_batching_run(monkeypatch):
 
 
 def test_synthesize_account_reports_shares_the_same_partial_failure_batching(monkeypatch):
-    def _fake_report_batch(batch):
+    def _fake_report_batch(batch, max_tokens_cap=None):
         if batch[0]["account"] == "Account 20":
             raise RuntimeError("boom")
         return {a["account"]: {"status": "ok", "recent_work": "ok"} for a in batch}
@@ -141,6 +141,25 @@ def test_synthesize_account_reports_shares_the_same_partial_failure_batching(mon
     assert "Account 0" in result
     assert "Account 20" not in result
     assert [b["ok"] for b in batch_results] == [True, False, True]
+
+
+def test_synthesize_account_reports_batch_size_override_ignores_module_default(monkeypatch):
+    # 2026-09-29: proves the explicit override wins even when it's smaller
+    # than the ambient _BATCH_SIZE -- app/tasks/cmdctr_report.py relies on
+    # being able to force everything into one batch regardless of what the
+    # weekly full-universe run's _BATCH_SIZE happens to be.
+    calls = []
+
+    def _fake_report_batch(batch, max_tokens_cap=None):
+        calls.append(len(batch))
+        return {a["account"]: {"status": "ok", "recent_work": "ok"} for a in batch}
+
+    monkeypatch.setattr(anthropic_client, "_synthesize_report_batch", _fake_report_batch)
+    monkeypatch.setattr(anthropic_client, "_BATCH_SIZE", 5)
+
+    anthropic_client.synthesize_account_reports(_accounts(8), batch_size=100)
+
+    assert calls == [8]
 
 
 class _FakeSettings:
@@ -157,6 +176,33 @@ def _patch_anthropic(monkeypatch, response):
     monkeypatch.setattr(anthropic_client, "get_settings", lambda: _FakeSettings())
     fake_client = types.SimpleNamespace(messages=types.SimpleNamespace(create=lambda **kwargs: response))
     monkeypatch.setattr(anthropic_client.anthropic, "Anthropic", lambda api_key: fake_client)
+
+
+def test_synthesize_report_batch_respects_a_higher_max_tokens_cap_override(monkeypatch):
+    # 2026-09-29: CMDCTR's whole reason for existing is a higher per-account
+    # token budget than the weekly run's _MAX_TOKENS_CAP allows -- prove the
+    # override actually reaches the real Anthropic call and actually raises
+    # the ceiling, not just gets accepted and ignored. 7 accounts * 150
+    # tokens/account * 4x multiplier = 4200 -- above the DEFAULT cap (4096,
+    # would get truncated to it) but below the override (16384, passes
+    # through uncapped). If the override weren't wired in, this would
+    # assert 4096, not 4200.
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        reports = [
+            {"account": f"Account {i}", "health": "on_track", "status": "ok", "recent_work": "ok"} for i in range(7)
+        ]
+        return _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports})
+
+    monkeypatch.setattr(anthropic_client, "get_settings", lambda: _FakeSettings())
+    fake_client = types.SimpleNamespace(messages=types.SimpleNamespace(create=_fake_create))
+    monkeypatch.setattr(anthropic_client.anthropic, "Anthropic", lambda api_key: fake_client)
+
+    anthropic_client._synthesize_report_batch(_accounts(7), max_tokens_cap=16384)
+
+    assert captured["max_tokens"] == 4200
 
 
 def test_coerce_list_parses_a_json_encoded_string_back_into_a_list():

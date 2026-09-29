@@ -31,7 +31,13 @@ from sqlalchemy.orm import Session
 from app.db import get_db, get_session_factory
 from app.integrations.anthropic_client import _HEALTH_VALUES
 from app.models import AccountHealthOverride, AtlasReportRun
-from app.tasks.atlas_report import build_atlas_report, run_and_store_atlas_report
+from app.tasks.atlas_report import (
+    _account_stage,
+    _is_excluded_stage,
+    _is_pipeline_stage,
+    build_atlas_report,
+    run_and_store_atlas_report,
+)
 from app.tasks.job_tracker import get_job, start_job
 
 router = APIRouter()
@@ -72,26 +78,10 @@ _LOGO_URLS = {
 # which meant an At Risk or Closed stage account (neither of which is the
 # literal string "live") was falling into "not live" right alongside a
 # genuine pre-launch account, even though neither is actually pre-launch.
-# Closed is excluded from Pulse ENTIRELY (Bob: "completely ignored for this
-# purpose") -- it's neither pipeline nor an active client, showing it in
-# either section is just noise. At Risk is deliberately NOT pipeline: by
-# elimination it lands in the Live section below, since an at-risk account
-# is presumably a currently-or-recently-live client flagged for churn risk,
-# not a pre-launch prospect.
-_PIPELINE_STAGES = {"onboarding", "development"}
-_EXCLUDED_STAGES = {"closed"}
-
-
-def _account_stage(a: dict) -> str:
-    return (a.get("stage") or "").lower()
-
-
-def _is_pipeline_stage(a: dict) -> bool:
-    return _account_stage(a) in _PIPELINE_STAGES
-
-
-def _is_excluded_stage(a: dict) -> bool:
-    return _account_stage(a) in _EXCLUDED_STAGES
+# _PIPELINE_STAGES/_EXCLUDED_STAGES/_account_stage/_is_pipeline_stage/
+# _is_excluded_stage now live in app/tasks/atlas_report.py (2026-09-29,
+# moved for app/tasks/cmdctr_report.py to filter the account universe by
+# stage before gathering) -- imported above, not redefined here.
 
 
 # Hardcoded, not a Settings/env var (2026-09-21, Bob: "forget .env - can we

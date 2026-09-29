@@ -76,6 +76,34 @@ _STANDUP_TOPIC = "Daily Leads Standup"
 _STANDUP_MENTION_LIMIT = 2
 _STANDUP_SNIPPET_CHARS = 500
 
+# Moved here from app/routers/atlas_report.py (2026-09-29) so build_atlas_report
+# can filter the account universe by stage BEFORE gathering (see
+# app/tasks/cmdctr_report.py) -- the router still uses these for the same
+# Pipeline/Live section classification it always has, just imported back
+# from here instead of defining them itself; keeping them in the router
+# would mean this task module importing FROM the router to reuse them,
+# backwards from the router's own existing dependency on this module.
+#
+# Closed is excluded from Pulse ENTIRELY (Bob: "completely ignored for this
+# purpose") -- it's neither pipeline nor an active client, showing it in
+# either section is just noise. At Risk is deliberately NOT pipeline: by
+# elimination it lands in the Live section below, since an at-risk account
+# is presumably a currently-or-recently-live client flagged for churn risk,
+# not a pre-launch prospect.
+_PIPELINE_STAGES = {"onboarding", "development"}
+_EXCLUDED_STAGES = {"closed"}
+
+
+def _account_stage(a: dict) -> str:
+    return (a.get("stage") or "").lower()
+
+
+def _is_pipeline_stage(a: dict) -> bool:
+    return _account_stage(a) in _PIPELINE_STAGES
+
+
+def _is_excluded_stage(a: dict) -> bool:
+    return _account_stage(a) in _EXCLUDED_STAGES
 
 
 def _compress_google_ads_summary(spend: dict[str, Any]) -> dict[str, Any]:
@@ -245,6 +273,9 @@ def build_atlas_report(
     context_window_days: int = 7,
     spend_date_range: str = "LAST_7_DAYS",
     on_progress=None,
+    accounts_filter=None,
+    batch_size: int | None = None,
+    max_tokens_cap: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """db: Postgres session for the Zoom transcript lookup (see
     _add_zoom_context) -- optional (defaults to None, which just skips Zoom)
@@ -262,6 +293,17 @@ def build_atlas_report(
     default to a week (2026-09-18) to match this report's "what's going on
     with this account in the last week" framing (see module docstring) --
     still overridable for a different lookback.
+    accounts_filter (2026-09-29, optional): a predicate applied to each raw
+    Atlas account dict BEFORE gathering (so a filtered-out account never
+    pays for a ClickUp/Slack/Zoom/ad-spend pull it doesn't need) -- see
+    app/tasks/cmdctr_report.py, which passes _is_pipeline_stage to run this
+    over only the onboarding/development account set. Applied before
+    `limit`, since limit is a debug cap orthogonal to real filtering.
+    batch_size/max_tokens_cap (2026-09-29, optional): passed straight through
+    to synthesize_account_reports -- None means its own defaults (the
+    weekly full-universe run's existing behavior, unchanged). See that
+    function's docstring for why a much smaller, known-bounded account set
+    (again, CMDCTR) benefits from loosening both.
 
     Returns (records, narrative_batch_results). Each record is one account:
     {atlas_id, company_name, stage, day, is_live, google_ads, meta_ads,
@@ -279,6 +321,8 @@ def build_atlas_report(
     AccountHealthOverride) -- health_overridden=True means health is the
     override's value, not the LLM's (kept separately as llm_health)."""
     atlas_accounts = [a for a in AtlasClient().get_all_accounts() if a.get("isActive")]
+    if accounts_filter is not None:
+        atlas_accounts = [a for a in atlas_accounts if accounts_filter(a)]
     if limit is not None:
         atlas_accounts = sorted(atlas_accounts, key=lambda a: a.get("companyName") or "")[:limit]
 
@@ -376,9 +420,19 @@ def build_atlas_report(
 
     logger.info("pulse: gather complete, %d accounts; starting synthesis", len(records))
     _report(on_progress, {"phase": "synthesizing", "completed": 0, "total": None})
+    # Only forwarded when actually overridden -- letting synthesize_account_reports's
+    # own defaults (_BATCH_SIZE/_MAX_TOKENS_CAP) be the single source of truth
+    # for the weekly full-universe run's unchanged behavior.
+    synth_kwargs: dict[str, int] = {}
+    if batch_size is not None:
+        synth_kwargs["batch_size"] = batch_size
+    if max_tokens_cap is not None:
+        synth_kwargs["max_tokens_cap"] = max_tokens_cap
+
     reports, batch_results = synthesize_account_reports(
         narrative_inputs,
         on_batch_done=lambda done, total: _report(on_progress, {"phase": "synthesizing", "completed": done, "total": total}),
+        **synth_kwargs,
     )
     overrides = _fetch_health_overrides(db)
     for record in records:

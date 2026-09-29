@@ -241,11 +241,24 @@ _REPORT_SYSTEM_PROMPT = (
 
 
 def _run_in_batches(
-    accounts: list[dict[str, Any]], batch_fn, on_batch_done=None
+    accounts: list[dict[str, Any]], batch_fn, on_batch_done=None, batch_size: int | None = None
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Shared by synthesize_account_narratives and synthesize_account_reports —
     same batch-size/partial-failure/diagnostics contract either way, only
     batch_fn (and what it returns per account) differs.
+
+    batch_size (2026-09-29, optional): overrides _BATCH_SIZE -- see
+    synthesize_account_reports's docstring for why a much smaller,
+    known-bounded account set (CMDCTR) benefits from a bigger batch_size
+    (fewer/one call instead of several small ones). None (default) resolves
+    to the module constant INSIDE the function body, not as the parameter's
+    own default value -- a plain `= _BATCH_SIZE` default is frozen at
+    function-definition time, so a test (or future caller) monkeypatching
+    the module constant would silently stop affecting every caller that
+    doesn't explicitly override it. Confirmed the hard way, 2026-09-29:
+    every existing narratives/reports test that monkeypatches _BATCH_SIZE
+    broke the moment batch_size became a real parameter here, until this
+    resolved-inside-the-body pattern replaced the frozen default.
 
     on_batch_done (2026-09-18, optional): called as on_batch_done(batches_done,
     total_batches) after each batch attempt (success or failure) -- lets a
@@ -270,15 +283,16 @@ def _run_in_batches(
     if not accounts:
         return {}, []
 
+    batch_size = _BATCH_SIZE if batch_size is None else batch_size
     results: dict[str, Any] = {}
     batch_results: list[dict[str, Any]] = []
     batch_errors: list[str] = []
-    total_batches = (len(accounts) + _BATCH_SIZE - 1) // _BATCH_SIZE
+    total_batches = (len(accounts) + batch_size - 1) // batch_size
     logger.info("synthesis: starting %d accounts across %d batches", len(accounts), total_batches)
 
-    for i in range(0, len(accounts), _BATCH_SIZE):
-        batch = accounts[i : i + _BATCH_SIZE]
-        batch_index = i // _BATCH_SIZE
+    for i in range(0, len(accounts), batch_size):
+        batch = accounts[i : i + batch_size]
+        batch_index = i // batch_size
         try:
             batch_data = batch_fn(batch)
             results.update(batch_data)
@@ -337,6 +351,7 @@ def synthesize_account_narratives(
 
 def synthesize_account_reports(
     accounts: list[dict[str, Any]], on_batch_done=None,
+    batch_size: int | None = None, max_tokens_cap: int | None = None,
 ) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
     """Same input shape as synthesize_account_narratives. Returns (reports,
     batch_results) — reports is {account_name: {"health": str, "status": str,
@@ -345,8 +360,29 @@ def synthesize_account_reports(
     consumers that want the "what's actually been happening" summary as a
     distinct field rather than folded into one status sentence (built for
     app/tasks/atlas_report.py, 2026-08-06). See _run_in_batches for the
-    batching contract (including on_batch_done)."""
-    return _run_in_batches(accounts, _synthesize_report_batch, on_batch_done=on_batch_done)
+    batching contract (including on_batch_done).
+
+    batch_size/max_tokens_cap (2026-09-29, optional overrides): both exist
+    ONLY to avoid re-triggering the stop_reason=max_tokens incident this
+    module's docstring warns about across a MANY-account run (the weekly
+    full-universe Pulse run, ~30 batches) -- a caller with a much smaller,
+    known-bounded account set (app/tasks/cmdctr_report.py's 5-10-account
+    pipeline-stage run) has no such risk, and benefits from a bigger
+    batch_size (fewer/one call, letting the model reason across the whole
+    set in one pass instead of losing cross-account context at a batch
+    boundary) and a higher max_tokens_cap (more output budget per account,
+    for a genuinely deeper status/recent_work/evidence). Defaults preserve
+    the original weekly run's behavior exactly. Resolved to the module
+    constant here (not via a `= _MAX_TOKENS_CAP` parameter default) for the
+    same frozen-at-definition-time reason _run_in_batches's batch_size
+    takes None -- see its docstring."""
+    resolved_max_tokens_cap = _MAX_TOKENS_CAP if max_tokens_cap is None else max_tokens_cap
+    return _run_in_batches(
+        accounts,
+        lambda batch: _synthesize_report_batch(batch, max_tokens_cap=resolved_max_tokens_cap),
+        on_batch_done=on_batch_done,
+        batch_size=batch_size,
+    )
 
 
 def _coerce_list(value: Any, key: str | None = None) -> list:
@@ -459,7 +495,9 @@ def _verify_evidence_quotes(reports: list[dict], accounts_by_name: dict[str, dic
         r["evidence"] = verified
 
 
-def _synthesize_report_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+def _synthesize_report_batch(
+    accounts: list[dict[str, Any]], max_tokens_cap: int = _MAX_TOKENS_CAP
+) -> dict[str, dict[str, str]]:
     settings = get_settings()
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     # Four fields per account now (health/status/recent_work/evidence) --
@@ -467,7 +505,7 @@ def _synthesize_report_batch(accounts: list[dict[str, Any]]) -> dict[str, dict[s
     # max_tokens incident this module's docstring warns about. health itself
     # is a cheap one-word enum; the multiplier is really paying for
     # status + recent_work + up to 3 evidence quotes.
-    max_tokens = min(_MAX_TOKENS_CAP, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * 4 * len(accounts)))
+    max_tokens = min(max_tokens_cap, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * 4 * len(accounts)))
 
     response = client.messages.create(
         model=settings.anthropic_model,
