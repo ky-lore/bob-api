@@ -797,3 +797,19 @@ def test_batch_size_and_max_tokens_cap_default_to_not_being_passed(monkeypatch):
     mod.build_atlas_report()
 
     assert captured == {}
+
+
+def test_tokens_per_account_multiplier_is_threaded_through_to_synthesis(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_atlas_account("Acme Co", atlas_id="acme-123")]
+    captured = {}
+
+    def _fake_synthesize(accounts, on_batch_done=None, **kwargs):
+        captured.update(kwargs)
+        return {"Acme Co": {"health": "on_track", "status": "x", "recent_work": "y"}}, []
+
+    monkeypatch.setattr(mod, "synthesize_account_reports", _fake_synthesize)
+
+    mod.build_atlas_report(tokens_per_account_multiplier=16)
+
+    assert captured == {"tokens_per_account_multiplier": 16}

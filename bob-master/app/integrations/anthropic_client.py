@@ -503,6 +503,7 @@ def synthesize_account_reports(
     accounts: list[dict[str, Any]], on_batch_done=None,
     batch_size: int | None = None, max_tokens_cap: int | None = None,
     system_prompt: str | None = None, tool_schema: dict | None = None,
+    tokens_per_account_multiplier: int | None = None,
 ) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
     """Same input shape as synthesize_account_narratives. Returns (reports,
     batch_results) — reports is {account_name: {"health": str, "status": str,
@@ -534,10 +535,24 @@ def synthesize_account_reports(
     than the weekly dashboard's, because the prompt/schema still
     explicitly asked for "one concise sentence" regardless of budget. See
     _CMDCTR_REPORT_SYSTEM_PROMPT/_CMDCTR_REPORT_TOOL_SCHEMA for the
-    actual-depth variant app/tasks/cmdctr_report.py passes here."""
+    actual-depth variant app/tasks/cmdctr_report.py passes here.
+
+    tokens_per_account_multiplier (2026-09-29, optional): a second,
+    equally real gotcha from that same fix attempt -- max_tokens_cap is
+    only a CEILING; _synthesize_report_batch's actual per-call max_tokens
+    is _TOKENS_PER_ACCOUNT * this multiplier * len(accounts), and the
+    default multiplier (4) was calibrated for the terse weekly schema.
+    CMDCTR's first real run with the deeper schema came back with a clean
+    empty `reports: []` (stop_reason=tool_use, not max_tokens) because
+    that computed value (600/account) never got close to the 16384 cap --
+    the multiplier bound first. None defers to _synthesize_report_batch's
+    own default."""
     resolved_max_tokens_cap = _MAX_TOKENS_CAP if max_tokens_cap is None else max_tokens_cap
     resolved_system_prompt = _REPORT_SYSTEM_PROMPT if system_prompt is None else system_prompt
     resolved_tool_schema = _REPORT_TOOL_SCHEMA if tool_schema is None else tool_schema
+    batch_kwargs: dict[str, Any] = {}
+    if tokens_per_account_multiplier is not None:
+        batch_kwargs["tokens_per_account_multiplier"] = tokens_per_account_multiplier
     return _run_in_batches(
         accounts,
         lambda batch: _synthesize_report_batch(
@@ -545,6 +560,7 @@ def synthesize_account_reports(
             max_tokens_cap=resolved_max_tokens_cap,
             system_prompt=resolved_system_prompt,
             tool_schema=resolved_tool_schema,
+            **batch_kwargs,
         ),
         on_batch_done=on_batch_done,
         batch_size=batch_size,
@@ -673,16 +689,27 @@ def _synthesize_report_batch(
     max_tokens_cap: int = _MAX_TOKENS_CAP,
     system_prompt: str = _REPORT_SYSTEM_PROMPT,
     tool_schema: dict = _REPORT_TOOL_SCHEMA,
+    tokens_per_account_multiplier: int = 4,
 ) -> dict[str, dict[str, str]]:
     settings = get_settings()
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     tool_name = tool_schema["name"]
     # Four fields per account now (health/status/recent_work/evidence) --
-    # quadruple the per-account token allowance so this doesn't inherit the
-    # max_tokens incident this module's docstring warns about. health itself
-    # is a cheap one-word enum; the multiplier is really paying for
-    # status + recent_work + up to 3 evidence quotes.
-    max_tokens = min(max_tokens_cap, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * 4 * len(accounts)))
+    # quadruple the per-account token allowance by default so this doesn't
+    # inherit the max_tokens incident this module's docstring warns about.
+    # health itself is a cheap one-word enum; the multiplier is really
+    # paying for status + recent_work + up to 3 evidence quotes -- but that
+    # "3 quotes, one concise sentence" assumption is exactly what
+    # _CMDCTR_REPORT_TOOL_SCHEMA blows past (2-4 + 3-5 sentences, up to 5
+    # quotes). Confirmed the hard way, 2026-09-29: passing a higher
+    # max_tokens_cap alone did nothing for CMDCTR's first real run --
+    # 150 * 4 * 11 accounts = 6600, nowhere near the 16384 cap, so the CAP
+    # never bound; the MULTIPLIER did, giving ~600 tokens/account for
+    # output this schema needs several times that for -- Claude returned a
+    # clean empty `reports: []` rather than a truncated/malformed one
+    # (stop_reason was "tool_use", not "max_tokens"). CMDCTR now passes a
+    # much higher multiplier so its cap (16384) is what actually binds.
+    max_tokens = min(max_tokens_cap, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * tokens_per_account_multiplier * len(accounts)))
 
     response = client.messages.create(
         model=settings.anthropic_model,

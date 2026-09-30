@@ -149,6 +149,7 @@ def test_build_cmdctr_report_passes_the_loosened_batch_settings(monkeypatch):
         "max_tokens_cap": mod._CMDCTR_MAX_TOKENS_CAP,
         "system_prompt": _CMDCTR_REPORT_SYSTEM_PROMPT,
         "tool_schema": _CMDCTR_REPORT_TOOL_SCHEMA,
+        "tokens_per_account_multiplier": mod._CMDCTR_TOKENS_PER_ACCOUNT_MULTIPLIER,
     }
 
 

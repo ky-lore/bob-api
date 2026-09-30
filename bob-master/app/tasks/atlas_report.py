@@ -278,6 +278,7 @@ def build_atlas_report(
     max_tokens_cap: int | None = None,
     system_prompt: str | None = None,
     tool_schema: dict | None = None,
+    tokens_per_account_multiplier: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """db: Postgres session for the Zoom transcript lookup (see
     _add_zoom_context) -- optional (defaults to None, which just skips Zoom)
@@ -301,14 +302,18 @@ def build_atlas_report(
     app/tasks/cmdctr_report.py, which passes _is_pipeline_stage to run this
     over only the onboarding/development account set. Applied before
     `limit`, since limit is a debug cap orthogonal to real filtering.
-    batch_size/max_tokens_cap/system_prompt/tool_schema (2026-09-29,
-    optional): passed straight through to synthesize_account_reports --
-    None means its own defaults (the weekly full-universe run's existing
-    behavior, unchanged). See that function's docstring for why a much
-    smaller, known-bounded account set (again, CMDCTR) benefits from
-    loosening the first two, and needs the latter two overridden as well
-    -- a bigger token budget alone doesn't produce deeper output if the
-    prompt/schema still explicitly asks for one concise sentence.
+    batch_size/max_tokens_cap/system_prompt/tool_schema/
+    tokens_per_account_multiplier (2026-09-29, optional): passed straight
+    through to synthesize_account_reports -- None means its own defaults
+    (the weekly full-universe run's existing behavior, unchanged). See
+    that function's docstring for why a much smaller, known-bounded
+    account set (again, CMDCTR) benefits from loosening the first two,
+    needs the next two overridden as well (a bigger token budget alone
+    doesn't produce deeper output if the prompt/schema still explicitly
+    asks for one concise sentence), and ALSO needs the multiplier raised
+    -- max_tokens_cap is only a ceiling, and the default multiplier (4)
+    computes a per-call budget sized for the terse weekly schema, not a
+    deeper one.
 
     Returns (records, narrative_batch_results). Each record is one account:
     {atlas_id, company_name, stage, day, is_live, google_ads, meta_ads,
@@ -438,6 +443,8 @@ def build_atlas_report(
         synth_kwargs["system_prompt"] = system_prompt
     if tool_schema is not None:
         synth_kwargs["tool_schema"] = tool_schema
+    if tokens_per_account_multiplier is not None:
+        synth_kwargs["tokens_per_account_multiplier"] = tokens_per_account_multiplier
 
     reports, batch_results = synthesize_account_reports(
         narrative_inputs,

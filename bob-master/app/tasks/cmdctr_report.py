@@ -53,10 +53,18 @@ logger = logging.getLogger(__name__)
 # enough that len(accounts) never actually splits) beats several small ones
 # -- lets the model reason across the whole pipeline queue in one pass.
 _CMDCTR_BATCH_SIZE = 25
-# 4x anthropic_client._MAX_TOKENS_CAP -- same per-account multiplier the
-# weekly run uses, just no longer squeezed by a budget sized for a
-# 5-account BATCH out of ~30, rather than a 5-10 account TOTAL RUN.
 _CMDCTR_MAX_TOKENS_CAP = 16384
+# Confirmed the hard way, 2026-09-29: max_tokens_cap is only a CEILING --
+# anthropic_client's default multiplier (4) computes 150*4*11=6600 for an
+# 11-account run, nowhere near the 16384 cap, so the CAP never bound; that
+# tighter, multiplier-computed number did, at ~600 tokens/account -- not
+# enough for _CMDCTR_REPORT_TOOL_SCHEMA's 2-4 + 3-5 sentence fields and up
+# to 5 evidence quotes, and Claude returned a clean empty `reports: []`
+# rather than a truncated one (stop_reason was "tool_use", not
+# "max_tokens"). 16x makes the CAP the binding constraint at any realistic
+# pipeline-queue size (150*16*11=26400, capped down to 16384 -- ~1489/
+# account, comfortably enough for this schema's depth).
+_CMDCTR_TOKENS_PER_ACCOUNT_MULTIPLIER = 16
 
 
 def build_cmdctr_report(
@@ -74,6 +82,7 @@ def build_cmdctr_report(
         max_tokens_cap=_CMDCTR_MAX_TOKENS_CAP,
         system_prompt=_CMDCTR_REPORT_SYSTEM_PROMPT,
         tool_schema=_CMDCTR_REPORT_TOOL_SCHEMA,
+        tokens_per_account_multiplier=_CMDCTR_TOKENS_PER_ACCOUNT_MULTIPLIER,
     )
 
 

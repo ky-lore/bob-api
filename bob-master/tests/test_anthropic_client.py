@@ -205,6 +205,33 @@ def test_synthesize_report_batch_respects_a_higher_max_tokens_cap_override(monke
     assert captured["max_tokens"] == 4200
 
 
+def test_synthesize_report_batch_respects_a_higher_tokens_per_account_multiplier(monkeypatch):
+    # 2026-09-29: max_tokens_cap alone is only a CEILING -- confirmed the
+    # hard way that CMDCTR's real first run computed 150*4(default)*11=6600,
+    # nowhere near its 16384 cap, so the cap never bound and 11 accounts got
+    # squeezed into ~600 tokens each -- not enough for the deeper CMDCTR
+    # schema, and Claude returned a clean empty reports array. 7 accounts *
+    # 150 * 16 (override) = 16800 -- above the default cap (4096) AND above
+    # what the default multiplier(4) would give (4200), proving the
+    # multiplier override -- not just a bigger cap -- is what raises this.
+    captured = {}
+
+    def _fake_create(**kwargs):
+        captured.update(kwargs)
+        reports = [
+            {"account": f"Account {i}", "health": "on_track", "status": "ok", "recent_work": "ok"} for i in range(7)
+        ]
+        return _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports})
+
+    monkeypatch.setattr(anthropic_client, "get_settings", lambda: _FakeSettings())
+    fake_client = types.SimpleNamespace(messages=types.SimpleNamespace(create=_fake_create))
+    monkeypatch.setattr(anthropic_client.anthropic, "Anthropic", lambda api_key: fake_client)
+
+    anthropic_client._synthesize_report_batch(_accounts(7), max_tokens_cap=32000, tokens_per_account_multiplier=16)
+
+    assert captured["max_tokens"] == 16800
+
+
 def test_coerce_list_parses_a_json_encoded_string_back_into_a_list():
     assert anthropic_client._coerce_list('[{"a": 1}]') == [{"a": 1}]
 
