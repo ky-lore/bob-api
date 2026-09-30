@@ -67,10 +67,12 @@ class _FakeAdsClient:
 class _FakeAdminSync:
     calls: int = 0
     raises: Exception | None = None
+    captured_kwargs: dict = {}
     result: dict = {"tasks_found": 2, "accounts_matched": 1, "accounts_unmatched": 0, "pushed": 2, "user_errors": []}
 
-    def __call__(self):
+    def __call__(self, **kwargs):
         _FakeAdminSync.calls += 1
+        _FakeAdminSync.captured_kwargs = kwargs
         if _FakeAdminSync.raises:
             raise _FakeAdminSync.raises
         return _FakeAdminSync.result
@@ -95,6 +97,7 @@ def _setup(monkeypatch):
     # internals.
     _FakeAdminSync.calls = 0
     _FakeAdminSync.raises = None
+    _FakeAdminSync.captured_kwargs = {}
     monkeypatch.setattr(mod, "sync_standup_action_items", _FakeAdminSync())
     _FakeAtlasClient.accounts = []
     _FakeAtlasClient.pulse_run_calls = []
@@ -206,6 +209,10 @@ def test_run_and_push_cmdctr_report_resyncs_admin_action_items(monkeypatch, db_s
     run = mod.run_and_push_cmdctr_report(db_session)
 
     assert _FakeAdminSync.calls == 1
+    # 2026-09-30: must be scoped to the pipeline-stage accounts_filter, not
+    # a full-workspace sync -- confirmed the unscoped version was ~9 of a
+    # CMDCTR run's ~10 minutes, dwarfing the actual gather+LLM work.
+    assert _FakeAdminSync.captured_kwargs == {"accounts_filter": mod._is_pipeline_stage}
     assert json.loads(run.report_json)["admin_sync"] == {"ok": True, **_FakeAdminSync.result}
 
 

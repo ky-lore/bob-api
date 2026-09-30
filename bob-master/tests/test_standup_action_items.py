@@ -25,13 +25,29 @@ class _FakeAtlasClient:
 
 
 class _FakeClickUpClient:
-    """Returns every fixture task unconditionally, same as the real
-    get_all_team_tasks -- the name-substring filtering under test happens in
-    sync_standup_action_items itself, not here."""
+    """get_all_team_tasks backs the default (accounts_filter=None,
+    full-workspace) path -- returns every fixture task unconditionally,
+    same as the real sweep; the name-substring filtering under test happens
+    in sync_standup_action_items itself, not here. get_folder_lists/
+    get_list_tasks back the SCOPED path (accounts_filter set), mirroring
+    test_atlas_report.py's _FakeClickUp fixture convention -- lists_by_folder
+    keyed by folder_id, tasks_by_list keyed by (list_id, page)."""
     tasks: list = []
+    lists_by_folder: dict = {}
+    tasks_by_list: dict = {}
+    get_all_team_tasks_calls: int = 0
+    get_folder_lists_calls: list = []
 
     def get_all_team_tasks(self):
+        _FakeClickUpClient.get_all_team_tasks_calls += 1
         return _FakeClickUpClient.tasks
+
+    def get_folder_lists(self, folder_id):
+        _FakeClickUpClient.get_folder_lists_calls.append(folder_id)
+        return _FakeClickUpClient.lists_by_folder.get(folder_id, [])
+
+    def get_list_tasks(self, list_id, include_closed=True, page=0):
+        return {"tasks": _FakeClickUpClient.tasks_by_list.get((list_id, page), [])}
 
 
 def _reset():
@@ -39,6 +55,10 @@ def _reset():
     _FakeAtlasClient.fail_for_atlas_id = None
     _FakeAtlasClient.pushed = []
     _FakeClickUpClient.tasks = []
+    _FakeClickUpClient.lists_by_folder = {}
+    _FakeClickUpClient.tasks_by_list = {}
+    _FakeClickUpClient.get_all_team_tasks_calls = 0
+    _FakeClickUpClient.get_folder_lists_calls = []
 
 
 def _setup(monkeypatch):
@@ -223,3 +243,78 @@ def test_custom_name_filter_is_honored(monkeypatch):
     assert result["tasks_found"] == 1
     _, tasks = _FakeAtlasClient.pushed[0]
     assert [t["clickupTaskId"] for t in tasks] == ["task-2"]
+
+
+def test_no_accounts_filter_uses_the_full_workspace_sweep(monkeypatch):
+    # The default (standalone manual-trigger endpoint) behavior must stay
+    # exactly what it was -- confirms get_all_team_tasks is used and the
+    # scoped folder-walk path is never touched.
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_account("atlas-1", "folder-1")]
+    _FakeClickUpClient.tasks = [_clickup_task("task-1", "folder-1")]
+
+    mod.sync_standup_action_items()
+
+    assert _FakeClickUpClient.get_all_team_tasks_calls == 1
+    assert _FakeClickUpClient.get_folder_lists_calls == []
+
+
+def test_accounts_filter_scopes_to_only_matching_accounts_folders(monkeypatch):
+    # 2026-09-30: confirmed the unscoped full-workspace sweep was ~9 of a
+    # CMDCTR run's ~10 minutes. With accounts_filter set, only the matching
+    # accounts' own folders get walked (get_folder_lists/get_list_tasks) --
+    # get_all_team_tasks must not be called at all, and a task that would
+    # have matched but lives in a filtered-OUT account's folder must never
+    # be found (that folder is never even requested).
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [
+        _account("scoped-in", "folder-in"),
+        _account("scoped-out", "folder-out"),
+    ]
+    _FakeClickUpClient.lists_by_folder = {
+        "folder-in": [{"id": "list-in"}],
+        "folder-out": [{"id": "list-out"}],
+    }
+    _FakeClickUpClient.tasks_by_list = {
+        ("list-in", 0): [_clickup_task("task-in", "folder-in", name="Admin: in scope")],
+        ("list-out", 0): [_clickup_task("task-out", "folder-out", name="Admin: out of scope")],
+    }
+
+    result = mod.sync_standup_action_items(accounts_filter=lambda a: a["id"] == "scoped-in")
+
+    assert _FakeClickUpClient.get_all_team_tasks_calls == 0
+    assert _FakeClickUpClient.get_folder_lists_calls == ["folder-in"]
+    assert result["tasks_found"] == 1
+    assert len(_FakeAtlasClient.pushed) == 1
+    atlas_id, tasks = _FakeAtlasClient.pushed[0]
+    assert atlas_id == "scoped-in"
+    assert [t["clickupTaskId"] for t in tasks] == ["task-in"]
+
+
+def test_scoped_fetch_paginates_list_tasks(monkeypatch):
+    _setup(monkeypatch)
+    _FakeAtlasClient.accounts = [_account("atlas-1", "folder-1")]
+    _FakeClickUpClient.lists_by_folder = {"folder-1": [{"id": "list-1"}]}
+    _FakeClickUpClient.tasks_by_list = {
+        ("list-1", 0): {
+            "tasks": [_clickup_task("task-1", "folder-1", name="Admin: page one")],
+            "last_page": False,
+        },
+        ("list-1", 1): {
+            "tasks": [_clickup_task("task-2", "folder-1", name="Admin: page two")],
+            "last_page": True,
+        },
+    }
+    # The default get_list_tasks fake wraps its return in {"tasks": ...}
+    # unconditionally -- override here since this test's fixture values
+    # already carry both "tasks" and "last_page" per page.
+    def _paginated_get_list_tasks(self, list_id, include_closed=True, page=0):
+        return _FakeClickUpClient.tasks_by_list[(list_id, page)]
+
+    monkeypatch.setattr(_FakeClickUpClient, "get_list_tasks", _paginated_get_list_tasks)
+
+    result = mod.sync_standup_action_items(accounts_filter=lambda a: True)
+
+    assert result["tasks_found"] == 2
+    _, tasks = _FakeAtlasClient.pushed[0]
+    assert {t["clickupTaskId"] for t in tasks} == {"task-1", "task-2"}

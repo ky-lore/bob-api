@@ -92,9 +92,16 @@ def _sync_admin_action_items() -> dict[str, Any]:
     sync_standup_action_items's own result dict on success, or
     {"ok": False, "error": str} on failure, both stored onto the run so
     the outcome is readable via GET .../latest instead of silently
-    vanishing (same reasoning as pulse_push -- see run_and_store_atlas_report)."""
+    vanishing (same reasoning as pulse_push -- see run_and_store_atlas_report).
+
+    accounts_filter=_is_pipeline_stage (2026-09-30): confirmed the hard
+    way this was THE cost of a CMDCTR run -- an unscoped full-workspace
+    ClickUp sweep took ~9 of ~10 minutes, versus ~1 minute for the actual
+    gather+LLM-synthesis work. Scopes the sync to just the ~11 pipeline-
+    stage accounts' own folders instead, matching what build_cmdctr_report
+    already gathers for."""
     try:
-        result = sync_standup_action_items()
+        result = sync_standup_action_items(accounts_filter=_is_pipeline_stage)
         logger.info("cmdctr: admin action-item sync ok: %s", result)
         return {"ok": True, **result}
     except Exception as exc:
