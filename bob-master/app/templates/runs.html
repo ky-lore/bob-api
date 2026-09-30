@@ -1,0 +1,162 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Manual Runs</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 2rem auto; color: #1a1a1a; }
+    .row { display: flex; gap: 1.5rem; margin-bottom: 1.5rem; }
+    .card { flex: 1; border: 1px solid #ddd; border-radius: 6px; padding: 1rem 1.25rem; }
+    .card h2 { margin-top: 0; font-size: 1.05rem; }
+    .card p.sub { color: #666; font-size: 0.85rem; margin-top: -0.5rem; }
+    button { padding: 0.5rem 1rem; font-size: 0.95rem; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .latest { margin-top: 0.75rem; font-size: 0.85rem; color: #333; white-space: pre-wrap; }
+    .latest .ok { color: #1a7f37; }
+    .latest .bad { color: #cf222e; }
+    #log {
+      background: #111; color: #d4d4d4; font-family: ui-monospace, "SF Mono", monospace;
+      font-size: 0.82rem; padding: 0.75rem 1rem; border-radius: 6px;
+      height: 360px; overflow-y: auto; white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>Manual Runs</h1>
+  <p><a href="/admin/watchlist">Watchlist admin</a> · <a href="/admin/zoom-calls">Zoom call review</a></p>
+
+  <div class="row">
+    <div class="card">
+      <h2>Pulse</h2>
+      <p class="sub">Full account universe, ~150 accounts, ~10-11 min. Weekly cadence.</p>
+      <button id="btn-pulse" onclick="runJob('pulse')">Run Pulse</button>
+      <div class="latest" id="latest-pulse">Loading latest…</div>
+    </div>
+    <div class="card">
+      <h2>CMDCTR</h2>
+      <p class="sub">Go-live pipeline only (onboarding/development), ~1-2 min. Hourly cadence.</p>
+      <button id="btn-cmdctr" onclick="runJob('cmdctr')">Run CMDCTR</button>
+      <div class="latest" id="latest-cmdctr">Loading latest…</div>
+    </div>
+  </div>
+
+  <h2>Log</h2>
+  <div id="log"></div>
+
+  <script>
+    const ENDPOINTS = {
+      pulse: { trigger: '/reports/atlas-account-status/run', poll: '/reports/atlas-account-status/run/', latest: '/reports/atlas-account-status/latest', label: 'Pulse' },
+      cmdctr: { trigger: '/reports/cmdctr/run', poll: '/reports/cmdctr/run/', latest: '/reports/cmdctr/latest', label: 'CMDCTR' },
+    };
+    const POLL_INTERVAL_MS = 5000;
+
+    function log(msg) {
+      const el = document.getElementById('log');
+      const time = new Date().toLocaleTimeString();
+      el.textContent += `[${time}] ${msg}\n`;
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function fmtPush(label, push) {
+      if (!push) return '';
+      const cls = push.ok ? 'ok' : 'bad';
+      return ` <span class="${cls}">${label}: ${push.ok ? 'ok' : 'FAILED — ' + push.error}</span>`;
+    }
+
+    async function refreshLatest(kind) {
+      const el = document.getElementById(`latest-${kind}`);
+      try {
+        const resp = await fetch(ENDPOINTS[kind].latest);
+        const data = await resp.json();
+        if (data.run_id == null) {
+          el.textContent = 'No runs yet.';
+          return;
+        }
+        let html = `Latest: run ${data.run_id} — ${data.run_at}\n${data.count} accounts`;
+        html += fmtPush('pulse_push', data.pulse_push);
+        if (data.admin_sync) html += fmtPush('admin_sync', data.admin_sync);
+        el.innerHTML = html;
+      } catch (e) {
+        el.textContent = `Couldn't load latest (${e}).`;
+      }
+    }
+
+    async function runJob(kind) {
+      const btn = document.getElementById(`btn-${kind}`);
+      const { trigger, poll, label } = ENDPOINTS[kind];
+      btn.disabled = true;
+      log(`Triggering ${label} run…`);
+      try {
+        const resp = await fetch(trigger, { method: 'POST' });
+        const data = await resp.json();
+        if (!resp.ok) {
+          log(`${label} trigger failed: ${JSON.stringify(data)}`);
+          btn.disabled = false;
+          return;
+        }
+        log(`${label} job started: ${data.job_id}`);
+        pollJob(kind, poll + data.job_id, btn);
+      } catch (e) {
+        log(`${label} trigger error: ${e}`);
+        btn.disabled = false;
+      }
+    }
+
+    async function pollJob(kind, url, btn) {
+      const { label } = ENDPOINTS[kind];
+      let lastProgressLine = '';
+      while (true) {
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+        let resp, data;
+        try {
+          resp = await fetch(url);
+          data = await resp.json();
+        } catch (e) {
+          log(`${label} poll error: ${e} — retrying…`);
+          continue;
+        }
+
+        if (resp.status === 404) {
+          // job_tracker is in-memory only and can lose a job mid-run (e.g. a
+          // redeploy) even though the run itself keeps going server-side --
+          // fall back to the durable "latest" row instead of just stopping.
+          log(`${label} job tracking lost (process recycled) — checking the stored latest run instead…`);
+          await refreshLatest(kind);
+          btn.disabled = false;
+          return;
+        }
+
+        if (data.job_status === 'running') {
+          const p = data.progress;
+          if (p) {
+            const line = `${p.phase || '?'} ${p.completed ?? ''}${p.total ? '/' + p.total : ''}${p.account ? ' — ' + p.account : ''}`;
+            if (line !== lastProgressLine) {
+              log(`${label} progress: ${line}`);
+              lastProgressLine = line;
+            }
+          }
+          continue;
+        }
+
+        if (data.job_status === 'error') {
+          log(`${label} ERROR: ${data.error}`);
+          btn.disabled = false;
+          return;
+        }
+
+        // done
+        let summary = `${label} DONE — run ${data.run_id}, ${data.count} accounts`;
+        if (data.pulse_push) summary += `, pulse_push=${data.pulse_push.ok ? 'ok' : 'FAILED (' + data.pulse_push.error + ')'}`;
+        if (data.admin_sync) summary += `, admin_sync=${data.admin_sync.ok ? 'ok' : 'FAILED (' + data.admin_sync.error + ')'}`;
+        log(summary);
+        await refreshLatest(kind);
+        btn.disabled = false;
+        return;
+      }
+    }
+
+    refreshLatest('pulse');
+    refreshLatest('cmdctr');
+  </script>
+</body>
+</html>
