@@ -83,7 +83,7 @@ def test_synthesize_account_narratives_empty_input_returns_empty_without_calling
 
 
 def test_synthesize_account_reports_returns_status_and_recent_work_per_account(monkeypatch):
-    def _fake_report_batch(batch, max_tokens_cap=None):
+    def _fake_report_batch(batch, max_tokens_cap=None, system_prompt=None, tool_schema=None):
         return {a["account"]: {"status": f"status {a['account']}", "recent_work": f"work {a['account']}"} for a in batch}
 
     monkeypatch.setattr(anthropic_client, "_synthesize_report_batch", _fake_report_batch)
@@ -97,7 +97,7 @@ def test_synthesize_account_reports_returns_status_and_recent_work_per_account(m
 
 
 def test_on_batch_done_fires_after_every_batch_success_or_failure(monkeypatch):
-    def _fake_report_batch(batch, max_tokens_cap=None):
+    def _fake_report_batch(batch, max_tokens_cap=None, system_prompt=None, tool_schema=None):
         if batch[0]["account"] == "Account 20":
             raise RuntimeError("boom")
         return {a["account"]: {"health": "on_track", "status": "ok", "recent_work": "ok"} for a in batch}
@@ -112,7 +112,7 @@ def test_on_batch_done_fires_after_every_batch_success_or_failure(monkeypatch):
 
 
 def test_on_batch_done_error_does_not_break_the_batching_run(monkeypatch):
-    def _fake_report_batch(batch, max_tokens_cap=None):
+    def _fake_report_batch(batch, max_tokens_cap=None, system_prompt=None, tool_schema=None):
         return {a["account"]: {"health": "on_track", "status": "ok", "recent_work": "ok"} for a in batch}
 
     monkeypatch.setattr(anthropic_client, "_synthesize_report_batch", _fake_report_batch)
@@ -128,7 +128,7 @@ def test_on_batch_done_error_does_not_break_the_batching_run(monkeypatch):
 
 
 def test_synthesize_account_reports_shares_the_same_partial_failure_batching(monkeypatch):
-    def _fake_report_batch(batch, max_tokens_cap=None):
+    def _fake_report_batch(batch, max_tokens_cap=None, system_prompt=None, tool_schema=None):
         if batch[0]["account"] == "Account 20":
             raise RuntimeError("boom")
         return {a["account"]: {"status": "ok", "recent_work": "ok"} for a in batch}
@@ -150,7 +150,7 @@ def test_synthesize_account_reports_batch_size_override_ignores_module_default(m
     # weekly full-universe run's _BATCH_SIZE happens to be.
     calls = []
 
-    def _fake_report_batch(batch, max_tokens_cap=None):
+    def _fake_report_batch(batch, max_tokens_cap=None, system_prompt=None, tool_schema=None):
         calls.append(len(batch))
         return {a["account"]: {"status": "ok", "recent_work": "ok"} for a in batch}
 
@@ -419,13 +419,16 @@ def test_synthesize_report_batch_drops_a_quote_not_actually_present_in_context(m
 
 
 def test_synthesize_report_batch_drops_evidence_with_an_invalid_source(monkeypatch):
+    # "clickup" is deliberately NOT invalid anymore (2026-09-29, see
+    # _verify_evidence_quotes's docstring) -- use something genuinely
+    # outside the accepted set to keep testing the actual behavior.
     reports = [
         {
             "account": "Acme Co",
             "health": "on_track",
             "status": "doing fine",
             "recent_work": "shipped a fix",
-            "evidence": [{"source": "clickup", "speaker": "Simon", "quote": "shipped the fix"}],
+            "evidence": [{"source": "email", "speaker": "Simon", "quote": "shipped the fix"}],
         }
     ]
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))

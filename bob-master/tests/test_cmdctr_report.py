@@ -1,10 +1,12 @@
 """
 Tests app.tasks.cmdctr_report against the same fake clients test_atlas_report.py
 uses -- proves the pipeline-stage account filter actually reaches
-build_atlas_report, the loosened batch_size/max_tokens_cap constants get
-threaded through, the CmdctrRun persistence is separate from AtlasReportRun
-(so a narrow high-frequency run can never become what /pulse renders), and
-the same soft-fail-on-push-error contract run_and_store_atlas_report has.
+build_atlas_report, the loosened batch_size/max_tokens_cap plus the
+deep-dive prompt/schema all get threaded through, the CmdctrRun
+persistence is separate from AtlasReportRun (so a narrow high-frequency
+run can never become what /pulse renders), the same soft-fail-on-push-
+error contract run_and_store_atlas_report has, and that every run also
+re-syncs the ClickUp "admin" action-item relay (soft-failed the same way).
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -16,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 import app.tasks.atlas_report as atlas_report_mod
 import app.tasks.cmdctr_report as mod
 from app.db import Base
+from app.integrations.anthropic_client import _CMDCTR_REPORT_SYSTEM_PROMPT, _CMDCTR_REPORT_TOOL_SCHEMA
 from app.models import AtlasReportRun, CmdctrRun
 
 
@@ -61,6 +64,18 @@ class _FakeAdsClient:
         raise RuntimeError("no fake response")
 
 
+class _FakeAdminSync:
+    calls: int = 0
+    raises: Exception | None = None
+    result: dict = {"tasks_found": 2, "accounts_matched": 1, "accounts_unmatched": 0, "pushed": 2, "user_errors": []}
+
+    def __call__(self):
+        _FakeAdminSync.calls += 1
+        if _FakeAdminSync.raises:
+            raise _FakeAdminSync.raises
+        return _FakeAdminSync.result
+
+
 def _setup(monkeypatch):
     # cmdctr_report.py delegates all gathering to build_atlas_report, so the
     # fakes are patched on atlas_report_mod (what build_atlas_report actually
@@ -73,6 +88,14 @@ def _setup(monkeypatch):
     # AtlasClient is imported separately into cmdctr_report.py's own
     # namespace too (for post_pulse_run) -- patch both call sites.
     monkeypatch.setattr(mod, "AtlasClient", _FakeAtlasClient)
+    # sync_standup_action_items hits real Atlas/ClickUp clients internally
+    # (its own module-level imports, not atlas_report_mod's) -- faked here
+    # at cmdctr_report's call site instead of re-faking its whole dependency
+    # chain, since standup_action_items.py's own tests already cover its
+    # internals.
+    _FakeAdminSync.calls = 0
+    _FakeAdminSync.raises = None
+    monkeypatch.setattr(mod, "sync_standup_action_items", _FakeAdminSync())
     _FakeAtlasClient.accounts = []
     _FakeAtlasClient.pulse_run_calls = []
     _FakeAtlasClient.pulse_run_raises = None
@@ -121,7 +144,12 @@ def test_build_cmdctr_report_passes_the_loosened_batch_settings(monkeypatch):
 
     mod.build_cmdctr_report()
 
-    assert captured == {"batch_size": mod._CMDCTR_BATCH_SIZE, "max_tokens_cap": mod._CMDCTR_MAX_TOKENS_CAP}
+    assert captured == {
+        "batch_size": mod._CMDCTR_BATCH_SIZE,
+        "max_tokens_cap": mod._CMDCTR_MAX_TOKENS_CAP,
+        "system_prompt": _CMDCTR_REPORT_SYSTEM_PROMPT,
+        "tool_schema": _CMDCTR_REPORT_TOOL_SCHEMA,
+    }
 
 
 def test_run_and_push_cmdctr_report_persists_to_cmdctr_runs_not_atlas_report_runs(monkeypatch, db_session):
@@ -167,3 +195,30 @@ def test_run_and_push_cmdctr_report_soft_fails_when_the_pulse_push_errors(monkey
     assert run.id is not None
     assert db_session.query(CmdctrRun).filter_by(id=run.id).one() is not None
     assert json.loads(run.report_json)["pulse_push"] == {"ok": False, "error": "Atlas is down"}
+
+
+def test_run_and_push_cmdctr_report_resyncs_admin_action_items(monkeypatch, db_session):
+    _setup(monkeypatch)
+    monkeypatch.setattr(atlas_report_mod, "synthesize_account_reports", _fake_synthesize)
+    _FakeAtlasClient.accounts = [_atlas_account("Onboarding Co", stage="onboarding")]
+
+    run = mod.run_and_push_cmdctr_report(db_session)
+
+    assert _FakeAdminSync.calls == 1
+    assert json.loads(run.report_json)["admin_sync"] == {"ok": True, **_FakeAdminSync.result}
+
+
+def test_run_and_push_cmdctr_report_soft_fails_when_the_admin_sync_errors(monkeypatch, db_session):
+    _setup(monkeypatch)
+    monkeypatch.setattr(atlas_report_mod, "synthesize_account_reports", _fake_synthesize)
+    _FakeAtlasClient.accounts = [_atlas_account("Onboarding Co", stage="onboarding")]
+    _FakeAdminSync.raises = RuntimeError("ClickUp is down")
+
+    # Must not raise -- the LLM blend + Atlas push already succeeded and
+    # are stored; an admin-sync failure must never lose that.
+    run = mod.run_and_push_cmdctr_report(db_session)
+
+    assert run.id is not None
+    assert json.loads(run.report_json)["admin_sync"] == {"ok": False, "error": "ClickUp is down"}
+    # The unrelated pulse_push outcome must be unaffected by the admin-sync failure.
+    assert json.loads(run.report_json)["pulse_push"] == {"ok": True, "error": None}

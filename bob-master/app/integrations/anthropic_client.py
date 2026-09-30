@@ -239,6 +239,156 @@ _REPORT_SYSTEM_PROMPT = (
     "account given."
 )
 
+# CMDCTR-specific (2026-09-29): app/tasks/cmdctr_report.py's whole reason
+# for existing is a much smaller, known-bounded account set (5-10, the
+# onboarding/development go-live queue) with looser batch_size/
+# max_tokens_cap than the weekly full-universe run affords -- but raising
+# the TOKEN BUDGET alone did nothing on its own: this prompt/schema still
+# explicitly asked for "one concise sentence" and "0-3 short quotes, not
+# ClickUp" regardless of how much room there was to use, confirmed for
+# real 2026-09-29 (Chris: "doesn't look that much more granular/expanded")
+# -- the model followed its literal instructions, not the token ceiling.
+# This variant asks for genuinely more depth, and -- unlike the weekly
+# dashboard, which has its own separate ClickUp-activity dropdown so
+# ClickUp is deliberately excluded from evidence there -- explicitly
+# allows ClickUp-sourced evidence too, since CMDCTR has no equivalent
+# separate view and ClickUp admin/action-item comments are often the most
+# vital operational signal for this specific account set.
+_CMDCTR_REPORT_TOOL_NAME = "submit_cmdctr_account_reports"
+
+_CMDCTR_REPORT_TOOL_SCHEMA = {
+    "name": _CMDCTR_REPORT_TOOL_NAME,
+    "description": "Submit an in-depth status + recent-work report for each account in this small, vital go-live queue.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "reports": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "account": {"type": "string"},
+                        "health": {
+                            "type": "string",
+                            "enum": _HEALTH_VALUES,
+                            "description": (
+                                "A single at-a-glance read on this account's relationship health right now. "
+                                "'at_risk': explicit churn/cancellation talk, an angry/escalated client, a "
+                                "payment/billing standoff, or a serious unresolved complaint. "
+                                "'needs_attention': a real blocker, an overdue reply, a stalled deliverable, "
+                                "or a client who sounds frustrated but hasn't escalated. 'on_track': "
+                                "everything else, including quiet accounts with no bad signals. Judge from "
+                                "the actual tone/content of the context given, not just presence of a "
+                                "Slack/ClickUp thread."
+                            ),
+                        },
+                        "status": {
+                            "type": "string",
+                            "description": (
+                                "2-4 sentences on exactly where this account stands right now -- what's "
+                                "blocking go-live (if not live yet), who's waiting on whom, and what the "
+                                "real next concrete step is. This is a small, vital queue with an abundant "
+                                "token budget for it -- do NOT compress this into one throwaway sentence "
+                                "the way a scan-many-accounts weekly dashboard would; use the space to be "
+                                "specific (names, dates, exact blockers) whenever the input supports it."
+                            ),
+                        },
+                        "recent_work": {
+                            "type": "string",
+                            "description": (
+                                "3-5 sentences of the concrete work/activity actually reported in the given "
+                                "ClickUp comments, Slack messages, and call transcripts -- what specifically "
+                                "has been done, by whom, and what's still outstanding. Say 'No recent "
+                                "activity reported' if the context has nothing to summarize -- never invent "
+                                "activity. As with status, use the available depth; a single vague sentence "
+                                "is a worse answer here than it would be for the weekly dashboard."
+                            ),
+                        },
+                        "evidence": {
+                            "type": "array",
+                            "maxItems": 5,
+                            "description": (
+                                "0-5 short supporting quotes from the given ClickUp comments, Slack messages, "
+                                "or Zoom call transcript lines that most directly back up your status/"
+                                "recent_work above -- ClickUp IS a valid source here (unlike the weekly "
+                                "dashboard, this account set has no separate ClickUp-activity view, so "
+                                "ClickUp evidence needs to be captured here or it's lost). Every quote MUST "
+                                "be copied verbatim from the context you were given, character for "
+                                "character -- never paraphrase, summarize, or construct a quote that sounds "
+                                "plausible but wasn't actually said. Name who said it when the context "
+                                "attributes it (Slack/Zoom lines carry a 'Name: ...' attribution; ClickUp "
+                                "comment lines in this app's context do NOT currently carry a commenter "
+                                "name at all, so 'Unknown' is the correct, expected speaker for ClickUp-"
+                                "sourced evidence, not a guess to avoid). Return an empty list only if "
+                                "nothing in the given context clearly supports your summary."
+                            ),
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "source": {"type": "string", "enum": ["slack", "zoom", "clickup"]},
+                                    "speaker": {
+                                        "type": "string",
+                                        "description": (
+                                            "Whoever said or wrote the quote, exactly as named in the "
+                                            "context you were given -- the name before the colon on a "
+                                            "'[Slack #channel] Name: ...' or '[Zoom call, ...] Name: ...' "
+                                            "line. 'Unknown' for ClickUp-sourced evidence (see the array "
+                                            "description) or any line that genuinely isn't attributed."
+                                        ),
+                                    },
+                                    "quote": {
+                                        "type": "string",
+                                        "description": "Copied verbatim from the given context -- see the array description.",
+                                    },
+                                },
+                                "required": ["source", "speaker", "quote"],
+                            },
+                        },
+                    },
+                    "required": ["account", "health", "status", "recent_work"],
+                },
+            }
+        },
+        "required": ["reports"],
+    },
+    "cache_control": {"type": "ephemeral"},
+}
+
+_CMDCTR_REPORT_SYSTEM_PROMPT = (
+    "You are producing an IN-DEPTH status report for a small, vital queue of accounts a marketing agency "
+    "is actively walking through go-live -- typically 5-10 accounts, refreshed frequently throughout the "
+    "day specifically so this stays current. This is NOT the weekly all-accounts exec scan: you have an "
+    "abundant token budget for this small set, and the whole point of this report existing separately is "
+    "genuine depth and specificity, not a one-line summary. You'll be given, per account: day count since "
+    "signing, its stage, and raw context — ClickUp comments, Slack channel messages, and call transcripts. "
+    "Using that, produce for EACH account: "
+    "(1) health: 'on_track' / 'needs_attention' / 'at_risk' — see the tool schema for the exact bar for "
+    "each. Err toward 'on_track' when the context is thin or quiet; don't invent risk that isn't there. "
+    "(2) status: 2-4 sentences on exactly where the account stands — what's blocking go-live, who's "
+    "waiting on whom, what the real next step is. Be specific: names, dates, exact blockers, not vague "
+    "gestures at a topic. "
+    "(3) recent_work: 3-5 sentences on the concrete work actually reported in the given context — what's "
+    "been done, by whom, what's still outstanding, distinct from the status judgment. Say 'No recent "
+    "activity reported' if there's nothing to summarize. "
+    "(4) evidence: 0-5 short quotes from ClickUp, Slack, or Zoom context (ClickUp counts here, unlike the "
+    "weekly dashboard) that most directly support your status/recent_work — see the tool schema for the "
+    "exact bar. Every quote must be copied verbatim, character for character — inventing a plausible-"
+    "sounding quote that wasn't actually said is worse than providing none at all. Attribute every quote's "
+    "speaker from the context's own 'Name: ...' labels where present; ClickUp comment lines in this app's "
+    "context carry no commenter name at all, so 'Unknown' is the correct, expected answer for those, not "
+    "a guess to avoid. "
+    "Weighting: context lines tagged '[Zoom call, Daily Leads Standup, ...]' are the internal team leads' "
+    "own daily account-by-account review — their direct read on blockers, risk, and what's actually going "
+    "on — not client-facing chatter. Treat these as the single most authoritative signal whenever present, "
+    "outweighing a quieter or more agreeable-sounding Slack/ClickUp thread on the same account. If a "
+    "standup line and other context disagree, trust the standup line and say so rather than averaging "
+    "the two or defaulting to the calmer read. "
+    "Do not invent facts not present in the input. If signals conflict, say so plainly rather than "
+    "silently picking a side. No greetings, no preamble, no markdown. You MUST produce one entry per "
+    "account given, and you MUST use the depth this budget affords — a one-sentence answer for either "
+    "status or recent_work is a wrong answer for this report unless the account is genuinely silent."
+)
+
 
 def _run_in_batches(
     accounts: list[dict[str, Any]], batch_fn, on_batch_done=None, batch_size: int | None = None
@@ -352,6 +502,7 @@ def synthesize_account_narratives(
 def synthesize_account_reports(
     accounts: list[dict[str, Any]], on_batch_done=None,
     batch_size: int | None = None, max_tokens_cap: int | None = None,
+    system_prompt: str | None = None, tool_schema: dict | None = None,
 ) -> tuple[dict[str, dict[str, str]], list[dict[str, Any]]]:
     """Same input shape as synthesize_account_narratives. Returns (reports,
     batch_results) — reports is {account_name: {"health": str, "status": str,
@@ -375,11 +526,26 @@ def synthesize_account_reports(
     the original weekly run's behavior exactly. Resolved to the module
     constant here (not via a `= _MAX_TOKENS_CAP` parameter default) for the
     same frozen-at-definition-time reason _run_in_batches's batch_size
-    takes None -- see its docstring."""
+    takes None -- see its docstring.
+
+    system_prompt/tool_schema (2026-09-29, optional overrides): raising
+    max_tokens_cap alone does NOT make the output deeper -- confirmed for
+    real the same day, CMDCTR's first run came back barely more detailed
+    than the weekly dashboard's, because the prompt/schema still
+    explicitly asked for "one concise sentence" regardless of budget. See
+    _CMDCTR_REPORT_SYSTEM_PROMPT/_CMDCTR_REPORT_TOOL_SCHEMA for the
+    actual-depth variant app/tasks/cmdctr_report.py passes here."""
     resolved_max_tokens_cap = _MAX_TOKENS_CAP if max_tokens_cap is None else max_tokens_cap
+    resolved_system_prompt = _REPORT_SYSTEM_PROMPT if system_prompt is None else system_prompt
+    resolved_tool_schema = _REPORT_TOOL_SCHEMA if tool_schema is None else tool_schema
     return _run_in_batches(
         accounts,
-        lambda batch: _synthesize_report_batch(batch, max_tokens_cap=resolved_max_tokens_cap),
+        lambda batch: _synthesize_report_batch(
+            batch,
+            max_tokens_cap=resolved_max_tokens_cap,
+            system_prompt=resolved_system_prompt,
+            tool_schema=resolved_tool_schema,
+        ),
         on_batch_done=on_batch_done,
         batch_size=batch_size,
     )
@@ -474,7 +640,14 @@ def _verify_evidence_quotes(reports: list[dict], accounts_by_name: dict[str, dic
     quote that's genuinely verbatim but mis-attributed is still real
     evidence, just imprecisely labeled, so a speaker name that doesn't
     actually appear anywhere in the account's context downgrades to
-    "Unknown" rather than discarding the whole (verified) quote."""
+    "Unknown" rather than discarding the whole (verified) quote.
+
+    "clickup" (2026-09-29) accepted alongside slack/zoom unconditionally --
+    harmless for the weekly Pulse path since _REPORT_TOOL_SCHEMA's enum
+    never lets the model emit it there; CMDCTR's widened schema does allow
+    it (see _CMDCTR_REPORT_TOOL_SCHEMA), since CMDCTR has no separate
+    ClickUp-activity dropdown the way the weekly dashboard does, so ClickUp
+    content needs to count as real evidence there."""
     for r in reports:
         if not isinstance(r, dict):
             continue
@@ -486,7 +659,7 @@ def _verify_evidence_quotes(reports: list[dict], accounts_by_name: dict[str, dic
                 continue
             quote = (e.get("quote") or "").strip()
             source = e.get("source")
-            if not (quote and source in ("slack", "zoom") and _normalize_for_match(quote) in context_blob):
+            if not (quote and source in ("slack", "zoom", "clickup") and _normalize_for_match(quote) in context_blob):
                 continue
             speaker = (e.get("speaker") or "").strip() or "Unknown"
             if speaker != "Unknown" and _normalize_for_match(speaker) not in context_blob:
@@ -496,10 +669,14 @@ def _verify_evidence_quotes(reports: list[dict], accounts_by_name: dict[str, dic
 
 
 def _synthesize_report_batch(
-    accounts: list[dict[str, Any]], max_tokens_cap: int = _MAX_TOKENS_CAP
+    accounts: list[dict[str, Any]],
+    max_tokens_cap: int = _MAX_TOKENS_CAP,
+    system_prompt: str = _REPORT_SYSTEM_PROMPT,
+    tool_schema: dict = _REPORT_TOOL_SCHEMA,
 ) -> dict[str, dict[str, str]]:
     settings = get_settings()
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    tool_name = tool_schema["name"]
     # Four fields per account now (health/status/recent_work/evidence) --
     # quadruple the per-account token allowance so this doesn't inherit the
     # max_tokens incident this module's docstring warns about. health itself
@@ -510,14 +687,14 @@ def _synthesize_report_batch(
     response = client.messages.create(
         model=settings.anthropic_model,
         max_tokens=max_tokens,
-        system=[{"type": "text", "text": _REPORT_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-        tools=[_REPORT_TOOL_SCHEMA],
-        tool_choice={"type": "tool", "name": _REPORT_TOOL_NAME},
+        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+        tools=[tool_schema],
+        tool_choice={"type": "tool", "name": tool_name},
         messages=[{"role": "user", "content": json.dumps(accounts, indent=2)}],
     )
 
     for block in response.content:
-        if block.type == "tool_use" and block.name == _REPORT_TOOL_NAME:
+        if block.type == "tool_use" and block.name == tool_name:
             reports = _coerce_list(block.input.get("reports", []), key="reports")
             accounts_by_name = {a["account"]: a for a in accounts if isinstance(a, dict) and a.get("account")}
             _verify_evidence_quotes(reports, accounts_by_name)
@@ -539,6 +716,6 @@ def _synthesize_report_batch(
             return result
 
     raise RuntimeError(
-        f"no {_REPORT_TOOL_NAME} tool call in response "
+        f"no {tool_name} tool call in response "
         f"(stop_reason={response.stop_reason}, content block types={[b.type for b in response.content]})"
     )

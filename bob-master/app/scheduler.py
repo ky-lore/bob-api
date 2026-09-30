@@ -6,6 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.config import get_settings
 from app.db import get_session_factory
+from app.tasks.cmdctr_report import run_and_push_cmdctr_report
 from app.tasks.daily_go_live_audit import run_daily_go_live_audit
 from app.tasks.zoom_call_sync import sync_zoom_calls
 
@@ -44,6 +45,25 @@ def _run_zoom_call_sync_job() -> None:
         db.close()
 
 
+def _run_cmdctr_report_job() -> None:
+    """Hourly Command Center refresh -- see cmdctr_report_cron's docstring
+    in config.py for why this is safe to run unattended (confirmed against
+    Atlas's real Command Center UI, 2026-09-29). run_and_push_cmdctr_report
+    already soft-fails both the Atlas push and the bundled ClickUp admin-
+    sync internally (see its own docstring) -- this outer try/except only
+    guards the parts outside that: DB session setup/teardown, and anything
+    from build_cmdctr_report itself (the gather/LLM step) that isn't
+    already caught deeper in the stack."""
+    db = get_session_factory()()
+    try:
+        run = run_and_push_cmdctr_report(db)
+        logger.info("cmdctr-report: run %s complete", run.id)
+    except Exception:
+        logger.exception("cmdctr-report: scheduled run failed")
+    finally:
+        db.close()
+
+
 def start_scheduler() -> BackgroundScheduler:
     settings = get_settings()
     audit_trigger = CronTrigger.from_crontab(settings.daily_go_live_audit_cron, timezone=_SCHEDULE_TIMEZONE)
@@ -51,6 +71,9 @@ def start_scheduler() -> BackgroundScheduler:
 
     zoom_trigger = CronTrigger.from_crontab(settings.zoom_call_sync_cron, timezone=_SCHEDULE_TIMEZONE)
     _scheduler.add_job(_run_zoom_call_sync_job, zoom_trigger, id="zoom-call-sync", replace_existing=True)
+
+    cmdctr_trigger = CronTrigger.from_crontab(settings.cmdctr_report_cron, timezone=_SCHEDULE_TIMEZONE)
+    _scheduler.add_job(_run_cmdctr_report_job, cmdctr_trigger, id="cmdctr-report", replace_existing=True)
 
     _scheduler.start()
     return _scheduler

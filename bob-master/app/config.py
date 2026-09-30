@@ -73,6 +73,15 @@ class Settings(BaseSettings):
     # gotcha this relies on. Every day, not just weekdays -- client calls
     # (unlike the internal standup) aren't confined to business days.
     zoom_call_sync_cron: str = "0 20 * * *"
+    # Hourly, every day (2026-09-29, Chris) -- Command Center's whole reason
+    # for a separate fast-refresh pipeline (see app/tasks/cmdctr_report.py)
+    # is staying current throughout the day on a small, vital account set,
+    # not once a week like full Pulse. Confirmed safe to run unattended
+    # 2026-09-29: a manual run landed correctly in Atlas's Command Center
+    # UI without disturbing the other ~140 non-pipeline accounts, meaning
+    # Atlas's POST /api/pulse-runs upserts per-account rather than
+    # replacing the whole stored picture.
+    cmdctr_report_cron: str = "0 * * * *"
 
     # --- Debug knob (Bob, 2026-08-06) — TEMPORARY: caps the Atlas account
     # universe to a random N so a full run doesn't take minutes while the
