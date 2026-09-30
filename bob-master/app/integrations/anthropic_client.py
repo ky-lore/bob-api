@@ -106,6 +106,18 @@ _TOKENS_PER_ACCOUNT = 150
 _MIN_TOKENS = 512
 _MAX_TOKENS_CAP = 4096
 
+# Confirmed intermittent, 2026-09-30: even with max_tokens comfortably
+# sized (see _synthesize_report_batch's docstring on that separate fix),
+# a forced tool_choice call occasionally still comes back with a
+# syntactically valid but EMPTY reports array (stop_reason=tool_use, not
+# max_tokens or refusal) -- worked cleanly across ~15 consecutive hourly
+# CMDCTR runs, then failed once with the identical symptom on the next
+# manual trigger. Not reproducible from input size/token budget alone, so
+# treated as genuine model-output noise and retried rather than chased
+# further -- same "retry a transient failure, don't over-theorize it"
+# posture as ClickUp's 429 handling and Atlas's post_pulse_run retries.
+_EMPTY_REPORTS_MAX_ATTEMPTS = 3
+
 _REPORT_TOOL_NAME = "submit_account_reports"
 _HEALTH_VALUES = ["on_track", "needs_attention", "at_risk"]
 
@@ -711,38 +723,52 @@ def _synthesize_report_batch(
     # much higher multiplier so its cap (16384) is what actually binds.
     max_tokens = min(max_tokens_cap, max(_MIN_TOKENS, _TOKENS_PER_ACCOUNT * tokens_per_account_multiplier * len(accounts)))
 
-    response = client.messages.create(
-        model=settings.anthropic_model,
-        max_tokens=max_tokens,
-        system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
-        tools=[tool_schema],
-        tool_choice={"type": "tool", "name": tool_name},
-        messages=[{"role": "user", "content": json.dumps(accounts, indent=2)}],
-    )
+    # Retries ONLY the "forced tool call came back with a syntactically
+    # valid but empty reports array" case -- see _EMPTY_REPORTS_MAX_ATTEMPTS's
+    # docstring. A response with no tool_use block at all (tool_choice
+    # wasn't honored) is a more fundamental problem and still raises
+    # immediately, not masked by a retry loop.
+    last_empty_detail: str | None = None
+    for attempt in range(1, _EMPTY_REPORTS_MAX_ATTEMPTS + 1):
+        response = client.messages.create(
+            model=settings.anthropic_model,
+            max_tokens=max_tokens,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+            tools=[tool_schema],
+            tool_choice={"type": "tool", "name": tool_name},
+            messages=[{"role": "user", "content": json.dumps(accounts, indent=2)}],
+        )
 
-    for block in response.content:
-        if block.type == "tool_use" and block.name == tool_name:
-            reports = _coerce_list(block.input.get("reports", []), key="reports")
-            accounts_by_name = {a["account"]: a for a in accounts if isinstance(a, dict) and a.get("account")}
-            _verify_evidence_quotes(reports, accounts_by_name)
-            result = {
-                r["account"]: {
-                    "health": r.get("health") if r.get("health") in _HEALTH_VALUES else "on_track",
-                    "status": r.get("status", ""),
-                    "recent_work": r.get("recent_work", ""),
-                    "evidence": r.get("evidence", []),
-                }
-                for r in reports
-                if isinstance(r, dict) and r.get("account")
+        tool_block = next(
+            (b for b in response.content if b.type == "tool_use" and b.name == tool_name), None
+        )
+        if tool_block is None:
+            raise RuntimeError(
+                f"no {tool_name} tool call in response "
+                f"(stop_reason={response.stop_reason}, content block types={[b.type for b in response.content]})"
+            )
+
+        reports = _coerce_list(tool_block.input.get("reports", []), key="reports")
+        accounts_by_name = {a["account"]: a for a in accounts if isinstance(a, dict) and a.get("account")}
+        _verify_evidence_quotes(reports, accounts_by_name)
+        result = {
+            r["account"]: {
+                "health": r.get("health") if r.get("health") in _HEALTH_VALUES else "on_track",
+                "status": r.get("status", ""),
+                "recent_work": r.get("recent_work", ""),
+                "evidence": r.get("evidence", []),
             }
-            if not result:
-                raise RuntimeError(
-                    f"zero usable reports (stop_reason={response.stop_reason}, "
-                    f"raw reports array length={len(reports)})"
-                )
+            for r in reports
+            if isinstance(r, dict) and r.get("account")
+        }
+        if result:
             return result
 
-    raise RuntimeError(
-        f"no {tool_name} tool call in response "
-        f"(stop_reason={response.stop_reason}, content block types={[b.type for b in response.content]})"
-    )
+        last_empty_detail = f"stop_reason={response.stop_reason}, raw reports array length={len(reports)}"
+        if attempt < _EMPTY_REPORTS_MAX_ATTEMPTS:
+            logger.warning(
+                "_synthesize_report_batch: attempt %d/%d returned zero usable reports (%s) -- retrying",
+                attempt, _EMPTY_REPORTS_MAX_ATTEMPTS, last_empty_detail,
+            )
+
+    raise RuntimeError(f"zero usable reports after {_EMPTY_REPORTS_MAX_ATTEMPTS} attempts ({last_empty_detail})")

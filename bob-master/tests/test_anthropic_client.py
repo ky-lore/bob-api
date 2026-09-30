@@ -294,6 +294,77 @@ def test_synthesize_report_batch_handles_a_self_nested_stringified_object(monkey
     }
 
 
+def _patch_anthropic_sequence(monkeypatch, responses):
+    """Like _patch_anthropic, but returns a different response per call --
+    for exercising the empty-reports retry loop, unlike _patch_anthropic's
+    single fixed response."""
+    monkeypatch.setattr(anthropic_client, "get_settings", lambda: _FakeSettings())
+    calls = []
+    remaining = list(responses)
+
+    def _create(**kwargs):
+        calls.append(kwargs)
+        return remaining.pop(0)
+
+    fake_client = types.SimpleNamespace(messages=types.SimpleNamespace(create=_create))
+    monkeypatch.setattr(anthropic_client.anthropic, "Anthropic", lambda api_key: fake_client)
+    return calls
+
+
+def test_synthesize_report_batch_retries_on_an_empty_reports_array_and_succeeds(monkeypatch):
+    # 2026-09-30: confirmed intermittent in production -- a forced tool
+    # call occasionally comes back with stop_reason=tool_use but an EMPTY
+    # reports array. Worked fine across ~15 consecutive hourly CMDCTR runs,
+    # then failed once with the identical symptom -- not reproducible from
+    # input alone, so retried rather than treated as a hard failure.
+    empty = _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": []})
+    real_reports = [{"account": "Acme Co", "health": "on_track", "status": "doing fine", "recent_work": "shipped a fix"}]
+    success = _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": real_reports})
+    calls = _patch_anthropic_sequence(monkeypatch, [empty, success])
+
+    result = anthropic_client._synthesize_report_batch(
+        [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
+    )
+
+    assert len(calls) == 2
+    assert result == {
+        "Acme Co": {"health": "on_track", "status": "doing fine", "recent_work": "shipped a fix", "evidence": []}
+    }
+
+
+def test_synthesize_report_batch_gives_up_after_max_attempts_of_empty_reports(monkeypatch):
+    empty = _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": []})
+    calls = _patch_anthropic_sequence(monkeypatch, [empty] * anthropic_client._EMPTY_REPORTS_MAX_ATTEMPTS)
+
+    try:
+        anthropic_client._synthesize_report_batch(
+            [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
+        )
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert f"zero usable reports after {anthropic_client._EMPTY_REPORTS_MAX_ATTEMPTS} attempts" in str(exc)
+
+    assert len(calls) == anthropic_client._EMPTY_REPORTS_MAX_ATTEMPTS
+
+
+def test_synthesize_report_batch_does_not_retry_when_no_tool_call_at_all(monkeypatch):
+    # A response missing the forced tool call entirely is a more fundamental
+    # problem than an empty-but-valid array -- must surface immediately,
+    # not get masked behind the empty-reports retry loop.
+    no_tool_call = types.SimpleNamespace(content=[types.SimpleNamespace(type="text", text="nope")], stop_reason="end_turn")
+    calls = _patch_anthropic_sequence(monkeypatch, [no_tool_call])
+
+    try:
+        anthropic_client._synthesize_report_batch(
+            [{"account": "Acme Co", "day": 1, "stage": "live", "is_live": True, "context": []}]
+        )
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "no submit_account_reports tool call in response" in str(exc)
+
+    assert len(calls) == 1
+
+
 def test_synthesize_report_batch_still_works_with_a_normal_native_array(monkeypatch):
     reports = [{"account": "Acme Co", "health": "on_track", "status": "doing fine", "recent_work": "shipped a fix"}]
     _patch_anthropic(monkeypatch, _fake_tool_response(anthropic_client._REPORT_TOOL_NAME, {"reports": reports}))
