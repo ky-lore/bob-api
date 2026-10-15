@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.ghl import GHLClient
 from app.integrations.google_drive import GoogleDriveClient
-from app.models import SalesAuditRun
+from app.models import SalesAuditRun, SalesDealOverride
 from app.tasks import sales_audit_config as cfg
 from app.tasks.sales_audit_blend import DIGITAL_DIAGNOSIS, PACKAGE, build_sales_rows
 from app.tasks.sales_audit_sources import ZoomIndex, fetch_ghl, make_lookups, read_billing
@@ -99,11 +99,50 @@ def build_sales_audit(
     }
 
 
+def reconcile_overrides(db: Session, rows: list[dict]) -> int:
+    """Retires the parts of a local override that Atlas now says itself
+    (2026-10-15). A rep/referral partner pushed to Atlas stays as a local
+    override only until a run shows it coming back from Atlas -- after that
+    Atlas is the single record and the local copy is redundant (and would
+    mask a later Atlas edit). Only fields that AGREE are cleared; anything
+    still differing from Atlas stays. type/excluded overrides are audit-only
+    judgments (never in Atlas) and are untouched. Returns overrides changed."""
+    by_key = {r["key"]: r for r in rows}
+    changed = 0
+    for o in db.query(SalesDealOverride).all():
+        row = by_key.get(o.deal_key)
+        if row is None:
+            continue
+        touched = False
+        if o.owner and row["owner"] == o.owner and row["owner_basis"] == "Atlas salesRep":
+            o.owner, touched = None, True
+        if (o.referral_partner and row.get("referral_partner") and row["referral_partner"].lower() == o.referral_partner.lower()
+                and str(row.get("source_detail") or "").startswith("Atlas referral partner")):
+            o.referral_partner, touched = None, True
+        if not touched:
+            continue
+        changed += 1
+        if not o.owner and not o.referral_partner:
+            o.atlas_pushed_at = None
+        if not (o.owner or o.referral_partner or o.deal_type or o.excluded or o.note):
+            db.delete(o)
+    if changed:
+        db.commit()
+    return changed
+
+
 def run_and_store_sales_audit(db: Session, *, on_progress: Callable[[str], None] | None = None, **clients) -> SalesAuditRun:
     payload = build_sales_audit(db, on_progress=on_progress, **clients)
     run = SalesAuditRun(run_at=datetime.now(timezone.utc).replace(tzinfo=None), report_json=json.dumps(payload))
     db.add(run)
     db.commit()
     db.refresh(run)
+    try:
+        retired = reconcile_overrides(db, payload["rows"])
+        if retired:
+            logger.info("sales-audit: retired %d local override(s) that Atlas now agrees with", retired)
+    except Exception:
+        logger.exception("sales-audit: override reconcile failed (run itself is stored)")
+        db.rollback()
     logger.info("sales-audit: run %s stored (%d rows, errors=%s)", run.id, payload["count"], list(payload["source_errors"]))
     return run

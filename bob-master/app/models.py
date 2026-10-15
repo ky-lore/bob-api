@@ -308,6 +308,13 @@ class SalesDealOverride(Base):
     deal_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     excluded: Mapped[bool] = mapped_column(Boolean, default=False)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # A referral partner name set from the audit (2026-10-15). When pushed to Atlas it is Atlas's
+    # value that wins; this copy exists so the page reflects the change immediately instead of after
+    # the next daily run, and is retired automatically once a run shows Atlas agrees (see
+    # sales_audit.reconcile_overrides).
+    referral_partner: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Set when the owner/referral_partner above were successfully written to Atlas.
+    atlas_pushed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     set_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime)

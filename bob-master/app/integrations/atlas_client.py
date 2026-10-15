@@ -38,6 +38,18 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+_UNSET: Any = object()
+
+
+class AtlasWriteError(Exception):
+    """A rejected write to Atlas, carrying Atlas's own message so the UI can show
+    why (e.g. 422 "No active user matches salesRep ...")."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"Atlas {status}: {message}")
+        self.status = status
+        self.message = message
+
 
 class AtlasClient:
     def __init__(self) -> None:
@@ -52,6 +64,38 @@ class AtlasClient:
         resp = self._client.get("/api/accounts")
         resp.raise_for_status()
         return resp.json().get("accounts", [])
+
+    def set_sales_attribution(
+        self, atlas_id: str, *, actor: str, sales_rep: Any = _UNSET, referral_partner: Any = _UNSET,
+    ) -> dict[str, Any]:
+        """Updates an account's sales rep and/or referral partner IN Atlas
+        (2026-10-15) via PATCH /api/accounts/:id/sales-attribution -- the one
+        deliberately narrow write path the sales audit uses (Atlas is the
+        source of truth; the audit's job is to fix it there, not shadow it).
+
+        sales_rep: an Atlas user email or id; None clears. referral_partner:
+        a partner NAME (Atlas find-or-creates it); None clears. Omit a field
+        to leave it alone. `actor` is the human making the change -- the
+        API key has no user, so Atlas records this name in its audit log.
+
+        Atlas side effects worth knowing: assigning a rep also adds them to the
+        client's assignedStaff and its projects (i.e. grants access), and a
+        previous rep is NOT removed. An unknown rep email is a 422, never a
+        silent no-op. Raises AtlasWriteError on any 4xx/5xx; a 404 can mean
+        the account is gone OR the endpoint isn't deployed yet."""
+        body: dict[str, Any] = {"actor": actor}
+        if sales_rep is not _UNSET:
+            body["salesRep"] = sales_rep
+        if referral_partner is not _UNSET:
+            body["referralPartner"] = referral_partner
+        resp = self._client.patch(f"/api/accounts/{atlas_id}/sales-attribution", json=body)
+        if resp.status_code >= 400:
+            try:
+                message = resp.json().get("message") or resp.text
+            except Exception:
+                message = resp.text
+            raise AtlasWriteError(resp.status_code, (message or "no message")[:300])
+        return resp.json() if resp.content else {}
 
     def post_campaigns(self, atlas_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Pushes one platform's campaign summary for one account INTO Atlas

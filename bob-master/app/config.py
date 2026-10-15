@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     # — replacing fuzzy-match account correlation everywhere else, 2026-08-04) ---
     atlas_api_key: str
     atlas_base_url: str = "https://server-production-3d76.up.railway.app"
+    # Atlas's WEB app (not the API host above) -- only used to build "Open in Atlas" links
+    # (<base>/admin/clients/<atlas id>) on the sales audit. Empty = links hidden. Production URL not
+    # known to this repo as of 2026-10-15 (Atlas's own .env only has localhost); set ATLAS_WEB_BASE_URL.
+    atlas_web_base_url: str = ""
 
     # --- ClickUp ---
     clickup_api_token: str

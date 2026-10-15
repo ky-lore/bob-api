@@ -43,6 +43,15 @@ REPS_BY_GHL_USER = {
     "QdxKPdYt22ffj9Ue1OO5": "Chris Paniagua",
 }
 REP_NAMES = list(REPS_BY_GHL_USER.values())
+# Atlas user emails for the four reps (confirmed by Atlas's team 2026-10-15: all four are active users in
+# the sales department) -- what the push to Atlas sends as `salesRep`. Anthony Aguilar is also in Atlas
+# sales but is NOT a counted rep (Bob's call: the four above only).
+REP_ATLAS_EMAILS = {
+    "Paul Rastrelli": "paul@advancedmarketers.co",
+    "Kyle Kellner": "kylekellner@advancedmarketers.co",
+    "Jaden Bashaw": "jbashaw@advancedmarketers.co",
+    "Chris Paniagua": "chris@advancedmarketers.co",
+}
 NEEDS_REP = "Needs rep"
 
 # Zoom host email (as stored in ZoomCallRecord.host_email) -> rep.

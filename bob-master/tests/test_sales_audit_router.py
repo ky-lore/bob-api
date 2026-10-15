@@ -135,3 +135,125 @@ def test_trigger_and_poll(monkeypatch, tmp_path):
         body = client.get(f"/reports/sales-audit/run/{job['job_id']}").json()
     assert body["job_status"] == "done" and body["run_id"] == 5
     assert client.get("/reports/sales-audit/run/nope").status_code == 404
+
+
+# ---------------------------------------------------------------- push to Atlas
+
+class _FakeAtlas:
+    def __init__(self, error=None):
+        self.calls, self.error = [], error
+
+    def set_sales_attribution(self, atlas_id, *, actor, **kw):
+        self.calls.append({"atlas_id": atlas_id, "actor": actor, **kw})
+        if self.error:
+            raise self.error
+        return {"changed": list(kw), "salesRep": {"email": kw.get("sales_rep")}, "referralPartner": kw.get("referral_partner")}
+
+
+def _push_setup(tmp_path, monkeypatch, atlas):
+    client, sf = _setup(tmp_path, rows=[_row("atlas:1", atlas_id="A1"), _row("dd:9", client="No Atlas Co")])
+    monkeypatch.setattr(router_mod, "_atlas_client", lambda: atlas)
+    return client, sf
+
+
+def _push(client, **kw):
+    return client.post("/reports/sales-audit/push", headers=PW, json={"deal_key": "atlas:1", "set_by": "Bob", **kw})
+
+
+def test_push_rep_writes_to_atlas_with_the_mapped_email_and_stamps_the_override(tmp_path, monkeypatch):
+    atlas = _FakeAtlas()
+    client, sf = _push_setup(tmp_path, monkeypatch, atlas)
+    r = _push(client, owner="Kyle Kellner")
+    assert r.status_code == 200 and r.json()["pushed"] is True
+    assert atlas.calls == [{"atlas_id": "A1", "actor": "Bob", "sales_rep": "kylekellner@advancedmarketers.co"}]
+    with sf() as db:
+        o = db.query(SalesDealOverride).one()
+        assert o.owner == "Kyle Kellner" and o.atlas_pushed_at is not None and o.set_by == "Bob"
+    (row,) = [x for x in client.get("/reports/sales-audit/latest").json()["rows"] if x["key"] == "atlas:1"]
+    assert row["owner"] == "Kyle Kellner" and row["atlas_pushed_at"] and "needs_rep" not in row["flags"]
+
+
+def test_push_referral_partner_updates_the_row_immediately(tmp_path, monkeypatch):
+    atlas = _FakeAtlas()
+    client, _ = _push_setup(tmp_path, monkeypatch, atlas)
+    assert _push(client, referral_partner="  Acme Partners ").json()["pushed"] is True
+    assert atlas.calls[0]["referral_partner"] == "Acme Partners"          # trimmed
+    (row,) = [x for x in client.get("/reports/sales-audit/latest").json()["rows"] if x["key"] == "atlas:1"]
+    assert row["source_type"] == "Referral" and row["referral_partner"] == "Acme Partners" and "written to Atlas" in row["source_detail"]
+
+
+def test_atlas_rejection_keeps_the_local_override_unpushed_and_reports_why(tmp_path, monkeypatch):
+    from app.integrations.atlas_client import AtlasWriteError
+    atlas = _FakeAtlas(error=AtlasWriteError(404, "Not found"))
+    client, sf = _push_setup(tmp_path, monkeypatch, atlas)
+    body = _push(client, owner="Paul Rastrelli").json()
+    assert body["pushed"] is False and body["saved_locally"] is True and "may not be deployed" in body["error"]
+    with sf() as db:
+        o = db.query(SalesDealOverride).one()
+        assert o.owner == "Paul Rastrelli" and o.atlas_pushed_at is None      # intent kept, not marked synced
+
+
+def test_network_failure_is_also_saved_locally(tmp_path, monkeypatch):
+    client, sf = _push_setup(tmp_path, monkeypatch, _FakeAtlas(error=TimeoutError("slow")))
+    body = _push(client, owner="Paul Rastrelli").json()
+    assert body["pushed"] is False and "TimeoutError" in body["error"]
+    with sf() as db:
+        assert db.query(SalesDealOverride).one().owner == "Paul Rastrelli"
+
+
+def test_push_validation_and_guards(tmp_path, monkeypatch):
+    atlas = _FakeAtlas()
+    client, sf = _push_setup(tmp_path, monkeypatch, atlas)
+    assert client.post("/reports/sales-audit/push", json={"deal_key": "atlas:1", "owner": "Kyle Kellner", "set_by": "B"}).status_code == 401
+    assert _push(client).status_code == 422                                              # nothing to push
+    assert _push(client, owner="Simon Ting").status_code == 422                          # not a counted rep
+    assert _push(client, referral_partner="   ").status_code == 422                      # blank partner
+    assert client.post("/reports/sales-audit/push", headers=PW, json={"deal_key": "nope", "owner": "Kyle Kellner", "set_by": "B"}).status_code == 404
+    r = client.post("/reports/sales-audit/push", headers=PW, json={"deal_key": "dd:9", "owner": "Kyle Kellner", "set_by": "B"})
+    assert r.status_code == 422 and "no Atlas account" in r.json()["detail"]             # row has no atlas_id
+    assert atlas.calls == []                                                             # none of the above reached Atlas
+    with sf() as db:
+        assert db.query(SalesDealOverride).count() == 0                                  # and none left an override behind
+
+
+def test_page_embeds_the_atlas_web_base_without_a_trailing_slash(tmp_path, monkeypatch):
+    from app.config import get_settings
+    monkeypatch.setenv("ATLAS_WEB_BASE_URL", "https://atlas.example.test/")
+    get_settings.cache_clear()
+    try:
+        client, _ = _setup(tmp_path, rows=[_row("atlas:1", atlas_id="A1")])
+        html = client.get("/reports/sales-audit").text
+    finally:
+        get_settings.cache_clear()
+    assert 'var ATLAS_WEB = "https://atlas.example.test";' in html
+
+
+def test_atlas_web_base_defaults_to_empty_so_links_stay_hidden(tmp_path, monkeypatch):
+    from app.config import get_settings
+    monkeypatch.delenv("ATLAS_WEB_BASE_URL", raising=False)
+    get_settings.cache_clear()
+    try:
+        client, _ = _setup(tmp_path, rows=[_row("atlas:1", atlas_id="A1")])
+        html = client.get("/reports/sales-audit").text
+    finally:
+        get_settings.cache_clear()
+    assert 'var ATLAS_WEB = "";' in html
+
+
+def test_push_also_applies_the_audit_only_fields_from_the_same_form(tmp_path, monkeypatch):
+    atlas = _FakeAtlas()
+    client, sf = _push_setup(tmp_path, monkeypatch, atlas)
+    r = _push(client, owner="Kyle Kellner", excluded=True, note="dup of another deal", deal_type="Digital Diagnosis")
+    assert r.json()["pushed"] is True
+    assert atlas.calls == [{"atlas_id": "A1", "actor": "Bob", "sales_rep": "kylekellner@advancedmarketers.co"}]   # audit-only fields never go to Atlas
+    with sf() as db:
+        o = db.query(SalesDealOverride).one()
+        assert (o.owner, o.excluded, o.note, o.deal_type) == ("Kyle Kellner", True, "dup of another deal", "Digital Diagnosis")
+
+
+def test_clearing_the_rep_does_not_wipe_a_referral_partner_override(tmp_path, monkeypatch):
+    client, sf = _push_setup(tmp_path, monkeypatch, _FakeAtlas())
+    _push(client, referral_partner="Acme Partners")
+    client.post("/reports/sales-audit/overrides", headers=PW, json={"deal_key": "atlas:1", "client_name": "x"})   # "nothing set" save
+    with sf() as db:
+        assert db.query(SalesDealOverride).one().referral_partner == "Acme Partners"
