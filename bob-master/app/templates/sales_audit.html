@@ -320,6 +320,7 @@
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
     <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"/></symbol>
     <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
     <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
   </defs>
 </svg>
@@ -347,6 +348,7 @@
       <span class="brand-tile" aria-hidden="true"><img src="/reports/sales-audit/assets/icon-mark-white.png" alt="" width="17" height="12"></span>
       <div class="crumbs"><span>Sales</span><span>/</span><b id="crumb">Packages</b></div>
       <div class="search"><svg class="ic"><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search deals…" aria-label="Search deals" autocomplete="off"><kbd>/</kbd></div>
+      {% if gate_enabled %}<form method="post" action="/reports/sales-audit/logout" style="margin:0"><button class="icon-btn" type="submit" aria-label="Sign out" title="Sign out"><svg class="ic"><use href="#i-logout"/></svg></button></form>{% endif %}
       <button class="icon-btn" id="theme-btn" type="button" aria-label="Toggle theme"><svg class="ic"><use href="#i-sun"/></svg></button>
       <button class="btn primary" id="refresh-btn" type="button"><svg class="ic"><use href="#i-refresh"/></svg>Refresh data</button>
     </header>
@@ -437,6 +439,8 @@
   var IS_LATEST = {{ ((history and run and history[0].id == run.id) if run else false) | tojson }};
   var SVGNS = 'http://www.w3.org/2000/svg';
   function $(id) { return document.getElementById(id); }
+  // A session that expired mid-use answers 401: go back to the login page instead of failing silently.
+  function authed(r) { if (r.status === 401) { location.href = '/reports/sales-audit/login?next=' + encodeURIComponent(location.pathname + location.search); throw new Error('session expired'); } return r; }
   function ic(name) { return '<svg class="ic"><use href="#i-' + name + '"/></svg>'; }
 
   /* ---- shell: theme, sidebar, refresh (work even with no data) ---------- */
@@ -457,7 +461,7 @@
   var refreshBtn = $('refresh-btn');
   refreshBtn.addEventListener('click', function () {
     refreshBtn.disabled = true; refreshBtn.lastChild.textContent = 'Starting…';
-    fetch('/reports/sales-audit/run', { method: 'POST' }).then(function (r) { return r.json(); }).then(function (j) {
+    fetch('/reports/sales-audit/run', { method: 'POST' }).then(authed).then(function (r) { return r.json(); }).then(function (j) {
       (function poll() {
         fetch('/reports/sales-audit/run/' + j.job_id).then(function (r) { return r.json(); }).then(function (s) {
           if (s.job_status === 'running') { refreshBtn.lastChild.textContent = (s.progress || 'Running') + '…'; setTimeout(poll, 4000); }
@@ -939,19 +943,19 @@
   /* ---- render + actions --------------------------------------------------------- */
   function renderAll() { persist(); renderScreens(); renderNav(); renderTiles(); renderFilters(); renderTrend(); renderSources(); renderStages(); renderHeat(); renderReps(); renderTabs(); renderTable(); }
   function who() { var n = ''; try { n = localStorage.getItem('salesAuditName') || ''; } catch (e) {} if (!n) { n = (prompt('Your name, for the change log:') || '').trim(); if (n) { try { localStorage.setItem('salesAuditName', n); } catch (e) {} } } return n || null; }
-  function reload() { return fetch('/reports/sales-audit/latest' + (IS_LATEST ? '' : '?run_id=' + RUN_ID)).then(function (r) { return r.json(); }).then(function (j) { ROWS = j.rows; renderAll(); }); }
+  function reload() { return fetch('/reports/sales-audit/latest' + (IS_LATEST ? '' : '?run_id=' + RUN_ID)).then(authed).then(function (r) { return r.json(); }).then(function (j) { ROWS = j.rows; renderAll(); }); }
   function saveOverride(key, body, statusEl) {
     var row = ROWS.filter(function (r) { return r.key === key; })[0], payload = Object.assign({ deal_key: key, client_name: row ? row.client : key, set_by: who() }, body);
     if (statusEl) { statusEl.className = 'status'; statusEl.textContent = 'Saving…'; }
     return fetch('/reports/sales-audit/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': ADMIN_PASSWORD }, body: JSON.stringify(payload) })
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return reload(); })
+      .then(authed).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return reload(); })
       .catch(function (e) { if (statusEl) { statusEl.className = 'status err'; statusEl.textContent = 'Could not save (' + e.message + ')'; } else alert('Could not save: ' + e.message); });
   }
   var PUSH_WARNING = 'This updates Atlas — the source of truth.\n\nAssigning a sales rep also gives them access to the account (assigned staff + its projects). A previous rep keeps their access.';
   function pushToAtlas(key, body) {
     var name = who(); if (!name) return Promise.resolve(false);
     return fetch('/reports/sales-audit/push', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Admin-Password': ADMIN_PASSWORD }, body: JSON.stringify(Object.assign({ deal_key: key, set_by: name }, body)) })
-      .then(function (r) { if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || ('HTTP ' + r.status)); }); return r.json(); })
+      .then(authed).then(function (r) { if (!r.ok) return r.json().then(function (j) { throw new Error(j.detail || ('HTTP ' + r.status)); }); return r.json(); })
       .then(function (j) { if (!j.pushed) alert('Saved here, but Atlas was NOT updated:\n' + j.error + '\n\nThe change stays local until it is pushed again.'); return reload(); })
       .catch(function (e) { alert('Could not push: ' + e.message); });
   }

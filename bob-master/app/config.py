@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # its routes + /health answer (see app/sales_host.py). Empty = off. Must match the Railway custom domain
     # and Cloudflare DNS record.
     sales_dashboard_host: str = "sales.advancedmarketers.co"
+    # Access-password gate for the sales dashboard (2026-10-15). Set ONLY in the Railway env
+    # (SALES_DASHBOARD_PASSWORD) -- never committed. Empty = gate off (local dev / tests); see app/sales_access.py.
+    sales_dashboard_password: str = ""
 
     # --- ClickUp ---
     clickup_api_token: str

@@ -12,16 +12,19 @@ rows -- instant, no round trips). The server's only jobs are persistence and
 applying human overrides, which happens at render time (_apply_overrides) so a
 correction survives every daily rebuild and shows immediately.
 """
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app import sales_access
 from app.config import get_settings
 from app.db import get_db, get_session_factory
 from app.integrations.atlas_client import AtlasClient, AtlasWriteError
@@ -109,8 +112,51 @@ def _page(request: Request, db: Session, run: SalesAuditRun | None) -> HTMLRespo
     return templates.TemplateResponse(request, "sales_audit.html", {
         "run": run, "history": history, "data": (data := _load(db, run)), "reps": [r["name"] for r in data.get("roster") or _roster_of({})],
         "needs_rep": cfg.NEEDS_REP, "admin_password": _ADMIN_OVERRIDE_PASSWORD,
-        "atlas_web_base": get_settings().atlas_web_base_url.rstrip("/"),
+        "atlas_web_base": get_settings().atlas_web_base_url.rstrip("/"), "gate_enabled": sales_access.enabled(),
     })
+
+
+# ---- access gate (see app/sales_access.py: the middleware enforces it; these routes ARE the way in) ----------
+
+def _login_page(request: Request, nxt: str, error: str | None = None, status: int = 200, headers: dict | None = None) -> HTMLResponse:
+    return templates.TemplateResponse(request, "sales_login.html", {"next": nxt, "error": error}, status_code=status, headers=headers)
+
+
+@router.get("/reports/sales-audit/login", response_class=HTMLResponse)
+def login_page(request: Request, next: str = "") -> HTMLResponse:
+    if not sales_access.enabled():
+        return RedirectResponse(sales_access.safe_next(next), status_code=303)
+    return _login_page(request, sales_access.safe_next(next))
+
+
+@router.post("/reports/sales-audit/login")
+async def login(request: Request):
+    password = sales_access.configured_password()
+    form = parse_qs((await request.body()).decode("utf-8", "ignore"), keep_blank_values=True)
+    nxt = sales_access.safe_next((form.get("next") or [""])[0])
+    if not password:
+        return RedirectResponse(nxt, status_code=303)
+    ip = sales_access.client_ip({k.lower(): v for k, v in request.headers.items()}, request.client.host if request.client else None)
+    wait = sales_access.throttle.retry_after(ip)
+    if wait:
+        return _login_page(request, nxt, f"Too many attempts. Try again in about {max(1, wait // 60)} minute(s).", 429, {"Retry-After": str(wait)})
+    if not sales_access.password_ok((form.get("password") or [""])[0], password):
+        sales_access.throttle.record_failure(ip)
+        await asyncio.sleep(0.4)
+        return _login_page(request, nxt, "Incorrect password.", 401)
+    sales_access.throttle.clear(ip)
+    resp = RedirectResponse(nxt, status_code=303)
+    secure = request.headers.get("x-forwarded-proto", "").lower() == "https" or request.url.scheme == "https"
+    resp.set_cookie(sales_access.COOKIE, sales_access.make_token(password), max_age=sales_access.SESSION_SECONDS,
+                    httponly=True, samesite="lax", secure=secure, path="/")
+    return resp
+
+
+@router.post("/reports/sales-audit/logout")
+def logout() -> RedirectResponse:
+    resp = RedirectResponse(sales_access.LOGIN_PATH, status_code=303)
+    resp.delete_cookie(sales_access.COOKIE, path="/")
+    return resp
 
 
 @router.get("/reports/sales-audit", response_class=HTMLResponse)

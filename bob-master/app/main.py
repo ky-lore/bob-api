@@ -21,6 +21,7 @@ from app.routers import (
     zoom_call_sync,
     zoom_review,
 )
+from app.sales_access import SalesAccessMiddleware, enabled as sales_gate_enabled
 from app.sales_host import SalesHostMiddleware
 from app.scheduler import start_scheduler
 from app.tasks.daily_go_live_audit import run_daily_go_live_audit
@@ -48,6 +49,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Bob starting up")
+    if not sales_gate_enabled():
+        logger.warning("sales dashboard access-password gate is OFF (SALES_DASHBOARD_PASSWORD is not set)")
     init_db()
     start_scheduler()
     yield
@@ -55,6 +58,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Bob", lifespan=lifespan)
+# Starlette runs the LAST-added middleware outermost: the host rewrite ('/' -> the dashboard) must happen BEFORE the
+# access gate looks at the path, so the gate is added first.
+app.add_middleware(SalesAccessMiddleware)
 app.add_middleware(SalesHostMiddleware)
 app.include_router(dashboard.router)
 app.include_router(admin.router)

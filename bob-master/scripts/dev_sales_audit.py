@@ -35,7 +35,9 @@ DB_FILE = Path("/tmp/sales_audit_local.db")
 
 
 def fetch_snapshot() -> dict:
-    subprocess.run(["curl", "-sf", "-m", "30", PROD, "-o", str(SNAPSHOT)], check=True)
+    # prod's dashboard is behind an access password (2026-10-15); pass it via the environment, never on the command line
+    pw = os.environ.get("SALES_DASHBOARD_PASSWORD") or sys.exit("prod is password-gated: export SALES_DASHBOARD_PASSWORD=<the password> first")
+    subprocess.run(["curl", "-sf", "-m", "30", "-H", f"X-Sales-Password: {pw}", PROD, "-o", str(SNAPSHOT)], check=True)
     data = json.loads(SNAPSHOT.read_text())
     if not data.get("rows"):
         sys.exit("prod has no sales-audit run yet -- nothing to preview (trigger one on prod first)")
