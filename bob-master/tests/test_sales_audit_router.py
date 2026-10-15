@@ -257,3 +257,11 @@ def test_clearing_the_rep_does_not_wipe_a_referral_partner_override(tmp_path, mo
     client.post("/reports/sales-audit/overrides", headers=PW, json={"deal_key": "atlas:1", "client_name": "x"})   # "nothing set" save
     with sf() as db:
         assert db.query(SalesDealOverride).one().referral_partner == "Acme Partners"
+
+
+def test_page_ships_the_filter_panel_measure_both_and_atlas_status_hooks(tmp_path):
+    client, _ = _setup(tmp_path, rows=[_row("atlas:1", atlas_id="A1", atlas_stage="at_risk")])
+    html = client.get("/reports/sales-audit").text
+    for marker in ('class="filter-panel"', 'id="stage-chips"', 'data-metric="both"', 'data-tab-nav="risk"', 'id="stages"', "--st-good: #0ca30c"):
+        assert marker in html, marker
+    assert html.count('class="fp-group') == 5           # Date range, Rep, Measure, Atlas status, Signals

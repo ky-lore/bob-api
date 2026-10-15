@@ -16,7 +16,7 @@
     --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10); --hover: rgba(11,11,11,.045); --fill: rgba(11,11,11,.06);
     --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s-none: #b4b2a9;
     --accent: #2a78d6; --good-ink: #006300;
-    --st-warning: #fab219; --st-serious: #ec835a; --st-critical: #d03b3b;
+    --st-good: #0ca30c; --st-warning: #fab219; --st-serious: #ec835a; --st-critical: #d03b3b;
     --radius: 10px;
     --font: Geist, "Geist Sans", Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -117,7 +117,7 @@
   .check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
 
   /* stat tiles ------------------------------------------------------------- */
-  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; }
   .tile { padding: 16px 18px 14px; display: flex; flex-direction: column; gap: 2px; text-align: left; }
   button.tile { cursor: pointer; font: inherit; color: inherit; }
   button.tile:hover { background: color-mix(in srgb, var(--surface) 92%, var(--ink)); }
@@ -243,17 +243,40 @@
   .atlas-line a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
   .edit .hint { font-size: 11.5px; color: var(--muted); font-weight: 400; }
 
+    /* filter panel: ONE card partitioned into labelled groups by hairlines (a 1px grid gap over a ring-colour
+     background), so the groups read as distinct without forced line breaks -- they reflow on their own. */
+  .filter-panel { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 1px; background: var(--ring); border: 1px solid var(--ring); border-radius: calc(var(--radius) + 4px); overflow: hidden; }
+  .fp-group { background: var(--surface); padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .fp-title { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .fp-title .ic { width: 13px; height: 13px; }
+  .fp-body { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .fp-date { grid-column: span 4; } .fp-rep { grid-column: span 5; } .fp-measure { grid-column: span 3; } .fp-stage { grid-column: span 4; } .fp-signals { grid-column: span 8; }
+  .fp-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
+  @media (max-width: 1100px) { .fp-date, .fp-rep, .fp-measure, .fp-stage, .fp-signals { grid-column: span 12; } }
+  /* Atlas account status: high-priority signal. Status colours are reserved meanings (good / serious / critical)
+     and always ship with an icon + label, never colour alone; in-progress stages stay neutral. */
+  .stage { --sc: var(--muted); display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px 0 7px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--ink); white-space: nowrap;
+           border: 1px solid color-mix(in srgb, var(--sc) 45%, transparent); background: color-mix(in srgb, var(--sc) 12%, var(--surface)); }
+  .stage .ic { width: 13px; height: 13px; color: var(--sc); }
+  .stage.st-good { --sc: var(--st-good); } .stage.st-serious { --sc: var(--st-serious); } .stage.st-critical { --sc: var(--st-critical); }
+  tr.row[data-stage="at_risk"] td:first-child { box-shadow: inset 3px 0 0 var(--st-serious); }
+  tr.row[data-stage="closed"] td:first-child { box-shadow: inset 3px 0 0 var(--st-critical); }
+  .stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .chart-sub { position: relative; } .chart-sub + .chart-sub { margin-top: 10px; }
+  .sub-label { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 2px 0 0; }
+  .bar-row.both { grid-template-columns: minmax(0, 2fr) minmax(36px, 1fr) 86px; }
+  .hm.both .cell { height: 46px; flex-direction: column; gap: 0; line-height: 1.15; } .hm .cell { display: flex; align-items: center; justify-content: center; }
+  .hm .cell small { display: block; font-size: 10px; opacity: .85; }
   .scrim { display: none; }
-  @media (max-width: 1100px) { .tiles { grid-template-columns: repeat(2, 1fr); } .grid-2, .grid-2b { grid-template-columns: 1fr; } .drawer { grid-template-columns: 1fr; } }
+  @media (max-width: 1100px) { .grid-2, .grid-2b { grid-template-columns: 1fr; } .drawer { grid-template-columns: 1fr; } }
   @media (max-width: 860px) {
     .app, .app[data-sidebar="closed"] { grid-template-columns: 1fr; }
     .sidebar { position: fixed; z-index: 40; left: 0; width: 260px; transform: translateX(-100%); transition: transform .18s ease; visibility: visible !important; box-shadow: 0 0 40px rgba(0,0,0,.25); }
     .app[data-sidebar="open"] .sidebar { transform: none; }
     .app[data-sidebar="open"] .scrim { display: block; position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.4); }
     .header, .content { padding-left: 14px; padding-right: 14px; } .crumbs { display: none; } .search { width: auto; flex: 1; }
-    /* filters become single horizontally-scrolling rows so content starts on the first screen */
-    .filters { gap: 6px; } .filters > .f-group { flex-wrap: nowrap; overflow-x: auto; width: 100%; padding-bottom: 2px; scrollbar-width: none; }
-    .filters .f-group .f-group { flex-wrap: nowrap; } .filters .seg, .filters .chip, .filters input[type=date] { flex: none; } .filters .spacer { display: none; }
+    /* each filter group keeps its own scrolling row so content starts on the first screen */
+    .fp-body { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; } .fp-body > * { flex: none; }
   }
   @media (max-width: 520px) { .tiles { grid-template-columns: 1fr; } }
 </style>
@@ -278,6 +301,11 @@
     <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
     <symbol id="i-chev-ll" viewBox="0 0 24 24"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></symbol>
     <symbol id="i-chev-rr" viewBox="0 0 24 24"><path d="m6 17 5-5-5-5M13 17l5-5-5-5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
     <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
   </defs>
 </svg>
@@ -319,15 +347,16 @@
         <div class="card card-body"><p>No audit has run yet. Kick one off with <code>curl -X POST …/reports/sales-audit/run</code> or the “Refresh data” button above.</p></div>
       {% else %}
 
-      <section class="filters" aria-label="Filters">
-        <div class="f-group"><span class="f-label">Date</span><div class="seg" id="presets"></div>
-          <input type="date" id="from" aria-label="From date"><span class="f-label">to</span><input type="date" id="to" aria-label="To date"></div>
-        <div class="f-group"><span class="f-label">Rep</span><span id="rep-chips" class="f-group"></span></div>
-        <div class="f-group"><span class="f-label">Signals</span><span id="flag-chips" class="f-group"></span></div>
-        <div class="f-group"><span class="f-label">Measure</span><div class="seg" id="metric-seg" role="group" aria-label="Measure"><button type="button" data-metric="count">Deals</button><button type="button" data-metric="amount">Revenue</button></div></div>
-        <span class="spacer"></span>
-        <label class="check"><input type="checkbox" id="show-excluded"> show excluded <span id="excl-n"></span></label>
-        <button class="linkish" id="reset" type="button">Reset filters</button>
+      <section class="filter-panel" aria-label="Filters">
+        <div class="fp-group fp-date"><div class="fp-title">Date range</div>
+          <div class="fp-body"><div class="seg" id="presets"></div></div>
+          <div class="fp-body"><input type="date" id="from" aria-label="From date"><span class="f-label">to</span><input type="date" id="to" aria-label="To date"></div></div>
+        <div class="fp-group fp-rep"><div class="fp-title">Rep</div><div class="fp-body" id="rep-chips"></div></div>
+        <div class="fp-group fp-measure"><div class="fp-title">Measure</div>
+          <div class="fp-body"><div class="seg" id="metric-seg" role="group" aria-label="Measure"><button type="button" data-metric="count">Deals</button><button type="button" data-metric="amount">Revenue</button><button type="button" data-metric="both">Both</button></div></div>
+          <div class="fp-actions"><label class="check"><input type="checkbox" id="show-excluded"> show excluded <span id="excl-n"></span></label><button class="linkish" id="reset" type="button">Reset filters</button></div></div>
+        <div class="fp-group fp-stage"><div class="fp-title">Atlas status</div><div class="fp-body" id="stage-chips"></div></div>
+        <div class="fp-group fp-signals"><div class="fp-title">Signals</div><div class="fp-body" id="flag-chips"></div></div>
       </section>
 
       <section class="tiles" id="tiles" aria-label="Key figures"></section>
@@ -354,9 +383,15 @@
           <div class="card-head"><div><div class="card-title">Rep × month</div><div class="card-desc">Who closed what, when · click a cell to filter</div></div></div>
           <div class="card-body"><div id="heat"></div><div class="ramp"><span>fewer</span><i></i><span>more</span></div></div>
         </div>
-        <div class="card">
-          <div class="card-head"><div><div class="card-title">By rep</div><div class="card-desc">Expand a rep to see their deals</div></div></div>
-          <div class="card-body" id="reps"></div>
+        <div class="stack">
+          <div class="card">
+            <div class="card-head"><div><div class="card-title">By Atlas status</div><div class="card-desc">Account health of the clients behind these deals · click to filter</div></div></div>
+            <div class="card-body" id="stages"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><div class="card-title">By rep</div><div class="card-desc">Expand a rep to see their deals</div></div></div>
+            <div class="card-body" id="reps"></div>
+          </div>
         </div>
       </section>
 
@@ -438,10 +473,23 @@
     no_ghl_match: ['No GHL match', '', 'No GHL opportunity or contact found — source is unknown.']
   };
   var SOFT_FLAGS = ['estimated_date', 'onboarding_incomplete'];
+  // Atlas account status (client.clientStatus). In-progress stages are neutral; the others carry reserved status colours + an icon.
+  var STAGES = { closed: ['Closed', 'critical', 'x'], at_risk: ['At risk', 'serious', 'alert'], onboarding: ['Onboarding', '', 'clock'], development: ['Development', '', 'wrench'], qa: ['QA', '', 'wrench'], active: ['Active', '', 'check'], live: ['Live', 'good', 'check'] };
+  // 'qa' and 'active' exist in live Atlas data but not in its documented enum; deliberately NEUTRAL (no health colour) until their meaning is confirmed.
+  var STAGE_ORDER = ['live', 'active', 'onboarding', 'development', 'qa', 'at_risk', 'closed'];
+  var STAGE_RANK = { closed: 0, at_risk: 1, onboarding: 2, development: 3, qa: 4, active: 5, live: 6, unknown: 7, none: 8 };
+  var STAGE_VAR = { good: 'var(--st-good)', serious: 'var(--st-serious)', critical: 'var(--st-critical)', '': 'var(--muted)' };
+  function stageKey(r) { return r.atlas_id ? (r.atlas_stage || 'unknown') : 'none'; }
+  function isRisk(r) { var k = stageKey(r); return k === 'at_risk' || k === 'closed'; }
+  function stageMeta(k) { return STAGES[k] || [k === 'none' ? 'No Atlas account' : String(k).replace(/_/g, ' ').replace(/^./, function (c) { return c.toUpperCase(); }), '', 'clock']; }
+  function stageBadge(r) {
+    var k = stageKey(r); if (k === 'none') return '<span class="secondary">—</span>';
+    var m = stageMeta(k); return '<span class="stage' + (m[1] ? ' st-' + m[1] : '') + '" title="Atlas account status">' + ic(m[2]) + esc(m[0]) + '</span>';
+  }
   var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   /* ---- state (URL hash keeps a filtered view shareable) ----------------- */
-  var DEFAULTS = { view: 'Package', q: '', from: '', to: '', preset: 'all', months: [], reps: [], sources: [], events: [], flags: [], tab: 'all',
+  var DEFAULTS = { view: 'Package', q: '', from: '', to: '', preset: 'all', months: [], reps: [], sources: [], events: [], flags: [], stages: [], tab: 'all',
                    showExcluded: false, sort: { k: 'date', d: -1 }, metric: 'count', tmode: 'total', tview: 'chart', repOpen: [], open: null, page: 0, size: 25 };
   var S = JSON.parse(JSON.stringify(DEFAULTS));
   try { var h = location.hash.slice(1); if (h) Object.assign(S, JSON.parse(decodeURIComponent(h))); } catch (e) {}
@@ -456,7 +504,6 @@
   var fmt = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function money(n) { return n == null ? '—' : fmt.format(n); }
   function compact(n) { return Math.abs(n) >= 1000 ? '$' + (n / 1000).toFixed(Math.abs(n) >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'k' : '$' + Math.round(n); }
-  function mval(v) { return S.metric === 'amount' ? compact(v) : String(Math.round(v)); }
   function monthLabel(ym) { if (!ym) return '—'; var p = ym.split('-'); return MONTHS[+p[1] - 1] + ' ' + p[0]; }
   function dateLabel(r) { if (r.close_date) { var p = r.close_date.split('-'); return MONTHS[+p[1] - 1] + ' ' + (+p[2]) + ', ' + p[0]; } return '~' + monthLabel(r.close_month); }
   function sortDate(r) { return r.close_date || (r.close_month ? r.close_month + '-00' : ''); }
@@ -472,7 +519,8 @@
   function shortDate(s) { var d = parse(s); return MONTHS[d.getMonth()] + ' ' + d.getDate(); }
   function toggle(arr, v) { var i = arr.indexOf(v); if (i < 0) arr.push(v); else arr.splice(i, 1); }
   function sum(rows) { return rows.reduce(function (s, r) { return s + (r.amount || 0); }, 0); }
-  function val(rows) { return S.metric === 'amount' ? sum(rows) : rows.length; }
+  function val(rows) { return S.metric === 'amount' ? sum(rows) : rows.length; }   // bar length / colour scale ('both' ranks by deals)
+  function mtxt(rows) { return S.metric === 'amount' ? compact(sum(rows)) : S.metric === 'both' ? rows.length + ' · ' + compact(sum(rows)) : String(rows.length); }
   function niceMax(m) { if (m <= 0) return 1; var p = Math.pow(10, Math.floor(Math.log10(m))), f = m / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p; }
 
   function haystack(r) {
@@ -501,7 +549,8 @@
     if (skip.indexOf('sources') < 0 && S.sources.length && S.sources.indexOf(r.source_type) < 0) return false;
     if (skip.indexOf('events') < 0 && S.events.length && S.events.indexOf(r.event) < 0) return false;
     if (skip.indexOf('flags') < 0 && S.flags.length && !(r.flags || []).some(function (f) { return S.flags.indexOf(f) >= 0; })) return false;
-    if (skip.indexOf('tab') < 0) { if (S.tab === 'needs' && r.owner !== NEEDS_REP) return false; if (S.tab === 'flagged' && !isFlagged(r)) return false; }
+    if (skip.indexOf('stages') < 0 && S.stages.length && S.stages.indexOf(stageKey(r)) < 0) return false;
+    if (skip.indexOf('tab') < 0) { if (S.tab === 'needs' && r.owner !== NEEDS_REP) return false; if (S.tab === 'flagged' && !isFlagged(r)) return false; if (S.tab === 'risk' && !isRisk(r)) return false; }
     return true;
   }
   function inView() { return ROWS.filter(function (r) { return r.type === S.view; }); }
@@ -510,7 +559,7 @@
   function tableRows() {
     var rows = inView().filter(function (r) { return matches(r) && (S.showExcluded || !r.excluded); }), k = S.sort.k, d = S.sort.d;
     var acc = { date: sortDate, client: function (r) { return (r.client || '').toLowerCase(); }, rep: function (r) { return (r.owner || '').toLowerCase(); },
-      source: function (r) { return (r.source_type + ' ' + sourceLabel(r)).toLowerCase(); }, amount: function (r) { return r.amount == null ? null : r.amount; }, where: function (r) { return (r.where || '').toLowerCase(); } }[k] || sortDate;
+      source: function (r) { return (r.source_type + ' ' + sourceLabel(r)).toLowerCase(); }, amount: function (r) { return r.amount == null ? null : r.amount; }, where: function (r) { return (r.where || '').toLowerCase(); }, stage: function (r) { var k = stageKey(r); return k in STAGE_RANK ? STAGE_RANK[k] : 7; } }[k] || sortDate;
     return rows.map(function (r, i) { return [r, i]; }).sort(function (a, b) {
       var x = acc(a[0]), y = acc(b[0]);
       if (x == null || x === '') { if (y == null || y === '') return a[1] - b[1]; return 1; }
@@ -526,8 +575,9 @@
       var rows = counted(ROWS.filter(function (r) { return r.type === v.key; }));
       return '<button type="button" class="nav-item" data-view="' + esc(v.key) + '" aria-pressed="' + (S.view === v.key) + '">' + ic(v.icon) + esc(v.label) + '<span class="n">' + rows.length + '</span></button>';
     }).join('');
-    var all = counted(inView()), needs = all.filter(function (r) { return r.owner === NEEDS_REP; }).length, fl = all.filter(isFlagged).length;
+    var all = counted(inView()), needs = all.filter(function (r) { return r.owner === NEEDS_REP; }).length, fl = all.filter(isFlagged).length, risk = all.filter(isRisk).length;
     $('nav-queues').innerHTML =
+      '<button type="button" class="nav-item" data-tab-nav="risk" aria-pressed="' + (S.tab === 'risk') + '">' + ic('alert') + 'Retention risk<span class="n">' + risk + '</span></button>' +
       '<button type="button" class="nav-item" data-tab-nav="needs" aria-pressed="' + (S.tab === 'needs') + '">' + ic('alert') + 'Needs rep<span class="n">' + needs + '</span></button>' +
       '<button type="button" class="nav-item" data-tab-nav="flagged" aria-pressed="' + (S.tab === 'flagged') + '">' + ic('flag') + 'Flagged<span class="n">' + fl + '</span></button>';
     $('crumb').textContent = (VIEWS.filter(function (v) { return v.key === S.view; })[0] || {}).label || '';
@@ -574,6 +624,7 @@
     var rows = facet([]), total = sum(rows), priced = rows.filter(function (r) { return r.amount; }), needs = rows.filter(function (r) { return r.owner === NEEDS_REP; }).length;
     var ws = weeklySeries(rows, 12), cnt = ws.weeks.map(function (w) { return (ws.buckets[w] || []).length; }), amt = ws.weeks.map(function (w) { return sum(ws.buckets[w] || []); });
     var dC = periodDelta('count'), dA = periodDelta('amount'), noun = S.view === 'Package' ? 'packages' : 'diagnoses';
+    var atRisk = rows.filter(function (r) { return stageKey(r) === 'at_risk'; }).length, closedN = rows.filter(function (r) { return stageKey(r) === 'closed'; }).length;
     var share = rows.length ? needs / rows.length : 0, sev = share <= .1 ? 'var(--accent)' : share <= .25 ? 'var(--st-warning)' : 'var(--st-critical)';
     function tile(label, value, foot, badge, extra, attrs) {
       var tag = attrs ? 'button type="button"' : 'div', close = attrs ? 'button' : 'div';
@@ -584,7 +635,8 @@
       tile('Revenue', money(total), 'initial value, ' + priced.length + ' priced', deltaBadge(dA), amt.length ? sparkSvg(amt) : '') +
       tile('Average deal', priced.length ? money(total / priced.length) : '—', priced.length + ' of ' + rows.length + ' have an amount', '', '') +
       tile('Needs a rep', needs, Math.round(share * 100) + '% unassigned — click to review', '<span class="badge solid" style="margin:0">' + ic('alert') + 'action</span>',
-        '<span class="meter" style="--meter:' + sev + ';--track:color-mix(in srgb,' + sev + ' 18%,var(--surface))" role="img" aria-label="' + Math.round(share * 100) + ' percent unassigned"><i style="width:' + (share * 100) + '%"></i></span>', 'data-tab-nav="needs"');
+        '<span class="meter" style="--meter:' + sev + ';--track:color-mix(in srgb,' + sev + ' 18%,var(--surface))" role="img" aria-label="' + Math.round(share * 100) + ' percent unassigned"><i style="width:' + (share * 100) + '%"></i></span>', 'data-tab-nav="needs"') +
+      tile('Retention watch', atRisk + closedN, atRisk + ' at risk · ' + closedN + ' closed in Atlas — click to review', '<span class="stage st-serious">' + ic('alert') + 'retention</span>', '', 'data-tab-nav="risk"');
   }
 
   /* ---- filters ------------------------------------------------------------ */
@@ -598,6 +650,10 @@
       var c = rr.filter(function (r) { return r.owner === n; }).length;
       return '<button type="button" class="chip" data-rep="' + esc(n) + '" aria-pressed="' + (S.reps.indexOf(n) >= 0) + '"><span class="sw" style="background:' + REP_VAR[n] + '"></span>' + esc(n) + '<span class="n">' + c + '</span></button>';
     }).join('');
+    var sf = facet(['stages']), sc = {}; sf.forEach(function (r) { var k = stageKey(r); sc[k] = (sc[k] || 0) + 1; });
+    $('stage-chips').innerHTML = STAGE_ORDER.concat(['unknown', 'none']).filter(function (k) { return sc[k] || S.stages.indexOf(k) >= 0; }).map(function (k) {
+      var m = stageMeta(k); return '<button type="button" class="chip" data-stage-f="' + k + '" aria-pressed="' + (S.stages.indexOf(k) >= 0) + '"><span class="sw" style="background:' + STAGE_VAR[m[1]] + ';border-radius:50%"></span>' + esc(m[0]) + '<span class="n">' + (sc[k] || 0) + '</span></button>';
+    }).join('') || '<span class="empty-note">no Atlas accounts in view</span>';
     var fr = facet(['flags']), counts = {}; fr.forEach(function (r) { (r.flags || []).forEach(function (f) { counts[f] = (counts[f] || 0) + 1; }); });
     $('flag-chips').innerHTML = Object.keys(FLAGS).filter(function (f) { return counts[f] || S.flags.indexOf(f) >= 0; }).map(function (f) {
       return '<button type="button" class="chip" title="' + esc(FLAGS[f][2]) + '" data-flag="' + f + '" aria-pressed="' + (S.flags.indexOf(f) >= 0) + '">' + FLAGS[f][0] + '<span class="n">' + (counts[f] || 0) + '</span></button>';
@@ -625,9 +681,11 @@
   var hoverIdx = null;
   function renderTrend() {
     var host = $('trend'), rows = facet([]), ws = weeklySeries(rows), undated = rows.filter(function (r) { return !r.close_date; }).length;
-    var seriesDefs = S.tmode === 'rep' ? REPS.concat([NEEDS_REP]).map(function (n) { return { name: n, color: REP_VAR[n] }; }) : [{ name: S.metric === 'amount' ? 'Revenue' : (S.view === 'Package' ? 'Packages' : 'Diagnoses'), color: 'var(--accent)' }];
-    $('trend-title').textContent = (S.metric === 'amount' ? 'Revenue' : (S.view === 'Package' ? 'Packages' : 'Diagnoses')) + ' closed per week';
-    $('trend-desc').textContent = ws.weeks.length ? shortDate(ws.weeks[0]) + ' – ' + shortDate(addDays(ws.weeks[ws.weeks.length - 1], 6)) + ' · weeks start Monday' : 'No dated deals in this view';
+    var noun = S.view === 'Package' ? 'Packages' : 'Diagnoses';
+    var seriesDefs = S.tmode === 'rep' ? REPS.concat([NEEDS_REP]).map(function (n) { return { name: n, color: REP_VAR[n] }; }) : [{ name: noun, color: 'var(--accent)' }];
+    var kinds = S.metric === 'both' ? ['count', 'amount'] : [S.metric];
+    $('trend-title').textContent = S.metric === 'both' ? noun + ' and revenue closed per week' : (S.metric === 'amount' ? 'Revenue' : noun) + ' closed per week';
+    $('trend-desc').textContent = ws.weeks.length ? shortDate(ws.weeks[0]) + ' – ' + shortDate(addDays(ws.weeks[ws.weeks.length - 1], 6)) + ' · weeks start Monday' + (S.metric === 'both' ? ' · two charts, each with its own scale' : '') : 'No dated deals in this view';
     $('trend-note').textContent = undated ? undated + ' deal' + (undated === 1 ? '' : 's') + ' dated by billing month only aren’t on this timeline — they’re in the table below.' : '';
     document.querySelectorAll('[data-tmode]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.tmode === S.tmode)); });
     document.querySelectorAll('[data-tview]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.tview === S.tview)); });
@@ -638,8 +696,8 @@
 
     var data = ws.weeks.map(function (w) {
       var b = ws.buckets[w] || [];
-      var seg = seriesDefs.map(function (s) { var sub = S.tmode === 'rep' ? b.filter(function (r) { return r.owner === s.name; }) : b; return { name: s.name, color: s.color, v: val(sub), n: sub.length, a: sum(sub) }; });
-      return { w: w, seg: seg, total: S.tmode === 'rep' ? seg.reduce(function (t, s) { return t + s.v; }, 0) : seg[0].v, n: b.length, a: sum(b) };
+      var seg = seriesDefs.map(function (s) { var sub = S.tmode === 'rep' ? b.filter(function (r) { return r.owner === s.name; }) : b; return { name: s.name, color: s.color, n: sub.length, a: sum(sub) }; });
+      return { w: w, seg: seg, n: b.length, a: sum(b) };
     });
     if (S.tview === 'table') {
       var t = document.createElement('div'); t.className = 'table-view';
@@ -647,27 +705,37 @@
       data.forEach(function (d) { tb += '<tr><td>' + esc(shortDate(d.w)) + '</td>' + (S.tmode === 'rep' ? d.seg.map(function (s) { return '<td>' + esc(S.metric === 'amount' ? money(s.a) : s.n) + '</td>'; }).join('') : '') + '<td>' + d.n + '</td><td>' + esc(money(d.a)) + '</td></tr>'; });
       t.innerHTML = tb + '</tbody></table>'; host.appendChild(t); return;
     }
-
-    var W = Math.max(320, host.clientWidth || 640), H = 280, m = { l: 44, r: 14, t: 16, b: 26 }, pw = W - m.l - m.r, ph = H - m.t - m.b, n = data.length, band = pw / n;
-    var maxV = niceMax(Math.max.apply(null, data.map(function (d) { return d.total; }).concat([1])));
+    // "Both" = two small charts, one per measure, each on its OWN axis. Never one chart with two y-scales (that invents correlations).
+    kinds.forEach(function (kind) {
+      var wrap = document.createElement('div'); wrap.className = 'chart-sub';
+      if (kinds.length > 1) { var lab = document.createElement('div'); lab.className = 'sub-label'; lab.textContent = kind === 'amount' ? 'Revenue per week' : noun + ' per week'; wrap.appendChild(lab); }
+      host.appendChild(wrap);
+      drawChart(wrap, data, kind, kinds.length > 1 ? 190 : 280);
+    });
+  }
+  function drawChart(host, data, kind, H) {
+    var vOf = function (s) { return kind === 'amount' ? s.a : s.n; }, fk = function (v) { return kind === 'amount' ? compact(v) : String(Math.round(v)); };
+    var tot = function (d) { return S.tmode === 'rep' ? d.seg.reduce(function (t, s) { return t + vOf(s); }, 0) : vOf(d.seg[0]); };
+    var W = Math.max(320, host.clientWidth || 640), m = { l: 44, r: 14, t: 16, b: 26 }, pw = W - m.l - m.r, ph = H - m.t - m.b, n = data.length, band = pw / n;
+    var maxV = niceMax(Math.max.apply(null, data.map(tot).concat([1])));
     var y = function (v) { return m.t + ph - (v / maxV) * ph; }, xc = function (i) { return m.l + band * i + band / 2; };
-    var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'plot', role: 'img', 'aria-label': $('trend-title').textContent, tabindex: '0' });
+    var svg = el('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'plot', role: 'img', 'aria-label': $('trend-title').textContent + (kind === 'amount' ? ' (revenue)' : ' (deals)'), tabindex: '0' });
     [0, .25, .5, .75, 1].forEach(function (f) {
       var v = maxV * f, yy = y(v);
       svg.appendChild(el('line', { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: f === 0 ? 'var(--axis)' : 'var(--grid)', 'stroke-width': 1 }));
-      var tx = el('text', { x: m.l - 8, y: yy + 4, 'text-anchor': 'end' }); tx.textContent = S.metric === 'amount' ? compact(v) : (Math.round(v * 10) / 10); svg.appendChild(tx);
+      var tx = el('text', { x: m.l - 8, y: yy + 4, 'text-anchor': 'end' }); tx.textContent = kind === 'amount' ? compact(v) : (Math.round(v * 10) / 10); svg.appendChild(tx);
     });
     var lastMonth = '';
     data.forEach(function (d, i) { var mo = d.w.slice(0, 7); if (mo !== lastMonth) { lastMonth = mo; var tx = el('text', { x: xc(i), y: H - 8, 'text-anchor': i === 0 ? 'start' : 'middle' }); tx.textContent = shortDate(d.w); svg.appendChild(tx); } });
     var hover = el('rect', { y: m.t, height: ph, width: band, fill: 'var(--fill)', opacity: 0 }); svg.appendChild(hover);
-    var mx = 0, mi = 0; data.forEach(function (d, i) { if (d.total > mx) { mx = d.total; mi = i; } });
+    var mx = 0, mi = 0; data.forEach(function (d, i) { var tv = tot(d); if (tv > mx) { mx = tv; mi = i; } });
     if (S.tmode === 'rep') {
       var bw = Math.min(24, band - 6);
       data.forEach(function (d, i) {
-        var acc = 0, lastIdx = -1; d.seg.forEach(function (s, k) { if (s.v > 0) lastIdx = k; });
+        var acc = 0, lastIdx = -1; d.seg.forEach(function (s, k) { if (vOf(s) > 0) lastIdx = k; });
         d.seg.forEach(function (s, k) {
-          if (s.v <= 0) return;
-          var y0 = y(acc), y1 = y(acc + s.v), hgt = (y0 - y1) - 2; acc += s.v;   // 2px surface gap between segments
+          var sv = vOf(s); if (sv <= 0) return;
+          var y0 = y(acc), y1 = y(acc + sv), hgt = (y0 - y1) - 2; acc += sv;   // 2px surface gap between segments
           if (hgt < 1) return;
           var yy = y0 - hgt, x0 = xc(i) - bw / 2, rx = k === lastIdx ? Math.min(4, hgt) : 0;
           var p = rx ? 'M' + x0 + ' ' + (yy + hgt) + 'V' + (yy + rx) + 'Q' + x0 + ' ' + yy + ' ' + (x0 + rx) + ' ' + yy + 'H' + (x0 + bw - rx) + 'Q' + (x0 + bw) + ' ' + yy + ' ' + (x0 + bw) + ' ' + (yy + rx) + 'V' + (yy + hgt) + 'Z'
@@ -675,15 +743,15 @@
           svg.appendChild(el('path', { d: p, fill: s.color }));
         });
       });
-      if (mx > 0) { var lt = el('text', { x: xc(mi), y: y(mx) - 6, 'text-anchor': 'middle', class: 'val' }); lt.textContent = mval(mx); svg.appendChild(lt); }
+      if (mx > 0) { var lt = el('text', { x: xc(mi), y: y(mx) - 6, 'text-anchor': 'middle', class: 'val' }); lt.textContent = fk(mx); svg.appendChild(lt); }
     } else {
-      var pts = data.map(function (d, i) { return [xc(i), y(d.total)]; });
+      var pts = data.map(function (d, i) { return [xc(i), y(tot(d))]; });
       var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' ');
       svg.appendChild(el('path', { d: line + ' L' + pts[n - 1][0].toFixed(1) + ' ' + (m.t + ph) + ' L' + pts[0][0].toFixed(1) + ' ' + (m.t + ph) + ' Z', fill: 'var(--accent)', opacity: .1 }));
       svg.appendChild(el('path', { d: line, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }));
       var lp = pts[n - 1]; svg.appendChild(el('circle', { cx: lp[0], cy: lp[1], r: 4, fill: 'var(--accent)', stroke: 'var(--surface)', 'stroke-width': 2 }));
-      var lt2 = el('text', { x: lp[0], y: lp[1] - 10, 'text-anchor': n > 1 ? 'end' : 'middle', class: 'val' }); lt2.textContent = mval(data[n - 1].total); svg.appendChild(lt2);
-      if (mx > 0 && mi !== n - 1) { var lt3 = el('text', { x: pts[mi][0], y: pts[mi][1] - 8, 'text-anchor': 'middle', class: 'val' }); lt3.textContent = mval(mx); svg.appendChild(lt3); }
+      var lt2 = el('text', { x: lp[0], y: lp[1] - 10, 'text-anchor': n > 1 ? 'end' : 'middle', class: 'val' }); lt2.textContent = fk(tot(data[n - 1])); svg.appendChild(lt2);
+      if (mx > 0 && mi !== n - 1) { var lt3 = el('text', { x: pts[mi][0], y: pts[mi][1] - 8, 'text-anchor': 'middle', class: 'val' }); lt3.textContent = fk(mx); svg.appendChild(lt3); }
     }
     var cross = el('line', { y1: m.t, y2: m.t + ph, stroke: 'var(--ink-2)', 'stroke-width': 1, opacity: 0 }); svg.appendChild(cross);
     host.appendChild(svg);
@@ -692,10 +760,10 @@
     function at(i, px, py) {
       i = Math.max(0, Math.min(n - 1, i)); hoverIdx = i; var d = data[i], scale = svg.getBoundingClientRect().width / W;
       hover.setAttribute('x', m.l + band * i); hover.setAttribute('opacity', S.tmode === 'rep' ? 1 : 0); cross.setAttribute('x1', xc(i)); cross.setAttribute('x2', xc(i)); cross.setAttribute('opacity', S.tmode === 'rep' ? 0 : 1);
-      var rowsT = S.tmode === 'rep' ? d.seg.filter(function (s) { return s.n > 0; }).map(function (s) { return { color: s.color, label: s.name, value: S.metric === 'amount' ? money(s.a) : String(s.n) }; })
+      var rowsT = S.tmode === 'rep' ? d.seg.filter(function (s) { return s.n > 0; }).map(function (s) { return { color: s.color, label: s.name, value: kind === 'amount' ? money(s.a) : String(s.n) }; })
                                     : [{ color: 'var(--accent)', label: 'Deals', value: String(d.n) }, { color: 'var(--s-none)', label: 'Revenue', value: money(d.a) }];
-      if (S.tmode === 'rep' && rowsT.length) rowsT.push({ label: 'Total', value: S.metric === 'amount' ? money(d.a) : String(d.n) });
-      showTip(host, tip, px == null ? xc(i) * scale : px, py == null ? y(d.total) * scale : py, 'Week of ' + shortDate(d.w) + ' – ' + shortDate(addDays(d.w, 6)), rowsT.length ? rowsT : [{ label: 'No deals', value: '0' }]);
+      if (S.tmode === 'rep' && rowsT.length) rowsT.push({ label: 'Total', value: kind === 'amount' ? money(d.a) : String(d.n) });
+      showTip(host, tip, px == null ? xc(i) * scale : px, py == null ? y(tot(d)) * scale : py, 'Week of ' + shortDate(d.w) + ' – ' + shortDate(addDays(d.w, 6)), rowsT.length ? rowsT : [{ label: 'No deals', value: '0' }]);
     }
     svg.addEventListener('pointermove', function (e) { var r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * (W / r.width); at(Math.floor((px - m.l) / band), e.clientX - r.left, e.clientY - r.top); });
     svg.addEventListener('pointerleave', off); svg.addEventListener('blur', off);
@@ -706,8 +774,8 @@
   /* ---- bar-list rollups (single series: one colour; clicking filters) ---- */
   function barRow(attrs, labelHtml, rows, max, o) {
     o = o || {}; var pct = max ? Math.max(0, val(rows) / max * 100) : 0;
-    return '<button type="button" class="bar-row' + (o.sub ? ' sub' : '') + (o.none ? ' none' : '') + (o.dim ? ' dim' : '') + '" ' + attrs + ' aria-pressed="' + !!o.pressed + '"><span class="bar-label">' + labelHtml +
-      '</span><span class="bar"><i style="width:' + pct + '%"></i></span><span class="bar-val">' + mval(val(rows)) + '</span></button>';
+    return '<button type="button" class="bar-row' + (S.metric === 'both' ? ' both' : '') + (o.sub ? ' sub' : '') + (o.none ? ' none' : '') + (o.dim ? ' dim' : '') + '" ' + attrs + ' aria-pressed="' + !!o.pressed + '"><span class="bar-label">' + labelHtml +
+      '</span><span class="bar"><i style="width:' + pct + '%"></i></span><span class="bar-val">' + mtxt(rows) + '</span></button>';
   }
   function renderSources() {
     var sr = facet(['sources']), er = facet(['events']), ev = {}; er.forEach(function (r) { if (r.event) ev[r.event] = 1; });
@@ -721,6 +789,14 @@
       }
       return html;
     }).join('');
+  }
+  function renderStages() {
+    var rr = facet(['stages']), keys = STAGE_ORDER.concat(['unknown', 'none']).filter(function (k) { return rr.some(function (r) { return stageKey(r) === k; }) || S.stages.indexOf(k) >= 0; });
+    var max = Math.max.apply(null, [0].concat(keys.map(function (k) { return val(rr.filter(function (r) { return stageKey(r) === k; })); })));
+    $('stages').innerHTML = keys.map(function (k) {
+      var m = stageMeta(k), sub = rr.filter(function (r) { return stageKey(r) === k; });
+      return barRow('data-stage-f="' + k + '"', '<span style="width:8px;height:8px;border-radius:50%;background:' + STAGE_VAR[m[1]] + ';flex:none"></span>' + esc(m[0]), sub, max, { title: m[0], pressed: S.stages.indexOf(k) >= 0, dim: S.stages.length && S.stages.indexOf(k) < 0 });
+    }).join('') || '<div class="empty-note">No deals in this view.</div>';
   }
   function renderReps() {
     var rr = facet(['reps']), names = REPS.concat([NEEDS_REP]), rmax = Math.max.apply(null, [0].concat(names.map(function (n) { return val(rr.filter(function (r) { return r.owner === n; })); })));
@@ -740,22 +816,22 @@
     if (!months.length) { $('heat').innerHTML = '<div class="no-rows">No deals in this view.</div>'; return; }
     var cell = {}, max = 0; names.forEach(function (n) { months.forEach(function (mo) { var sub = rows.filter(function (r) { return r.owner === n && r.close_month === mo; }); cell[n + '|' + mo] = sub; max = Math.max(max, val(sub)); }); });
     var cols = 'minmax(128px,1.4fr) repeat(' + months.length + ', minmax(44px,1fr)) 56px';
-    var html = '<div class="hm" style="grid-template-columns:' + cols + '" role="table" aria-label="Closed deals by rep and month"><div></div>' +
+    var html = '<div class="hm' + (S.metric === 'both' ? ' both' : '') + '" style="grid-template-columns:' + cols + '" role="table" aria-label="Closed deals by rep and month"><div></div>' +
       months.map(function (mo) { return '<button type="button" class="h" data-month="' + mo + '" aria-pressed="' + (S.months.indexOf(mo) >= 0) + '">' + MONTHS[+mo.slice(5) - 1] + '</button>'; }).join('') + '<div class="h">Total</div>';
     names.forEach(function (n) {
       html += '<button type="button" class="h rl" data-repbar="' + esc(n) + '" aria-pressed="' + (S.reps.indexOf(n) >= 0) + '"><span style="width:8px;height:8px;border-radius:2px;background:' + REP_VAR[n] + ';flex:none"></span>' + esc(n) + '</button>';
       months.forEach(function (mo) {
         var sub = cell[n + '|' + mo], v = val(sub), f = max ? v / max : 0, pct = v ? Math.round(14 + f * 86) : 0, pressed = S.reps.length === 1 && S.reps[0] === n && S.months.length === 1 && S.months[0] === mo;
-        html += '<button type="button" class="cell" data-hm-rep="' + esc(n) + '" data-hm-month="' + mo + '" aria-pressed="' + pressed + '" aria-label="' + esc(n) + ', ' + monthLabel(mo) + ': ' + mval(v) + '" style="background:' + (v ? 'color-mix(in oklab, var(--accent) ' + pct + '%, var(--surface))' : 'var(--fill)') + ';color:' + (pct > 58 ? '#fff' : 'var(--ink)') + '">' + (v ? mval(v) : '·') + '</button>';
+        html += '<button type="button" class="cell" data-hm-rep="' + esc(n) + '" data-hm-month="' + mo + '" aria-pressed="' + pressed + '" aria-label="' + esc(n) + ', ' + monthLabel(mo) + ': ' + mtxt(sub) + '" style="background:' + (v ? 'color-mix(in oklab, var(--accent) ' + pct + '%, var(--surface))' : 'var(--fill)') + ';color:' + (pct > 58 ? '#fff' : 'var(--ink)') + '">' + (v ? (S.metric === 'both' ? '<b>' + sub.length + '</b><small>' + compact(sum(sub)) + '</small>' : mtxt(sub)) : '·') + '</button>';
       });
-      html += '<div class="tot">' + mval(val(rows.filter(function (r) { return r.owner === n; }))) + '</div>';
+      html += '<div class="tot">' + mtxt(rows.filter(function (r) { return r.owner === n; })) + '</div>';
     });
     $('heat').innerHTML = html + '</div>';
   }
 
   /* ---- table ---------------------------------------------------------------- */
   function cols() {
-    var c = [['date', 'Closed'], ['client', S.view === 'Package' ? 'Client' : 'Name'], ['rep', 'Rep'], ['source', 'Source']];
+    var c = [['date', 'Closed'], ['client', S.view === 'Package' ? 'Client' : 'Name'], ['stage', 'Atlas status'], ['rep', 'Rep'], ['source', 'Source']];
     if (S.view === 'Digital Diagnosis') c.push(['where', 'Where']);
     c.push(['amount', S.view === 'Package' ? 'Initial value' : 'Value']); c.push([null, 'Signals']); return c;
   }
@@ -773,7 +849,7 @@
   }
   function renderTabs() {
     var base = counted(inView()).filter(function (r) { return matches(r, ['tab']); });
-    var defs = [['all', 'All', base.length], ['needs', 'Needs rep', base.filter(function (r) { return r.owner === NEEDS_REP; }).length], ['flagged', 'Flagged', base.filter(isFlagged).length]];
+    var defs = [['all', 'All', base.length], ['needs', 'Needs rep', base.filter(function (r) { return r.owner === NEEDS_REP; }).length], ['flagged', 'Flagged', base.filter(isFlagged).length], ['risk', 'At risk', base.filter(isRisk).length]];
     $('tabs').innerHTML = defs.map(function (d) { return '<button type="button" data-tab="' + d[0] + '" aria-pressed="' + (S.tab === d[0]) + '">' + d[1] + '<span class="n">' + d[2] + '</span></button>'; }).join('');
   }
   function renderTable() {
@@ -787,9 +863,9 @@
     $('grid').querySelector('tbody').innerHTML = rows.map(function (r) {
       var open = S.open === r.key;
       var src = '<span class="badge solid">' + esc(r.source_type) + '</span>' + (sourceLabel(r) ? '<div class="secondary">' + esc(sourceLabel(r)) + '</div>' : '');
-      var html = '<tr class="row' + (open ? ' open' : '') + (r.excluded ? ' excluded' : '') + '" data-key="' + esc(r.key) + '" tabindex="0" aria-expanded="' + open + '">' +
+      var html = '<tr class="row' + (open ? ' open' : '') + (r.excluded ? ' excluded' : '') + '" data-stage="' + stageKey(r) + '" data-key="' + esc(r.key) + '" tabindex="0" aria-expanded="' + open + '">' +
         '<td class="date">' + esc(dateLabel(r)) + '</td><td><div class="primary">' + esc(r.client) + '</div>' + (r.contact && r.contact !== r.client ? '<div class="secondary">' + esc(r.contact) + '</div>' : '') + '</td>' +
-        '<td>' + repCell(r) + '</td><td>' + src + '</td>' + (S.view === 'Digital Diagnosis' ? '<td class="secondary">' + esc(r.where || '') + '</td>' : '') +
+        '<td>' + stageBadge(r) + '</td><td>' + repCell(r) + '</td><td>' + src + '</td>' + (S.view === 'Digital Diagnosis' ? '<td class="secondary">' + esc(r.where || '') + '</td>' : '') +
         '<td class="num amt">' + money(r.amount) + '<span class="basis">' + esc(r.amount_basis || '') + '</span></td><td>' + flagBadges(r) + '</td></tr>';
       return open ? html + drawer(r, c.length) : html;
     }).join('') || '<tr><td colspan="' + c.length + '" class="no-rows">No deals match these filters. <button class="linkish" data-reset>Reset filters</button></td></tr>';
@@ -821,7 +897,7 @@
       fact('Rep basis', esc(r.owner_basis) + (r.auto_owner ? ' <span class="secondary">(pipeline said ' + esc(r.auto_owner) + ')</span>' : '')) +
       fact('Amount', money(r.amount) + ' <span class="secondary">' + esc(r.amount_basis || '') + '</span>') + fact('Atlas base amount', r.base_amount ? money(r.base_amount) + '/mo' : '') +
       fact('Billing-sheet first charge', r.sheet_first_charge ? money(r.sheet_first_charge) : '') +
-      fact('Atlas', r.atlas_id ? esc(r.atlas_stage || '') + (r.atlas_created ? ' · created ' + esc(r.atlas_created) : '') + (r.atlas_era ? ' · Atlas-era sale' : '') : 'No Atlas account') + fact('Onboarding', esc(ob)) +
+      fact('Atlas', r.atlas_id ? stageBadge(r) + (r.atlas_created ? ' · created ' + esc(r.atlas_created) : '') + (r.atlas_era ? ' · Atlas-era sale' : '') : 'No Atlas account') + fact('Onboarding', esc(ob)) +
       fact('GHL opp', r.ghl_opp ? esc(r.ghl_status || '') + (r.ghl_won_date ? ' · ' + esc(r.ghl_won_date) : '') : '') + fact('GHL assignee', r.ghl_assigned ? esc(r.ghl_assigned) + (r.noncore_assignee ? ' (not credited)' : '') : '') +
       fact('Source detail', esc(r.source_detail || '')) + fact('Referral partner', esc(r.referral_partner)) + fact('Call evidence', score) + fact('Zoom matches', r.zoom_calls ? String(r.zoom_calls) : '') + fact('First seen in audit', esc(r.first_seen)) + '</dl>' +
       (tags ? '<h4>GHL tags</h4><div>' + tags + '</div>' : '') + (zoom ? '<h4>Zoom transcripts matched</h4><ul class="evidence">' + zoom + '</ul>' : '') +
@@ -836,7 +912,7 @@
   }
 
   /* ---- render + actions --------------------------------------------------------- */
-  function renderAll() { persist(); renderNav(); renderTiles(); renderFilters(); renderTrend(); renderSources(); renderHeat(); renderReps(); renderTabs(); renderTable(); }
+  function renderAll() { persist(); renderNav(); renderTiles(); renderFilters(); renderTrend(); renderSources(); renderStages(); renderHeat(); renderReps(); renderTabs(); renderTable(); }
   function who() { var n = ''; try { n = localStorage.getItem('salesAuditName') || ''; } catch (e) {} if (!n) { n = (prompt('Your name, for the change log:') || '').trim(); if (n) { try { localStorage.setItem('salesAuditName', n); } catch (e) {} } } return n || null; }
   function reload() { return fetch('/reports/sales-audit/latest' + (IS_LATEST ? '' : '?run_id=' + RUN_ID)).then(function (r) { return r.json(); }).then(function (j) { ROWS = j.rows; renderAll(); }); }
   function saveOverride(key, body, statusEl) {
@@ -857,7 +933,7 @@
   function resetFilters() { var keep = { view: S.view, sort: S.sort, metric: S.metric, tmode: S.tmode, tview: S.tview, size: S.size }; S = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), keep); $('q').value = ''; renderAll(); }
 
   document.addEventListener('click', function (e) {
-    var t = e.target.closest('[data-view],[data-tab-nav],[data-tab],[data-preset],[data-rep],[data-flag],[data-month],[data-hm-rep],[data-repbar],[data-source],[data-event],[data-twisty],[data-open],[data-metric],[data-tmode],[data-tview],[data-sort],[data-page],[data-reset],[data-clear],tr.row');
+    var t = e.target.closest('[data-view],[data-tab-nav],[data-tab],[data-preset],[data-rep],[data-flag],[data-stage-f],[data-month],[data-hm-rep],[data-repbar],[data-source],[data-event],[data-twisty],[data-open],[data-metric],[data-tmode],[data-tview],[data-sort],[data-page],[data-reset],[data-clear],tr.row');
     if (!t) return;
     var keepPage = false;
     if (t.dataset.view) { S.view = t.dataset.view; S.open = null; S.events = []; S.sources = []; S.tab = 'all'; }
@@ -868,6 +944,7 @@
     else if (t.dataset.rep) toggle(S.reps, t.dataset.rep);
     else if (t.dataset.repbar) toggle(S.reps, t.dataset.repbar);
     else if (t.dataset.flag) toggle(S.flags, t.dataset.flag);
+    else if (t.dataset.stageF) toggle(S.stages, t.dataset.stageF);
     else if (t.dataset.month) toggle(S.months, t.dataset.month);
     else if (t.dataset.source) toggle(S.sources, t.dataset.source);
     else if (t.dataset.event) toggle(S.events, t.dataset.event);
@@ -915,9 +992,9 @@
   $('show-excluded').addEventListener('change', function (e) { S.showExcluded = e.target.checked; S.page = 0; renderAll(); });
   $('reset').addEventListener('click', resetFilters);
   $('export').addEventListener('click', function () {
-    var rows = tableRows(), head = ['Type', 'Client', 'Contact', 'Closed', 'Rep', 'Rep basis', 'Source', 'Event / partner', 'Amount', 'Amount basis', 'Flags'];
+    var rows = tableRows(), head = ['Type', 'Client', 'Contact', 'Closed', 'Rep', 'Rep basis', 'Source', 'Event / partner', 'Amount', 'Amount basis', 'Flags', 'Atlas status'];
     var q = function (v) { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-    var lines = [head.join(',')].concat(rows.map(function (r) { return [r.type, r.client, r.contact, r.close_date || r.close_month, r.owner, r.owner_basis, r.source_type, sourceLabel(r), r.amount, r.amount_basis, (r.flags || []).join('|')].map(q).join(','); }));
+    var lines = [head.join(',')].concat(rows.map(function (r) { return [r.type, r.client, r.contact, r.close_date || r.close_month, r.owner, r.owner_basis, r.source_type, sourceLabel(r), r.amount, r.amount_basis, (r.flags || []).join('|'), r.atlas_id ? (r.atlas_stage || '') : ''].map(q).join(','); }));
     var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
     a.download = 'sales-audit-' + S.view.toLowerCase().replace(/\s+/g, '-') + '-' + todayISO() + '.csv'; a.click(); URL.revokeObjectURL(a.href);
   });
