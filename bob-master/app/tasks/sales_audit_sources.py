@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import re
 from typing import Any
 
 from sqlalchemy import func
@@ -28,68 +27,6 @@ logger = logging.getLogger(__name__)
 
 # Far enough back to cover every deal's pre-close sales calls.
 _ZOOM_LOOKBACK_START = dt.datetime(2026, 4, 1)
-
-
-# ------------------------------------------------------------------- billing
-
-_MONEY = re.compile(r"-?[\d,]+(?:\.\d+)?")
-
-
-def parse_money(cell: str | None) -> float | None:
-    if not cell:
-        return None
-    m = _MONEY.search(cell.replace("$", ""))
-    if not m:
-        return None
-    try:
-        return float(m.group(0).replace(",", ""))
-    except ValueError:
-        return None
-
-
-def parse_billing_rows(header: list[str], rows: list[list[str]]) -> tuple[list[dict], int]:
-    """(billing records, count of cells dropped as implausible). `header` is
-    [key header, *selected headers]; rows align to it. Cells above
-    MAX_PLAUSIBLE_MONTHLY_CHARGE are dropped and only COUNTED -- never
-    logged or returned, since the one seen in the prototype's snapshot was a
-    16-digit card-number-shaped value."""
-    month_re = re.compile(cfg.BILLING_MONTH_HEADER_REGEX)
-    retainer_re = re.compile(cfg.BILLING_RETAINER_HEADER_REGEX, re.I)
-    out, dropped = [], 0
-    for row in rows:
-        name = (row[0] if row else "").strip()
-        if not name:
-            continue
-        months: dict[str, float] = {}
-        retainer = None
-        for h, cell in zip(header[1:], row[1:]):
-            if month_re.match(h):
-                amt = parse_money(cell)
-                if amt is None or amt <= 0:
-                    continue
-                if amt > cfg.MAX_PLAUSIBLE_MONTHLY_CHARGE:
-                    dropped += 1
-                    continue
-                months[h] = amt
-            elif retainer_re.match(h) and cell:
-                retainer = cell.strip()
-        out.append({"account": name, "retainer": retainer, "months": months})
-    return out, dropped
-
-
-def read_billing(drive) -> tuple[list[dict], dict]:
-    """Billing sheet -> [{account, retainer, months{'October 2026': 3500.0}}].
-    Reads ONLY column A + month/retainer columns (see
-    GoogleDriveClient.read_sheet_columns_by_header for why)."""
-    tab = drive.tab_title_for_gid(cfg.BILLING_SHEET_ID, cfg.BILLING_SHEET_GID)
-    month_re = re.compile(cfg.BILLING_MONTH_HEADER_REGEX)
-    retainer_re = re.compile(cfg.BILLING_RETAINER_HEADER_REGEX, re.I)
-    header, rows = drive.read_sheet_columns_by_header(
-        cfg.BILLING_SHEET_ID, tab, lambda h: bool(month_re.match(h) or retainer_re.match(h.strip())))
-    records, dropped = parse_billing_rows(header, rows)
-    if dropped:
-        logger.warning("sales-audit: dropped %d implausible billing cell(s) above $%s", dropped, cfg.MAX_PLAUSIBLE_MONTHLY_CHARGE)
-    return records, {"columns_read": len(header) - 1, "rows": len(records), "implausible_cells_dropped": dropped}
 
 
 # ----------------------------------------------------------------------- GHL

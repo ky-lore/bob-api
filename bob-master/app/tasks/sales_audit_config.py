@@ -23,14 +23,6 @@ AUDIT_START = "2026-06-01"
 ATLAS_ERA_START = "2026-07-01"
 ATLAS_TIMEZONE = "America/Los_Angeles"
 
-# Atlas billing.introPricing = "on the first-two-months rate ($1,000 off any
-# tier)" (Client.js). The initial monthly charge is baseAmount minus this.
-INTRO_DISCOUNT = 1000
-# Atlas initial value vs the billing sheet's first charge: differences up to
-# this are rounding noise; beyond it the row is flagged amount_mismatch.
-# Informational only -- the sheet's first charge can legitimately be prorated.
-AMOUNT_TOLERANCE = 1.0
-
 # REP ROSTER (Bob, 2026-10-15): the roster is whatever Atlas says -- GET /api/users/sales-reps (active users in the
 # sales department), pulled on every run and stored in the run payload. "The endpoint is the level of truth":
 # no exclusion list, no hardcoded names/IDs. GHL users and Zoom hosts are matched to roster reps by EMAIL (name as a
@@ -49,42 +41,13 @@ NEEDS_REP = "Needs rep"
 GHL_ADV_MASTER_PIPELINE = "1rySFshGqxtuO5hF2z2f"
 GHL_DD_PIPELINES = ("EN99INlGiYdView6PvaR", "6hhMLoGLThgmOAr4bTVG")  # RAW Houston, Dispatch 01
 
-# A GHL won date of exactly this day is a bulk backfill (~35 deals) -- not a
-# real close date, ignored (BRIEF §3.3).
-GHL_BACKFILL_DATE = "2026-06-01"
-
 # Digital Diagnosis is the ~$499/$500 entry product.
 DD_PRICES = (499, 499.99, 500)
 
-# Billing-sheet noise that is not a real client (BRIEF §4). Compared against
-# both the raw account name (lowercased) and its normalized form.
-EXCLUDED_BILLING_ACCOUNTS = {
-    "declined", "charged", "dd", "dispatch", "digital diagnosis", "one off charges",
-    "billing testing 2", "mclaren racing", "palm valley insurance sponsor", "embroidery",
-    "enbroidery", "el barber", "luis barber barbershop", "jimmy service pros",
-    "first rate restoration",
-}
 # Atlas-only accounts that are test/sponsor records, never a sale.
 EXCLUDED_ATLAS_ACCOUNTS = {
     "one off charges", "digital diagnosis", "billing testing 2", "red bull racing", "mclaren racing",
 }
-
-# Any single monthly charge above this is treated as a bad cell, not revenue.
-# Added after a 16-digit card-number-shaped value turned up in the prototype's
-# billing snapshot's month columns -- dropped (and logged by the reader)
-# rather than summed into first-charge revenue.
-MAX_PLAUSIBLE_MONTHLY_CHARGE = 50_000
-
-# Billing sheet (BRIEF §2). The sheet ALSO holds full card numbers/CVVs in
-# columns C-G -- the reader (sales_audit_sources.read_billing) is allowlist
-# based on header, never a blanket A:Z read, so those can never be fetched.
-BILLING_SHEET_ID = "1hHDkosxPJWghyxa_ovjDray3GRmqGX1dlxkee9QEJDU"
-BILLING_SHEET_GID = 0
-# Header allowlist for the billing sheet reader: a month column ("October 2024")
-# or the retainer column (sheet header is spelled "Rentainer"). Anything else
-# -- notably the card number/CVV columns -- is never requested.
-BILLING_MONTH_HEADER_REGEX = r"^[A-Z][a-z]+ \d{4}$"
-BILLING_RETAINER_HEADER_REGEX = r"^r(e|en)tainer$"
 
 # Event tag fragments -> named event, checked IN ORDER (first fragment found
 # in the lowercased tag wins), so more specific fragments come first.

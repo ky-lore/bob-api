@@ -1,25 +1,18 @@
 """
-The sales audit's blend (2026-10-15) -- a port of the one-off prototype's
-blend2.py + the dedupe/merge step that lived in its report.py, restructured
-as pure functions so the rules in the handoff BRIEF §3-5 are unit-testable
-and re-runnable idempotently every day.
+The sales audit's blend (2026-10-15): pure functions, no I/O. Everything a rule needs from outside (GHL call
+history for a contact, a GHL contact lookup for an Atlas account with no matching opp, Zoom transcript hits) arrives
+through the `Lookups` callables, so tests pass fakes and the production wiring (sales_audit.py) passes real, lazily
+evaluated ones.
 
-Pure on purpose: nothing here does I/O. Everything a rule needs from the
-outside world (GHL call history for a contact, a GHL contact lookup for an
-Atlas account with no matching opp, Zoom transcript hits) arrives through the
-`Lookups` callables, so tests pass fakes and the production wiring
-(sales_audit.py) passes real, lazily-evaluated ones -- lazy matters because
-call history is only fetched for contacts that actually end up as deals,
-not every won opp GHL has ever seen.
+ATLAS IS THE SOURCE OF TRUTH (Bob, 2026-10-15). A deal is an Atlas account, full stop -- the old billing-sheet join
+(which created duplicate "sales" whenever a client's sheet name differed from its Atlas name) is gone:
+  - created on/after Jul 1 (Pacific day), not a legacy import  -> a sold Package, closed on createdAt;
+  - a LEGACY import (createdAt is a backdated import date)     -> counts only if Atlas has billing.firstChargeDate
+    on/after Jun 1, and that date is the sale date.
+Value = billing.baseAmount; rep = Atlas roster; source/events/calls enrich from GHL + Zoom.
 
-"Closed deal" is some COMBINATION of an Atlas account created, a first
-charge on the billing sheet, and a Closed/Won GHL opp -- no single source is
-complete, so the universe is the union (BRIEF §3.1), and Atlas is an anchor,
-not just billing/GHL (the October deals were missed until it became one).
-
-Output is ONE flat list of rows with type "Package" | "Digital Diagnosis".
-They share a list for the front end's sake but are never mixed in any total
-or table -- the dashboard filters on `type` first (BRIEF §4).
+Output is ONE flat list of rows, type "Package" | "Digital Diagnosis". Digital Diagnosis comes only from the GHL
+stage scan and is never mixed into package totals (BRIEF §4).
 """
 from __future__ import annotations
 
@@ -125,11 +118,6 @@ def phone10(s: str | None) -> str:
     return re.sub(r"\D", "", s or "")[-10:]
 
 
-def month_start(s: str) -> dt.datetime:
-    """'October 2026' (billing sheet header) -> datetime."""
-    return dt.datetime.strptime(s, "%B %Y")
-
-
 def _day(s: str | None) -> str | None:
     return s[:10] if s else None
 
@@ -222,31 +210,6 @@ def resolve_source(tags: list[str], src: str | None, attr: dict | None, close: s
 
 
 # ------------------------------------------------------------------ indexes
-
-def _notes_amount(atlas: dict) -> float | None:
-    m = re.search(r"\$\s?([\d,]{3,7})", atlas.get("salesNotes") or "")
-    return float(m.group(1).replace(",", "")) if m else None
-
-
-def first_charges(billing: list[dict]) -> dict[str, dict]:
-    """normalized-name -> earliest charge. First month with a charge is the
-    new-client signal (BRIEF §2). Amounts above the plausibility cap were
-    already dropped by the reader; defended again here."""
-    first: dict[str, dict] = {}
-    for row in billing:
-        name = row["account"]
-        n = norm(name)
-        months = {m: v for m, v in (row.get("months") or {}).items()
-                  if v is not None and 0 < v <= cfg.MAX_PLAUSIBLE_MONTHLY_CHARGE}
-        if not months or name.lower() in cfg.EXCLUDED_BILLING_ACCOUNTS or n in cfg.EXCLUDED_BILLING_ACCOUNTS:
-            continue
-        key = n.replace(" ", "")
-        m = min(months, key=month_start)
-        if key not in first or month_start(m) < month_start(first[key]["first_month"]):
-            first[key] = {"billing_name": name, "first_month": m, "first_amt": months[m],
-                          "retainer": row.get("retainer")}
-    return first
-
 
 class _GhlIndex:
     def __init__(self, opps: list[dict]):
@@ -347,155 +310,82 @@ def referral_partner(atlas: dict | None) -> tuple[str | None, str | None]:
     return (name or None), (str(pid) if pid else None)
 
 
-def atlas_initial_value(atlas: dict) -> tuple[float | None, float | None]:
-    """(initial monthly value, base amount) from Atlas's billing object.
-    Initial = baseAmount less the $1,000 intro discount when introPricing is
-    on. None when Atlas has no usable base amount (blank, or 0 as on
-    prepaid accounts, where base is $0 until the prepay lapses)."""
-    billing = atlas.get("billing") or {}
-    base = billing.get("baseAmount")
-    if not base or base <= 0:
-        return None, None
-    initial = base - cfg.INTRO_DISCOUNT if billing.get("introPricing") else base
-    return max(initial, 0), base
+def atlas_base_amount(atlas: dict) -> float | None:
+    """The deal's value: Atlas billing.baseAmount, as is (Bob, 2026-10-15: the plain agreed amount, no intro-discount
+    adjustment -- reps often forget to tick introPricing anyway). A one_time account carries its one-time total here.
+    None when blank or 0 (a prepaid account may hold 0)."""
+    base = (atlas.get("billing") or {}).get("baseAmount")
+    return float(base) if base and base > 0 else None
 
 
-def _atlas_era(a: dict) -> bool:
-    return (not a.get("legacy")) and (la_day(a.get("createdAt")) or "") >= cfg.ATLAS_ERA_START \
-        and a["companyName"].lower() not in cfg.EXCLUDED_ATLAS_ACCOUNTS
+def deal_basis(a: dict) -> tuple[str, str, bool] | None:
+    """Is this Atlas account a sold deal, and when? -> (close date, basis, atlas_era), or None.
+    A legacy import's createdAt is a BACKDATED import date, so it counts only via billing.firstChargeDate (on/after the
+    audit start) -- and that field is a CALENDAR date stored as UTC midnight: read it as-is, never convert it to Pacific
+    (2026-06-11T00:00Z would become Jun 10). Test/sponsor records never count."""
+    if a["companyName"].lower() in cfg.EXCLUDED_ATLAS_ACCOUNTS:
+        return None
+    if a.get("legacy"):
+        fcd = _day((a.get("billing") or {}).get("firstChargeDate"))
+        return (fcd, "atlas first charge date", False) if fcd and fcd >= cfg.AUDIT_START else None
+    created = la_day(a.get("createdAt"))
+    return (created, "atlas created", True) if created and created >= cfg.ATLAS_ERA_START else None
 
 
 def build_deals(data: dict, lk: Lookups) -> list[dict]:
-    """Package deals (plus any billing-only deal that prices as Digital
-    Diagnosis). Two paths:
-
-    1. ATLAS ERA (created >= Jul 1, non-legacy): every Atlas account is a
-       sold Package -- no inference. Atlas is the source of truth for close
-       date and rep; Atlas billing for initial value, with the billing
-       sheet's first charge only a spot check.
-    2. PRE-ATLAS / NOT IN ATLAS: billing-sheet accounts first charged on/
-       after Jun 1 that are not an Atlas-era account (June deals, which
-       predate Atlas, and any real sale that never made it into Atlas --
-       flagged not_in_atlas). Close date from GHL won date else billing
-       month; Atlas createdAt deliberately ignored (backdated imports).
-
-    `data` keys: billing, atlas, master_opps, ghl_users, roster (a Roster)."""
-    start = dt.datetime.fromisoformat(cfg.AUDIT_START)
-    atlas = data["atlas"]
-    atlas_by_key = {nkey(a["companyName"]): a for a in atlas}
-
-    def find_atlas(name: str) -> dict | None:
-        k = nkey(name)
-        if k in atlas_by_key:
-            return atlas_by_key[k]
-        best = difflib.get_close_matches(k, list(atlas_by_key), 1, 0.8)
-        return atlas_by_key[best[0]] if best else None
-
+    """One Package deal per qualifying Atlas account (see deal_basis). `data` keys: atlas, master_opps, ghl_users,
+    roster (a Roster)."""
     ghl = _GhlIndex(data["master_opps"])
-    first = first_charges(data["billing"])
-    era = [a for a in atlas if _atlas_era(a)]
-    era_ids = {a["id"] for a in era}
-
     deals = []
-    # Billing rows already explained by an Atlas-era account (matched by
-    # name, same matcher as always) so path 2 doesn't double count them.
-    billed_for_era: dict[str, dict] = {}
-    claimed_billing: set[str] = set()
-    for a in era:
-        k = nkey(a["companyName"])
-        match = first.get(k)
-        if match is None:
-            best = difflib.get_close_matches(k, [x for x in first if x not in claimed_billing], 1, 0.8)
-            match = first.get(best[0]) if best else None
-            k = best[0] if best else None
-        if match is not None and k:
-            claimed_billing.add(k)
-            billed_for_era[a["id"]] = match
-    for a in era:
-        deals.append(_one_deal(a, billed_for_era.get(a["id"]), ghl.find(a, a["companyName"]), data, lk, atlas_era=True))
-
-    for key, v in first.items():
-        if key in claimed_billing or month_start(v["first_month"]) < start:
-            continue
-        a = find_atlas(v["billing_name"])
-        if a and a["id"] in era_ids:
-            continue
-        deals.append(_one_deal(a, v, ghl.find(a, v["billing_name"]), data, lk, atlas_era=False))
+    for a in data["atlas"]:
+        basis = deal_basis(a)
+        if basis:
+            deals.append(_one_deal(a, ghl.find(a, a["companyName"]), data, lk, close=basis[0], close_basis=basis[1], atlas_era=basis[2]))
     return deals
 
 
-def _one_deal(a: dict | None, bill: dict | None, o: dict | None, data: dict, lk: Lookups, *, atlas_era: bool) -> dict:
-    """One row. `a` Atlas account (None if not in Atlas), `bill` that client's
-    first billing-sheet charge (None if not on the sheet yet), `o` the ADV
-    Master opp, if any."""
+def _one_deal(a: dict, o: dict | None, data: dict, lk: Lookups, *, close: str, close_basis: str, atlas_era: bool) -> dict:
+    """One row. `a` the Atlas account, `o` its ADV Master opp (if GHL has one)."""
     ghl_won = _day(o.get("lastStatusChangeAt")) if o else None
-    backfill = bool(o and (ghl_won == cfg.GHL_BACKFILL_DATE or (ghl_won or "") < cfg.AUDIT_START))
     roster: Roster = data["roster"]
     ghl_assigned = (data.get("ghl_users") or {}).get(o.get("assignedTo")) if o else None
     ghl_rep = roster.ghl_user_reps.get(o.get("assignedTo")) if o else None
-    contact_name = (o["contact"]["name"] if o and o.get("contact") else None) or \
-        (a["users"][0]["name"] if a and a.get("users") else None)
-    client = a["companyName"] if a else bill["billing_name"]
-    sheet_amt = bill.get("first_amt") if bill else None
+    contact_name = (o["contact"]["name"] if o and o.get("contact") else None) or (a["users"][0]["name"] if a.get("users") else None)
+    client = a["companyName"]
+    billing = a.get("billing") or {}
 
-    # ---- GHL contact attribution + calls: opp-linked contact when there is
-    # an opp, else a lookup by the Atlas account's own contacts.
+    # ---- GHL contact attribution + calls: opp-linked contact when there is an opp, else a lookup by the Atlas
+    # account's own contacts.
     gc = lk.contact_calls(o["contactId"]) if o and o.get("contactId") else {}
     tags = ((o.get("contact") or {}).get("tags") if o else None) or []
     src = (gc.get("contact") or {}).get("source") if gc else (o.get("source") if o else None)
     attr = (gc.get("contact") or {}).get("attributionSource") if gc else None
     contact_added = None
-    if not o and a:
+    if not o:
         ex = lk.find_contact(a)
         if ex:
             gc, tags, src, attr = {"calls": ex.get("calls") or [], "contact": ex}, ex.get("tags") or [], ex.get("source"), ex.get("attributionSource")
             contact_added = _day(ex.get("dateAdded"))
 
-    # ---- close date
-    if atlas_era:
-        close, close_basis = la_day(a["createdAt"]), "atlas created"
-    elif ghl_won and not backfill:
-        close, close_basis = ghl_won, "ghl won"
-    elif bill:
-        close, close_basis = None, "billing first charge (month only)"
-    else:
-        close, close_basis = None, "unknown"
-    close_month = close[:7] if close else (month_start(bill["first_month"]).strftime("%Y-%m") if bill else None)
-
-    # ---- amount: Atlas billing is the source of truth, sheet the spot check
-    initial, base = atlas_initial_value(a) if a else (None, None)
-    if atlas_era and initial is not None:
-        amount, amount_basis = initial, "Atlas billing"
-    elif sheet_amt:
-        amount, amount_basis = sheet_amt, "billing sheet"
-    else:
-        est = _notes_amount(a) if a else None
-        amount, amount_basis = (est, "Atlas notes (est.)") if est else (None, "none yet")
+    base = atlas_base_amount(a)
+    amount, amount_basis = (base, "Atlas billing") if base else (None, "none yet")
 
     # ---- source: an explicit Atlas referral partner outranks inferred tags
     partner, partner_id = referral_partner(a)
     if partner:
         src_info = {"source_type": "Referral", "source_detail": f"Atlas referral partner: {partner}", "event": None}
     elif o or gc.get("contact"):
-        date_for_gate = close or (month_start(bill["first_month"]).strftime("%Y-%m-%d") if bill else None)
-        src_info = resolve_source(tags, src, attr, date_for_gate)
+        src_info = resolve_source(tags, src, attr, close)
     else:
         src_info = {"source_type": "Unknown", "source_detail": "no GHL match", "event": None}
 
     # ---- rep
-    names = [contact_name, client] + ([u.get("name") for u in a.get("users") or []] if a else [])
+    names = [contact_name, client] + [u.get("name") for u in a.get("users") or []]
     zoom = lk.zoom_hits([n for n in names if n], close)
     score = _call_evidence(gc.get("calls") or [], zoom, close, roster)
-    owner, basis = _attribute_owner((a or {}).get("salesRep"), ghl_rep, score, roster)
+    owner, basis = _attribute_owner(a.get("salesRep"), ghl_rep, score, roster)
 
-    # ---- type: Atlas-era is ALWAYS a package; elsewhere price decides
-    if atlas_era:
-        is_dd = False
-    else:
-        ghl_value = o.get("monetaryValue") if o else None
-        is_dd = (amount or 0) in cfg.DD_PRICES or (ghl_value or 0) in cfg.DD_PRICES
-
-    # ---- flags (drive the dashboard's "needs a look" filters)
+    # ---- flags (drive the dashboard's "needs a look" filters). no_first_charge_date / one_time are informational.
     flags = []
     if owner == cfg.NEEDS_REP:
         flags.append("needs_rep")
@@ -503,33 +393,27 @@ def _one_deal(a: dict | None, bill: dict | None, o: dict | None, data: dict, lk:
         flags.append("no_amount")
     if not o and not gc.get("contact"):
         flags.append("no_ghl_match")
-    if a and a.get("stage") == "closed":
+    if a.get("stage") == "closed":
         flags.append("atlas_closed")
-    if not atlas_era and not a:
-        flags.append("not_in_atlas")
-    if not atlas_era and ghl_won is None and not close:
-        flags.append("estimated_date")
     if score and owner != cfg.NEEDS_REP and score.most_common(1)[0][0] != owner:
         flags.append("owner_conflict")
-    if atlas_era and initial is not None and sheet_amt and abs(initial - sheet_amt) > cfg.AMOUNT_TOLERANCE:
-        flags.append("amount_mismatch")
-    onboarding = (a or {}).get("onboarding") or {}
+    onboarding = a.get("onboarding") or {}
     if atlas_era and onboarding.get("total") and onboarding.get("completed", 0) < onboarding["total"]:
         flags.append("onboarding_incomplete")
+    if atlas_era and not _day(billing.get("firstChargeDate")):
+        flags.append("no_first_charge_date")
+    if billing.get("billingType") == "one_time":
+        flags.append("one_time")
 
     return {
-        "key": f"atlas:{a['id']}" if a else (f"ghl:{o['id']}" if o else f"bill:{nkey(client)}"),
-        "type": DIGITAL_DIAGNOSIS if is_dd else PACKAGE,
-        "client": client, "contact": contact_name,
-        "close_date": close, "close_month": close_month, "close_date_basis": close_basis,
-        "amount": amount, "amount_basis": amount_basis,
-        "base_amount": base, "sheet_first_charge": sheet_amt,
-        "retainer": (bill or {}).get("retainer"),
+        "key": f"atlas:{a['id']}", "type": PACKAGE, "client": client, "contact": contact_name,
+        "close_date": close, "close_month": close[:7], "close_date_basis": close_basis,
+        "amount": amount, "amount_basis": amount_basis, "base_amount": base,
+        "billing_type": billing.get("billingType"), "billing_package": billing.get("package"), "first_charge_date": _day(billing.get("firstChargeDate")),
         "owner": owner, "owner_basis": basis, "call_score": dict(score),
         "noncore_assignee": ghl_assigned if ghl_assigned and not ghl_rep else None,
         **src_info, "referral_partner": partner, "referral_partner_id": partner_id, "tags": tags[:8], "where": None,
-        "atlas_era": atlas_era, "atlas_id": a["id"] if a else None,
-        "atlas_stage": a.get("stage") if a else None, "atlas_created": la_day(a["createdAt"]) if a else None,
+        "atlas_era": atlas_era, "atlas_id": a["id"], "atlas_stage": a.get("stage"), "atlas_created": la_day(a["createdAt"]),
         "onboarding": onboarding or None,
         "ghl_opp": o["id"] if o else None, "ghl_status": o.get("status") if o else None,
         "ghl_won_date": ghl_won, "ghl_assigned": ghl_assigned, "ghl_contact_added": contact_added,
@@ -568,7 +452,7 @@ def build_dd_rows(data: dict) -> list[dict]:
             "client": o.get("name"), "contact": o.get("name"),
             "close_date": date, "close_month": date[:7], "close_date_basis": "ghl stage change",
             "amount": o.get("monetaryValue"), "amount_basis": "ghl value" if o.get("monetaryValue") else "none yet",
-            "retainer": None, "base_amount": None, "sheet_first_charge": None, "referral_partner": None, "referral_partner_id": None,
+            "base_amount": None, "billing_type": None, "billing_package": None, "first_charge_date": None, "referral_partner": None, "referral_partner_id": None,
             "atlas_era": False, "onboarding": None, "owner": owner,
             "owner_basis": "GHL opp assignee" if owner != cfg.NEEDS_REP else "none", "call_score": {},
             "noncore_assignee": assigned if assigned and not ghl_rep else None,
@@ -590,24 +474,14 @@ def build_dd_rows(data: dict) -> list[dict]:
 
 
 def merge_sales(deals: list[dict], dd_rows: list[dict]) -> list[dict]:
-    """Deals that price as Digital Diagnosis but weren't caught by the stage
-    scan join the DD list. Package rows pass through. Final pass dedupes by
-    key and by (type, normalized client) -- the prototype listed OG Plumbing
-    twice because two billing names mapped to one Atlas account."""
-    out = [d for d in deals if d["type"] == PACKAGE]
-    dd = list(dd_rows)
-    for d in deals:
-        if d["type"] != DIGITAL_DIAGNOSIS:
-            continue
-        if not any(same_name(d["contact"], r["client"]) or same_name(d["client"], r["client"]) for r in dd):
-            dd.append({**d, "where": f"Billing / Atlas ({d['client']})"})
+    """Package deals (from Atlas) + Digital Diagnosis rows (from the GHL stage scan), de-duplicated by KEY only, newest
+    first. Atlas ids are the identity now: two Atlas accounts with similar names are two clients, never merged by name
+    (the old name-normalising dedupe existed only to paper over the billing-sheet join)."""
     seen: set = set()
     rows = []
-    for r in out + dd:
-        ident = (r["type"], r["key"] if r["type"] == DIGITAL_DIAGNOSIS else nkey(r["client"]))
-        if ident in seen or r["key"] in seen:
+    for r in deals + dd_rows:
+        if r["key"] in seen:
             continue
-        seen.add(ident)
         seen.add(r["key"])
         rows.append(r)
     rows.sort(key=lambda r: (r["close_date"] or (r["close_month"] or "") + "-99"), reverse=True)

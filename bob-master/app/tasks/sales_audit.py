@@ -8,10 +8,10 @@ Failure posture, deliberately split in two:
 - Atlas and GHL opps are the spine. If either fails the run RAISES and
   stores nothing -- half a universe silently showing as "the" sales list is
   worse than the page keeping yesterday's good run and its staleness showing.
-- The billing sheet and Zoom are supporting evidence. If either fails the
-  run still completes and records the failure under `source_errors`, which
-  the page shows as a banner (amounts fall back to Atlas billing/notes; rep
-  attribution loses its call-evidence tier).
+- Zoom is supporting evidence, and so is the Atlas sales roster's freshness: if the Zoom index fails the run still
+  completes (rep attribution loses its call-evidence tier) and if the roster call fails it falls back to the last
+  known roster -- both recorded under `source_errors`, which the page shows as a banner.
+- There is NO billing-sheet input any more (retired 2026-10-15, once Atlas held every amount and first-charge date).
 
 LLM synthesis (exec narrative, rep-suggestions-from-transcripts) is
 deliberately NOT in this phase -- every number here is deterministic Python,
@@ -29,11 +29,10 @@ from sqlalchemy.orm import Session
 
 from app.integrations.atlas_client import AtlasClient
 from app.integrations.ghl import GHLClient
-from app.integrations.google_drive import GoogleDriveClient
 from app.models import SalesAuditRun, SalesDealOverride
 from app.tasks import sales_audit_config as cfg
 from app.tasks.sales_audit_blend import DIGITAL_DIAGNOSIS, PACKAGE, Roster, build_sales_rows
-from app.tasks.sales_audit_sources import ZoomIndex, fetch_ghl, make_lookups, read_billing
+from app.tasks.sales_audit_sources import ZoomIndex, fetch_ghl, make_lookups
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +64,7 @@ def _atlas_roster(atlas, db: Session, ghl_user_details: list[dict], source_error
 
 
 def build_sales_audit(
-    db: Session, *, atlas=None, ghl=None, drive=None, zoom: ZoomIndex | None = None,
+    db: Session, *, atlas=None, ghl=None, zoom: ZoomIndex | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> dict:
     """Clients are injectable for tests; defaults build the real ones."""
@@ -83,15 +82,6 @@ def build_sales_audit(
     note("pulling the Atlas sales roster")
     roster = _atlas_roster(atlas, db, ghl_data.get("ghl_user_details", []), source_errors)
 
-    note("reading billing sheet")
-    billing: list[dict] = []
-    billing_meta: dict = {}
-    try:
-        billing, billing_meta = read_billing(drive or GoogleDriveClient())
-    except Exception as exc:  # soft: amounts fall back to Atlas billing/notes
-        logger.exception("sales-audit: billing sheet read failed")
-        source_errors["billing_sheet"] = f"{type(exc).__name__}: {exc}"[:300]
-
     note("indexing Zoom transcripts")
     try:
         zoom = zoom or ZoomIndex.from_db(db, roster)
@@ -101,7 +91,7 @@ def build_sales_audit(
         zoom = ZoomIndex([])
 
     note("blending")
-    rows = build_sales_rows({"atlas": atlas_accounts, "billing": billing, "roster": roster, **ghl_data}, make_lookups(ghl, zoom))
+    rows = build_sales_rows({"atlas": atlas_accounts, "roster": roster, **ghl_data}, make_lookups(ghl, zoom))
 
     # first_seen carry-forward: GHL won dates are unreliable, so remember the
     # first day each deal appeared in ANY audit snapshot.
@@ -114,7 +104,7 @@ def build_sales_audit(
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "count": len(rows), "rows": rows, "summary": _summary(rows),
-        "source_errors": source_errors, "billing_meta": billing_meta,
+        "source_errors": source_errors,
         "zoom_transcripts_indexed": len(zoom.entries),
         "roster": roster.reps,
         "rules": {"audit_start": cfg.AUDIT_START, "atlas_era_start": cfg.ATLAS_ERA_START, "reps": roster.names},

@@ -24,7 +24,7 @@ import csv
 import io
 import json
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from google.oauth2 import service_account
@@ -44,16 +44,6 @@ _SCOPES = [
 # conversion is what made every single row read as "stale" on the first real
 # run (a ~7-8h PDT/UTC gap reliably exceeds the 3h threshold).
 _SHEET_TIMEZONE = ZoneInfo("America/Los_Angeles")
-
-
-def _col_letter(index: int) -> str:
-    """0-based column index -> A1 letters (0 -> A, 26 -> AA)."""
-    out = ""
-    index += 1
-    while index:
-        index, rem = divmod(index - 1, 26)
-        out = chr(65 + rem) + out
-    return out
 
 
 class GoogleDriveClient:
@@ -85,40 +75,6 @@ class GoogleDriveClient:
             pass  # fall through to CSV export fallback below
 
         return self._read_sheet_csv_fallback(file_id)
-
-    def read_sheet_columns_by_header(
-        self, file_id: str, tab_name: str, wanted: Callable[[str], bool], *, key_column: str = "A"
-    ) -> tuple[list[str], list[list[str]]]:
-        """Reads ONLY `key_column` plus whichever columns' row-1 header
-        satisfies `wanted` -- never a blanket A:Z. Built for the billing sheet,
-        which also holds full card numbers/CVVs (columns C-G as of
-        2026-10-15): those columns are never requested, so they can never end
-        up in memory, logs, or a report. Positive allowlist on header on
-        purpose -- a new sensitive column added later stays unfetched by
-        default. No CSV-export fallback either (that would pull every
-        column); a failure raises and the caller soft-fails the source.
-
-        Returns (selected header names, rows) where each row is aligned to
-        [key header, *selected headers]."""
-        headers = (
-            self._sheets.spreadsheets().values()
-            .get(spreadsheetId=file_id, range=f"'{tab_name}'!1:1").execute()
-            .get("values", [[]])[0]
-        )
-        picked = [(i, h) for i, h in enumerate(headers) if i != 0 and wanted(h)]
-        ranges = [f"'{tab_name}'!{key_column}:{key_column}"] + [f"'{tab_name}'!{_col_letter(i)}:{_col_letter(i)}" for i, _ in picked]
-        resp = self._sheets.spreadsheets().values().batchGet(spreadsheetId=file_id, ranges=ranges).execute()
-        columns = [vr.get("values", []) for vr in resp.get("valueRanges", [])]
-        n = max((len(c) for c in columns), default=0)
-        rows = [[(c[r][0] if r < len(c) and c[r] else "") for c in columns] for r in range(1, n)]  # skip header row
-        return [headers[0] if headers else ""] + [h for _, h in picked], rows
-
-    def tab_title_for_gid(self, file_id: str, gid: int) -> str:
-        spreadsheet = self._sheets.spreadsheets().get(spreadsheetId=file_id).execute()
-        for sheet in spreadsheet.get("sheets", []):
-            if sheet["properties"].get("sheetId") == gid:
-                return sheet["properties"]["title"]
-        raise KeyError(f"no tab with gid {gid} in {file_id}")
 
     def _read_sheet_csv_fallback(self, file_id: str) -> list[list[str]]:
         request = self._drive.files().export_media(fileId=file_id, mimeType="text/csv")

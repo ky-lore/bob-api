@@ -34,14 +34,11 @@ def _roster(atlas_reps=None, ghl_users=None):
     return b.Roster.from_atlas(atlas_reps if atlas_reps is not None else cfg.LEGACY_ROSTER, ghl_users if ghl_users is not None else GHL_USERS)
 
 
-def _data(atlas=(), billing=(), opps=(), other=(), users=None, roster=None):
-    return {"atlas": list(atlas), "billing": list(billing), "master_opps": list(opps), "other_opps": list(other),
+def _data(atlas=(), opps=(), other=(), users=None, roster=None):
+    return {"atlas": list(atlas), "master_opps": list(opps), "other_opps": list(other),
             "stages": {"s-won": ("ADV - Master Pipeline", "Closed Won")}, "roster": roster or _roster(),
             "ghl_users": {PAUL_GHL: "Paul Rastrelli", "u-simon": "Simon Ting", **(users or {})}}
 
-
-def _bill(name, month, amt, retainer="$3,500"):
-    return {"account": name, "retainer": retainer, "months": {month: amt}}
 
 
 def _rows(data, lk=None):
@@ -69,59 +66,14 @@ def test_legacy_flag_excludes_even_after_cutoff():
     assert _rows(_data(atlas=[a])) == []
 
 
-def test_june_billed_client_with_backdated_atlas_record_uses_billing_not_atlas_date():
-    a = _atlas("Reel Electric", "2026-02-25T10:00:00Z", legacy=True)
-    (row,) = _rows(_data(atlas=[a], billing=[_bill("The Reel Electric Company", "June 2026", 2500)]))
-    assert row["atlas_era"] is False
-    assert row["close_month"] == "2026-06"      # not Feb
-    assert row["close_date"] is None            # billing gives a month only
-    assert "estimated_date" in row["flags"]
 
 
-def test_billed_client_missing_from_atlas_is_kept_and_flagged():
-    (row,) = _rows(_data(billing=[_bill("Ghost Plumbing", "August 2026", 4000)]))
-    assert "not_in_atlas" in row["flags"]
-    assert row["type"] == b.PACKAGE
-
-
-def test_billing_before_audit_start_is_ignored():
-    assert _rows(_data(billing=[_bill("Old Client", "May 2026", 3000)])) == []
-
-
-def test_era_account_is_not_double_counted_from_billing():
-    a = _atlas("Acme Roofing", "2026-07-10T20:00:00Z")
-    rows = _rows(_data(atlas=[a], billing=[_bill("Acme Roofing LLC", "July 2026", 2500)]))
-    assert len(rows) == 1 and rows[0]["atlas_era"]
 
 
 # ---------------------------------------------------------------------- amounts
 
-def test_amount_is_atlas_base_less_intro_and_sheet_is_only_a_spot_check():
-    a = _atlas("Bracero", "2026-09-01T20:00:00Z", billing={"baseAmount": 3500, "introPricing": True})
-    (row,) = _rows(_data(atlas=[a], billing=[_bill("Bracero", "September 2026", 2500)]))
-    assert row["amount"] == 2500 and row["amount_basis"] == "Atlas billing"
-    assert row["base_amount"] == 3500 and "amount_mismatch" not in row["flags"]
 
 
-def test_amount_mismatch_is_flagged_not_overwritten():
-    a = _atlas("Bracero", "2026-09-01T20:00:00Z", billing={"baseAmount": 3500, "introPricing": False})
-    (row,) = _rows(_data(atlas=[a], billing=[_bill("Bracero", "September 2026", 2500)]))
-    assert row["amount"] == 3500 and "amount_mismatch" in row["flags"] and row["sheet_first_charge"] == 2500
-
-
-def test_falls_back_to_sheet_then_notes_when_atlas_billing_blank():
-    a = _atlas("Prepaid Co", "2026-08-01T20:00:00Z", billing={"baseAmount": 0, "billingType": "prepaid"})
-    (row,) = _rows(_data(atlas=[a], billing=[_bill("Prepaid Co", "August 2026", 6000)]))
-    assert row["amount"] == 6000 and row["amount_basis"] == "billing sheet"
-    n = _atlas("Notes Co", "2026-08-01T20:00:00Z", notes_unused=1, salesNotes="Closed at $4,200/mo")
-    (row,) = _rows(_data(atlas=[n]))
-    assert row["amount"] == 4200.0 and row["amount_basis"] == "Atlas notes (est.)"
-
-
-def test_implausible_billing_cell_is_dropped_not_summed():
-    first = b.first_charges([{"account": "Bad Cell", "retainer": "", "months": {"June 2026": 4111222233334444.0, "July 2026": 3000.0}}])
-    assert first["badcell"]["first_month"] == "July 2026"     # the bogus June cell never counts
-    assert b.first_charges([{"account": "Only Bad", "months": {"June 2026": 9_999_999.0}}]) == {}
 
 
 # -------------------------------------------------------------------- attribution
@@ -232,14 +184,6 @@ def test_dd_owner_requires_core_rep_and_non_core_is_needs_rep():
     assert row["owner"] == cfg.NEEDS_REP and row["noncore_assignee"] == "Simon Ting"
 
 
-def test_non_era_billing_deal_at_dd_price_lands_in_dd_never_in_packages():
-    rows = _rows(_data(billing=[_bill("Quick Dx Client", "August 2026", 500.0, retainer="")]))
-    assert [r["type"] for r in rows] == [b.DIGITAL_DIAGNOSIS]
-
-
-def test_duplicate_client_is_listed_once():
-    rows = _rows(_data(billing=[_bill("OG Plumbing", "August 2026", 5000), _bill("OG Plumbing Inc", "June 2026", 5000)]))
-    assert len([r for r in rows if r["type"] == b.PACKAGE]) == 1
 
 
 # ------------------------------------------------------------------------ helpers
@@ -313,3 +257,77 @@ def test_a_rep_removed_from_the_atlas_roster_is_no_longer_credited():
     a = _atlas("Acme", "2026-07-10T20:00:00Z", salesRep={"name": "Kyle Kellner", "email": "kylekellner@advancedmarketers.co"})
     (row,) = _rows(_data(atlas=[a], roster=roster))
     assert row["owner"] == cfg.NEEDS_REP and "needs_rep" in row["flags"]
+
+
+# ------------------------------------------------ Atlas is the only source: value, legacy dating, no sheet
+
+def _legacy(name, fcd, **kw):
+    return _atlas(name, "2026-02-25T10:00:00Z", legacy=True, billing={"baseAmount": 2500, "firstChargeDate": fcd}, **kw)
+
+
+def test_value_is_the_plain_base_amount_even_with_intro_pricing_on():
+    a = _atlas("Teton", "2026-09-28T20:00:00Z", billing={"baseAmount": 3500, "introPricing": True})
+    (row,) = _rows(_data(atlas=[a]))
+    assert row["amount"] == 3500 and row["base_amount"] == 3500 and row["amount_basis"] == "Atlas billing"
+
+
+def test_blank_or_zero_base_means_no_amount_and_notes_are_never_used_as_a_guess():
+    for billing in (None, {"baseAmount": 0, "billingType": "prepaid"}, {"baseAmount": None}):
+        a = _atlas("Gamma", "2026-08-01T20:00:00Z", billing=billing, salesNotes="Closed at $4,200/mo")
+        (row,) = _rows(_data(atlas=[a]))
+        assert row["amount"] is None and row["amount_basis"] == "none yet" and "no_amount" in row["flags"]
+
+
+def test_a_one_time_deal_keeps_its_total_and_is_flagged_one_time():
+    a = _atlas("Bernie", "2026-07-20T20:00:00Z", billing={"baseAmount": 6500, "billingType": "one_time"})
+    (row,) = _rows(_data(atlas=[a]))
+    assert row["amount"] == 6500 and row["billing_type"] == "one_time" and "one_time" in row["flags"] and row["type"] == b.PACKAGE
+
+
+def test_billing_type_and_package_tier_are_carried_on_the_row():
+    a = _atlas("Aspen", "2026-08-05T20:00:00Z", billing={"baseAmount": 499, "billingType": "recurring", "package": "website_only"})
+    (row,) = _rows(_data(atlas=[a]))
+    assert (row["amount"], row["billing_type"], row["billing_package"], row["type"]) == (499, "recurring", "website_only", b.PACKAGE)   # $499 is a package, never DD
+
+
+def test_a_legacy_import_counts_via_its_first_charge_date_not_its_backdated_created_date():
+    a = _legacy("Cortex", "2026-06-11T00:00:00.000Z")
+    (row,) = _rows(_data(atlas=[a]))
+    assert row["close_date"] == "2026-06-11" and row["close_month"] == "2026-06"            # the calendar date as stored
+    assert row["close_date_basis"] == "atlas first charge date" and row["atlas_era"] is False and row["type"] == b.PACKAGE
+    assert row["first_charge_date"] == "2026-06-11" and "onboarding_incomplete" not in row["flags"]
+
+
+def test_first_charge_date_is_a_calendar_date_never_shifted_into_pacific_time():
+    """Atlas stores 2026-06-11 as UTC midnight; converting that instant to Pacific would give June 10 (and 2026-07-01 -> Jun 30)."""
+    (row,) = _rows(_data(atlas=[_legacy("Edge", "2026-07-01T00:00:00.000Z")]))
+    assert row["close_date"] == "2026-07-01"
+
+
+def test_a_legacy_import_with_no_first_charge_date_or_one_before_june_is_not_a_deal():
+    assert _rows(_data(atlas=[_atlas("NoDate", "2026-02-25T10:00:00Z", legacy=True, billing={"baseAmount": 2500})])) == []
+    assert _rows(_data(atlas=[_legacy("OldClient", "2026-05-31T00:00:00.000Z")])) == []
+    assert _rows(_data(atlas=[_legacy("JuneFirst", "2026-06-01T00:00:00.000Z")]))[0]["close_date"] == "2026-06-01"
+
+
+def test_a_non_legacy_account_created_before_july_is_not_a_deal_and_the_boundary_is_the_pacific_day():
+    assert _rows(_data(atlas=[_atlas("Early", "2026-06-23T20:00:00Z")])) == []
+    assert _rows(_data(atlas=[_atlas("Boundary", "2026-07-01T05:00:00Z")])) == []          # 10pm PDT Jun 30 -> still June
+    assert _rows(_data(atlas=[_atlas("Boundary2", "2026-07-01T08:00:00Z")]))[0]["close_date"] == "2026-07-01"
+
+
+def test_nothing_but_an_atlas_account_can_create_a_package_deal():
+    opp = _opp("o1", "Ghost Co", status="won", won="2026-08-01T10:00:00Z", value=2500)
+    assert [r for r in _rows(_data(opps=[opp])) if r["type"] == b.PACKAGE] == []
+
+
+def test_two_distinct_atlas_accounts_with_similar_names_are_two_deals():
+    rows = _rows(_data(atlas=[_atlas("OG Plumbing", "2026-07-10T20:00:00Z"), _atlas("OG Plumbing Inc", "2026-07-11T20:00:00Z")]))
+    assert len(rows) == 2 and len({r["key"] for r in rows}) == 2
+
+
+def test_no_first_charge_date_is_flagged_only_for_atlas_era_accounts():
+    era_missing = _atlas("A", "2026-07-10T20:00:00Z", billing={"baseAmount": 2500})
+    era_set = _atlas("B", "2026-07-10T20:00:00Z", billing={"baseAmount": 2500, "firstChargeDate": "2026-07-12T00:00:00.000Z"})
+    rows = {r["client"]: r for r in _rows(_data(atlas=[era_missing, era_set, _legacy("C", "2026-06-11T00:00:00.000Z")]))}
+    assert "no_first_charge_date" in rows["A"]["flags"] and "no_first_charge_date" not in rows["B"]["flags"] and "no_first_charge_date" not in rows["C"]["flags"]

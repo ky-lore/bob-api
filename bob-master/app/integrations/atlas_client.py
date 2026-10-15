@@ -107,6 +107,32 @@ class AtlasClient:
             raise AtlasWriteError(resp.status_code, (message or "no message")[:300])
         return resp.json() if resp.content else {}
 
+    # Billing fields the sales audit may write to Atlas (2026-10-15). Deliberately narrow: no parentAccountId / upsell
+    # (needs a parent), and introEndsDate is never accepted (Atlas recomputes it from firstChargeDate + introPricing).
+    BILLING_WRITE_FIELDS = ("baseAmount", "firstChargeDate", "billingType", "package", "introPricing", "billingDay", "prepaidMonths")
+
+    def set_billing(self, atlas_id: str, changes: dict[str, Any], *, actor: str, expect: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Updates billing fields IN Atlas via PATCH /api/accounts/:id/billing (2026-10-15) -- same narrow-write
+        philosophy as set_sales_attribution. `changes` maps field -> new value (None clears the field; a field that is
+        absent is left alone). `expect` is an optional compare-and-set guard {field: value you believe is current}: if
+        Atlas's current value differs it answers 409 and writes NOTHING, so a stale snapshot can never overwrite
+        someone's newer edit. Raises AtlasWriteError (carrying Atlas's message) on any 4xx/5xx.
+        Returns Atlas's body: {id, companyName, billing, changed, previous}."""
+        bad = [k for k in changes if k not in self.BILLING_WRITE_FIELDS]
+        if bad:
+            raise ValueError(f"not writable via set_billing: {bad}")
+        body: dict[str, Any] = {**changes, "actor": actor}
+        if expect:
+            body["expect"] = expect
+        resp = self._client.patch(f"/api/accounts/{atlas_id}/billing", json=body)
+        if resp.status_code >= 400:
+            try:
+                message = resp.json().get("message") or resp.text
+            except Exception:
+                message = resp.text
+            raise AtlasWriteError(resp.status_code, (message or "no message")[:300])
+        return resp.json() if resp.content else {}
+
     def post_campaigns(self, atlas_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Pushes one platform's campaign summary for one account INTO Atlas
         (2026-09-02) -- the reverse direction of get_all_accounts. One call

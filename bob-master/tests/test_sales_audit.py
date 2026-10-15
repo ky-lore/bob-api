@@ -59,11 +59,6 @@ class _Ghl:
         return None
 
 
-class _BadDrive:
-    def tab_title_for_gid(self, *a):
-        raise PermissionError("sheet not shared with service account")
-
-
 @pytest.fixture
 def db(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 't.db'}")
@@ -72,30 +67,30 @@ def db(tmp_path):
         yield session
 
 
-def test_run_builds_rows_and_soft_fails_the_billing_sheet(db):
-    run = mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(), drive=_BadDrive(), zoom=ZoomIndex([]))
+def test_run_builds_rows_from_atlas_alone_with_the_plain_base_amount(db):
+    run = mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(), zoom=ZoomIndex([]))
     payload = json.loads(run.report_json)
     assert payload["count"] == 1 and payload["rows"][0]["client"] == "Acme Roofing"
-    assert payload["rows"][0]["amount"] == 2500 and payload["rows"][0]["owner"] == "Kyle Kellner"
-    assert "PermissionError" in payload["source_errors"]["billing_sheet"] and "zoom" not in payload["source_errors"]
-    assert payload["summary"]["package"] == {"count": 1, "amount": 2500, "needs_rep": 0}
+    assert payload["rows"][0]["amount"] == 3500 and payload["rows"][0]["owner"] == "Kyle Kellner"      # base 3500, intro flag ignored
+    assert payload["source_errors"] == {} and "billing_meta" not in payload
+    assert payload["summary"]["package"] == {"count": 1, "amount": 3500, "needs_rep": 0}
     assert payload["rules"]["atlas_era_start"] == cfg.ATLAS_ERA_START
 
 
 def test_ghl_failure_raises_and_stores_nothing(db):
     with pytest.raises(RuntimeError):
-        mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(fail=True), drive=_BadDrive(), zoom=ZoomIndex([]))
+        mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(fail=True), zoom=ZoomIndex([]))
     assert db.query(SalesAuditRun).count() == 0
 
 
 def test_first_seen_carries_forward_from_the_previous_snapshot(db):
-    first = json.loads(mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(), drive=_BadDrive(), zoom=ZoomIndex([])).report_json)
+    first = json.loads(mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(), zoom=ZoomIndex([])).report_json)
     previous = db.query(SalesAuditRun).one()
     stored = json.loads(previous.report_json)
     stored["rows"][0]["first_seen"] = "2026-10-01"                       # pretend it was first seen two weeks ago
     previous.report_json = json.dumps(stored)
     db.commit()
-    second = json.loads(mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(), drive=_BadDrive(), zoom=ZoomIndex([])).report_json)
+    second = json.loads(mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(), zoom=ZoomIndex([])).report_json)
     assert second["rows"][0]["first_seen"] == "2026-10-01"
     assert first["rows"][0]["first_seen"] != "2026-10-01"
 
@@ -145,7 +140,7 @@ def test_a_run_retires_overrides_atlas_now_agrees_with_and_never_blocks_storing(
     from app.models import SalesDealOverride
     db.add(_o("atlas:a1", owner="Kyle Kellner"))
     db.commit()
-    run = mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(), drive=_BadDrive(), zoom=ZoomIndex([]))
+    run = mod.run_and_store_sales_audit(db, atlas=_Atlas(), ghl=_Ghl(), zoom=ZoomIndex([]))
     assert json.loads(run.report_json)["rows"][0]["owner"] == "Kyle Kellner"          # Atlas fixture's salesRep
     assert db.query(SalesDealOverride).count() == 0                                    # override retired by the run
 
@@ -153,7 +148,7 @@ def test_a_run_retires_overrides_atlas_now_agrees_with_and_never_blocks_storing(
 # ------------------------------------------------ roster: pulled from Atlas every run
 
 def _run(db, **kw):
-    kw.setdefault("atlas", _Atlas()); kw.setdefault("ghl", _Ghl()); kw.setdefault("drive", _BadDrive()); kw.setdefault("zoom", ZoomIndex([]))
+    kw.setdefault("atlas", _Atlas()); kw.setdefault("ghl", _Ghl()); kw.setdefault("zoom", ZoomIndex([]))
     return json.loads(mod.run_and_store_sales_audit(db, **kw).report_json)
 
 
@@ -194,3 +189,18 @@ def test_zoom_index_only_includes_roster_hosts_and_names_them_from_the_roster(db
     idx = ZoomIndex.from_db(db, Roster.from_atlas(REPS))
     assert sorted(e["rep"] for e in idx.entries) == ["Anthony Aguilar", "Kyle Kellner"] and all(e["min"] == 30 for e in idx.entries)
     assert ZoomIndex.from_db(db, Roster([])).entries == []
+
+
+def test_a_legacy_account_enters_the_audit_when_atlas_gains_a_first_charge_date(db):
+    """The June deals now come from Atlas: filling billing.firstChargeDate on a legacy import is what makes it a deal."""
+    class _AtlasFilled(_Atlas):
+        def get_all_accounts(self):
+            accts = super().get_all_accounts()
+            accts[1] = {**accts[1], "billing": {"baseAmount": 2500, "firstChargeDate": "2026-06-11T00:00:00.000Z"}}   # "Old Import" (legacy)
+            return accts
+
+    before = _run(db)
+    after = _run(db, atlas=_AtlasFilled())
+    assert before["count"] == 1 and after["count"] == 2
+    legacy = next(r for r in after["rows"] if r["client"] == "Old Import")
+    assert legacy["close_date"] == "2026-06-11" and legacy["amount"] == 2500 and legacy["atlas_era"] is False

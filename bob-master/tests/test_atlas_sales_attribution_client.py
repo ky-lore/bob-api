@@ -61,3 +61,33 @@ def test_non_json_error_body_still_raises_cleanly(monkeypatch):
     with pytest.raises(AtlasWriteError) as e:
         c.set_sales_attribution("a", actor="Bob", sales_rep="x@y.co")
     assert e.value.status == 502 and e.value.message == "Bad gateway"
+
+
+# ------------------------------------------------------------------ set_billing
+
+def test_set_billing_sends_changes_actor_and_the_compare_and_set_guard(monkeypatch):
+    c = _client(monkeypatch, _Resp(payload={"changed": ["baseAmount"], "previous": {"baseAmount": 5000}}))
+    out = c.set_billing("a1", {"baseAmount": 2500, "firstChargeDate": None}, actor="Bob", expect={"baseAmount": 5000})
+    assert c._client.calls == [("/api/accounts/a1/billing", {"baseAmount": 2500, "firstChargeDate": None, "actor": "Bob", "expect": {"baseAmount": 5000}})]
+    assert out["changed"] == ["baseAmount"]
+
+
+def test_set_billing_omits_expect_when_not_given(monkeypatch):
+    c = _client(monkeypatch, _Resp(payload={}))
+    c.set_billing("a1", {"billingType": "one_time"}, actor="Bob")
+    assert c._client.calls[0][1] == {"billingType": "one_time", "actor": "Bob"}
+
+
+def test_set_billing_refuses_fields_outside_the_narrow_allowlist_before_any_request(monkeypatch):
+    c = _client(monkeypatch, _Resp(payload={}))
+    for bad in ({"introEndsDate": "2026-12-01"}, {"parentAccountId": "x"}, {"merchant": "stripe_ghl"}):
+        with pytest.raises(ValueError):
+            c.set_billing("a1", bad, actor="Bob")
+    assert c._client.calls == []
+
+
+def test_set_billing_conflict_and_validation_errors_carry_atlas_message(monkeypatch):
+    c = _client(monkeypatch, _Resp(status=409, payload={"message": "baseAmount is now 3500, not 5000"}))
+    with pytest.raises(AtlasWriteError) as e:
+        c.set_billing("a1", {"baseAmount": 2500}, actor="Bob", expect={"baseAmount": 5000})
+    assert e.value.status == 409 and "now 3500" in e.value.message

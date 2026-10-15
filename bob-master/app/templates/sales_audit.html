@@ -356,7 +356,7 @@
       {% if data.source_errors %}
         <div class="banner" role="status"><strong>Some sources failed on this run:</strong>
           {% for k, v in data.source_errors.items() %} {{ k }} — {{ v }}{% if not loop.last %}; {% endif %}{% endfor %}.
-          Numbers that depend on them (amounts from the billing sheet, call-based rep attribution) may be incomplete.</div>
+          Numbers that depend on them (call-based rep attribution, or the rep roster) may be incomplete.</div>
       {% endif %}
 
       {% if not run %}
@@ -482,16 +482,15 @@
   var REP_VAR = {}; REPS.forEach(function (n, i) { REP_VAR[n] = i < 8 ? 'var(--s' + (i + 1) + ')' : 'var(--s-none)'; }); REP_VAR[NEEDS_REP] = 'var(--s-none)';
   var FLAGS = {
     needs_rep: ['Needs rep', 'serious', 'No Atlas rep, GHL assignee, or call evidence credits a core rep. Assign one.'],
-    no_amount: ['No amount', 'warning', 'No Atlas billing amount, billing-sheet charge, or notes estimate yet.'],
-    amount_mismatch: ['Amount ≠ sheet', 'warning', 'Atlas billing initial value differs from the billing sheet’s first charge (sheet may be prorated).'],
-    not_in_atlas: ['Not in Atlas', 'warning', 'Billed on the sheet but no matching Atlas account.'],
-    estimated_date: ['Month only', '', 'No GHL/Atlas close day; dated by billing month.'],
+    no_amount: ['No amount', 'warning', 'Atlas has no billing.baseAmount for this account yet.'],
+    no_first_charge_date: ['No first-charge date', '', 'Atlas has no billing.firstChargeDate for this account (Atlas needs it to compute the intro-end date).'],
+    one_time: ['One-time', '', 'Billed as a one-time charge, not a monthly retainer.'],
     owner_conflict: ['Rep conflict', 'warning', 'The credited rep differs from who had the most call time with this client.'],
     onboarding_incomplete: ['Onboarding open', '', 'Atlas-era account whose onboarding modules are not all completed.'],
     atlas_closed: ['Atlas: closed', 'warning', 'Atlas stage is “closed”.'],
     no_ghl_match: ['No GHL match', '', 'No GHL opportunity or contact found — source is unknown.']
   };
-  var SOFT_FLAGS = ['estimated_date', 'onboarding_incomplete'];
+  var SOFT_FLAGS = ['onboarding_incomplete', 'no_first_charge_date', 'one_time'];   // shown as badges, not counted as "Flagged"
   // Atlas account status (client.clientStatus). In-progress stages are neutral; the others carry reserved status colours + an icon.
   var STAGES = { closed: ['Closed', 'critical', 'x'], at_risk: ['At risk', 'serious', 'alert'], onboarding: ['Onboarding', '', 'clock'], development: ['Development', '', 'wrench'], qa: ['QA', 'good', 'wrench'], active: ['Active', 'good', 'check'], live: ['Live', 'good', 'check'] };
   // 'qa' and 'active' exist in live Atlas data but not in its documented enum; Bob (2026-10-15): both are healthy, shown GREEN like Live.
@@ -892,7 +891,7 @@
       var html = '<tr class="row' + (open ? ' open' : '') + (r.excluded ? ' excluded' : '') + '" data-stage="' + stageKey(r) + '" data-key="' + esc(r.key) + '" tabindex="0" aria-expanded="' + open + '">' +
         '<td class="date">' + esc(dateLabel(r)) + '</td><td><div class="primary">' + esc(r.client) + '</div>' + (r.contact && r.contact !== r.client ? '<div class="secondary">' + esc(r.contact) + '</div>' : '') + '</td>' +
         '<td>' + stageBadge(r) + '</td><td>' + repCell(r) + '</td><td>' + src + '</td>' + (S.view === 'Digital Diagnosis' ? '<td class="secondary">' + esc(r.where || '') + '</td>' : '') +
-        '<td class="num amt">' + money(r.amount) + '<span class="basis">' + esc(r.amount_basis || '') + '</span></td><td>' + flagBadges(r) + '</td></tr>';
+        '<td class="num amt">' + money(r.amount) + '<span class="basis">' + esc(r.amount_basis || '') + (r.billing_type === 'one_time' ? ' · one-time' : '') + '</span></td><td>' + flagBadges(r) + '</td></tr>';
       return open ? html + drawer(r, c.length) : html;
     }).join('') || '<tr><td colspan="' + c.length + '" class="no-rows">No deals match these filters. <button class="linkish" data-reset>Reset filters</button></td></tr>';
     var from = all.length ? S.page * S.size + 1 : 0, to = Math.min(all.length, S.page * S.size + S.size);
@@ -921,8 +920,8 @@
     return '<tr class="drawer-row"><td colspan="' + span + '"><div class="drawer"><div><h4>Why this row looks the way it does</h4><dl class="facts">' +
       fact('Close date', esc(dateLabel(r)) + ' <span class="secondary">via ' + esc(r.close_date_basis || '') + '</span>') +
       fact('Rep basis', esc(r.owner_basis) + (r.auto_owner ? ' <span class="secondary">(pipeline said ' + esc(r.auto_owner) + ')</span>' : '')) +
-      fact('Amount', money(r.amount) + ' <span class="secondary">' + esc(r.amount_basis || '') + '</span>') + fact('Atlas base amount', r.base_amount ? money(r.base_amount) + '/mo' : '') +
-      fact('Billing-sheet first charge', r.sheet_first_charge ? money(r.sheet_first_charge) : '') +
+      fact('Amount', money(r.amount) + ' <span class="secondary">' + esc(r.amount_basis || '') + (r.billing_type === 'one_time' ? ' · one-time' : '/mo') + '</span>') +
+      fact('Atlas billing', [r.billing_type, r.billing_package].filter(Boolean).map(function (x) { return esc(String(x).replace(/_/g, ' ')); }).join(' · ') + (r.first_charge_date ? ' · first charge ' + esc(r.first_charge_date) : '')) +
       fact('Atlas', r.atlas_id ? stageBadge(r) + (r.atlas_created ? ' · created ' + esc(r.atlas_created) : '') + (r.atlas_era ? ' · Atlas-era sale' : '') : 'No Atlas account') + fact('Onboarding', esc(ob)) +
       fact('GHL opp', r.ghl_opp ? esc(r.ghl_status || '') + (r.ghl_won_date ? ' · ' + esc(r.ghl_won_date) : '') : '') + fact('GHL assignee', r.ghl_assigned ? esc(r.ghl_assigned) + (r.noncore_assignee ? ' (not credited)' : '') : '') +
       fact('Source detail', esc(r.source_detail || '')) + fact('Referral partner', esc(r.referral_partner)) + fact('Call evidence', score) + fact('Zoom matches', r.zoom_calls ? String(r.zoom_calls) : '') + fact('First seen in audit', esc(r.first_seen)) + '</dl>' +
@@ -1028,7 +1027,7 @@
   var rT, lastW = 0; if (window.ResizeObserver) new ResizeObserver(function () { var w = $('trend').clientWidth; if (Math.abs(w - lastW) < 2) return; lastW = w; clearTimeout(rT); rT = setTimeout(renderTrend, 120); }).observe($('trend'));
 
   var gen = DATA.generated_at ? new Date(DATA.generated_at) : null;
-  $('dek').textContent = (gen ? 'Refreshed ' + gen.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + '. ' : '') + 'Every Atlas account created since Jul 1, 2026 is a sold package; June comes from the billing sheet and GHL. Digital Diagnosis is always shown separately.' +
+  $('dek').textContent = (gen ? 'Refreshed ' + gen.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + '. ' : '') + 'Every Atlas account created since Jul 1, 2026 is a sold package; legacy imports count from their Atlas first-charge date. Value is each account’s agreed amount from Atlas billing. Digital Diagnosis is always shown separately.' +
     (DATA.overrides_applied ? ' ' + DATA.overrides_applied + ' manual correction' + (DATA.overrides_applied === 1 ? '' : 's') + ' applied.' : '');
   $('side-foot').textContent = (gen ? 'Data as of ' + gen.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' : '') + DATA.count + ' deals';
   $('q').value = S.q;
