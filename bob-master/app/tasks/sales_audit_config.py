@@ -31,36 +31,18 @@ INTRO_DISCOUNT = 1000
 # Informational only -- the sheet's first charge can legitimately be prorated.
 AMOUNT_TOLERANCE = 1.0
 
-# GHL user id -> canonical rep name. Reps who count (BRIEF §4, decided by
-# Bob -- don't re-litigate). Simon Ting, Allondra Guitierrez and Makayla
-# Hudgens must NEVER be credited with a deal, even when GHL assigns them the
-# opp: their assignment is ignored and the deal falls back to call evidence,
-# else "Needs rep" (a human assigns it via an override).
-REPS_BY_GHL_USER = {
-    "VcAw8YaXQU5UKKrQqmc7": "Paul Rastrelli",
-    "zFFksf6pFR54PxcMNgUI": "Kyle Kellner",
-    "oaxfQ14pFppgbEY1QtUs": "Jaden Bashaw",
-    "QdxKPdYt22ffj9Ue1OO5": "Chris Paniagua",
-}
-REP_NAMES = list(REPS_BY_GHL_USER.values())
-# Atlas user emails for the four reps (confirmed by Atlas's team 2026-10-15: all four are active users in
-# the sales department) -- what the push to Atlas sends as `salesRep`. Anthony Aguilar is also in Atlas
-# sales but is NOT a counted rep (Bob's call: the four above only).
-REP_ATLAS_EMAILS = {
-    "Paul Rastrelli": "paul@advancedmarketers.co",
-    "Kyle Kellner": "kylekellner@advancedmarketers.co",
-    "Jaden Bashaw": "jbashaw@advancedmarketers.co",
-    "Chris Paniagua": "chris@advancedmarketers.co",
-}
+# REP ROSTER (Bob, 2026-10-15): the roster is whatever Atlas says -- GET /api/users/sales-reps (active users in the
+# sales department), pulled on every run and stored in the run payload. "The endpoint is the level of truth":
+# no exclusion list, no hardcoded names/IDs. GHL users and Zoom hosts are matched to roster reps by EMAIL (name as a
+# fallback for GHL). The four below are ONLY a fallback for when that endpoint can't be reached AND no earlier run
+# has a stored roster, and for runs stored before the roster existed -- never the source of truth.
+LEGACY_ROSTER = [
+    {"name": "Paul Rastrelli", "email": "paul@advancedmarketers.co"},
+    {"name": "Kyle Kellner", "email": "kylekellner@advancedmarketers.co"},
+    {"name": "Jaden Bashaw", "email": "jbashaw@advancedmarketers.co"},
+    {"name": "Chris Paniagua", "email": "chris@advancedmarketers.co"},
+]
 NEEDS_REP = "Needs rep"
-
-# Zoom host email (as stored in ZoomCallRecord.host_email) -> rep.
-REPS_BY_ZOOM_EMAIL = {
-    "paul@advancedmarketers.co": "Paul Rastrelli",
-    "kylekellner@advancedmarketers.co": "Kyle Kellner",
-    "jbashaw@advancedmarketers.co": "Jaden Bashaw",
-    "chris@advancedmarketers.co": "Chris Paniagua",
-}
 
 # GHL pipelines. Only ADV Master carries "real client" deals; the other two
 # are scanned only for stage-based Digital Diagnosis closes.

@@ -113,10 +113,16 @@ class GHLClient:
         pipelines = self._get("/opportunities/pipelines", {"locationId": self._location_id}).get("pipelines", [])
         return {s["id"]: (p["name"], s["name"]) for p in pipelines for s in p.get("stages", [])}
 
+    def list_user_details(self) -> list[dict[str, str]]:
+        """GHL users as [{id, name, email}] -- email is how a GHL user is
+        matched to an Atlas sales rep (names alone are messy)."""
+        users = self._get("/users/", {"locationId": self._location_id}).get("users", [])
+        return [{"id": u["id"], "email": (u.get("email") or "").strip().lower(),
+                 "name": (u.get("name") or f"{u.get('firstName', '')} {u.get('lastName', '')}".strip())} for u in users]
+
     def list_users(self) -> dict[str, str]:
         """GHL user id -> display name."""
-        users = self._get("/users/", {"locationId": self._location_id}).get("users", [])
-        return {u["id"]: (u.get("name") or f"{u.get('firstName', '')} {u.get('lastName', '')}".strip()) for u in users}
+        return {u["id"]: u["name"] for u in self.list_user_details()}
 
     def search_contact(self, query: str) -> dict[str, Any] | None:
         contacts = self._get("/contacts/", {"locationId": self._location_id, "query": query, "limit": 3}).get("contacts", [])

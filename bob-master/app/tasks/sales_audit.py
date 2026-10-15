@@ -32,7 +32,7 @@ from app.integrations.ghl import GHLClient
 from app.integrations.google_drive import GoogleDriveClient
 from app.models import SalesAuditRun, SalesDealOverride
 from app.tasks import sales_audit_config as cfg
-from app.tasks.sales_audit_blend import DIGITAL_DIAGNOSIS, PACKAGE, build_sales_rows
+from app.tasks.sales_audit_blend import DIGITAL_DIAGNOSIS, PACKAGE, Roster, build_sales_rows
 from app.tasks.sales_audit_sources import ZoomIndex, fetch_ghl, make_lookups, read_billing
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,23 @@ def _summary(rows: list[dict]) -> dict:
             "flags": dict(Counter(f for r in rows for f in r["flags"]))}
 
 
+def _atlas_roster(atlas, db: Session, ghl_user_details: list[dict], source_errors: dict) -> Roster:
+    """The rep roster = Atlas's GET /api/users/sales-reps, every run (Bob: the endpoint is the level of truth).
+    If it can't be reached -- or returns nobody, which would silently credit no one -- fall back to the last
+    stored run's roster, then LEGACY_ROSTER, and SAY SO on the page (source_errors) rather than guessing quietly."""
+    try:
+        reps = atlas.get_sales_reps()
+        if reps:
+            return Roster.from_atlas(reps, ghl_user_details)
+        source_errors["atlas_roster"] = "Atlas returned an empty sales roster; using the last known roster"
+    except Exception as exc:
+        logger.exception("sales-audit: sales-roster fetch failed")
+        source_errors["atlas_roster"] = f"{type(exc).__name__}: {exc}"[:300] + " -- using the last known roster"
+    previous = db.query(SalesAuditRun).order_by(SalesAuditRun.run_at.desc()).first()
+    stored = json.loads(previous.report_json).get("roster") if previous else None
+    return Roster.from_atlas(stored or cfg.LEGACY_ROSTER, ghl_user_details)
+
+
 def build_sales_audit(
     db: Session, *, atlas=None, ghl=None, drive=None, zoom: ZoomIndex | None = None,
     on_progress: Callable[[str], None] | None = None,
@@ -56,11 +73,15 @@ def build_sales_audit(
     source_errors: dict[str, str] = {}
 
     note("pulling Atlas accounts")
-    atlas_accounts = (atlas or AtlasClient()).get_all_accounts()
+    atlas = atlas or AtlasClient()
+    atlas_accounts = atlas.get_all_accounts()
 
     note("pulling GHL opportunities")
     ghl = ghl or GHLClient()
     ghl_data = fetch_ghl(ghl)
+
+    note("pulling the Atlas sales roster")
+    roster = _atlas_roster(atlas, db, ghl_data.get("ghl_user_details", []), source_errors)
 
     note("reading billing sheet")
     billing: list[dict] = []
@@ -73,14 +94,14 @@ def build_sales_audit(
 
     note("indexing Zoom transcripts")
     try:
-        zoom = zoom or ZoomIndex.from_db(db)
+        zoom = zoom or ZoomIndex.from_db(db, roster)
     except Exception as exc:  # soft: rep attribution loses call evidence
         logger.exception("sales-audit: zoom index failed")
         source_errors["zoom"] = f"{type(exc).__name__}: {exc}"[:300]
         zoom = ZoomIndex([])
 
     note("blending")
-    rows = build_sales_rows({"atlas": atlas_accounts, "billing": billing, **ghl_data}, make_lookups(ghl, zoom))
+    rows = build_sales_rows({"atlas": atlas_accounts, "billing": billing, "roster": roster, **ghl_data}, make_lookups(ghl, zoom))
 
     # first_seen carry-forward: GHL won dates are unreliable, so remember the
     # first day each deal appeared in ANY audit snapshot.
@@ -95,7 +116,8 @@ def build_sales_audit(
         "count": len(rows), "rows": rows, "summary": _summary(rows),
         "source_errors": source_errors, "billing_meta": billing_meta,
         "zoom_transcripts_indexed": len(zoom.entries),
-        "rules": {"audit_start": cfg.AUDIT_START, "atlas_era_start": cfg.ATLAS_ERA_START, "reps": cfg.REP_NAMES},
+        "roster": roster.reps,
+        "rules": {"audit_start": cfg.AUDIT_START, "atlas_era_start": cfg.ATLAS_ERA_START, "reps": roster.names},
     }
 
 

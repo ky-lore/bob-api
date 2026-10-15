@@ -28,7 +28,7 @@ def _row(key, client="Acme Roofing", owner="Needs rep", typ="Package", **kw):
             "first_seen": "2026-10-15", **kw}
 
 
-def _setup(tmp_path, rows=None, source_errors=None):
+def _setup(tmp_path, rows=None, source_errors=None, roster=None):
     engine = create_engine(f"sqlite:///{tmp_path / 't.db'}")
     Base.metadata.create_all(bind=engine)
     sf = sessionmaker(bind=engine)
@@ -39,7 +39,7 @@ def _setup(tmp_path, rows=None, source_errors=None):
         with sf() as db:
             db.add(SalesAuditRun(run_at=datetime(2026, 10, 15, 12), report_json=json.dumps(
                 {"generated_at": "2026-10-15T12:00:00+00:00", "count": len(rows), "rows": rows, "summary": {},
-                 "source_errors": source_errors or {}, "rules": {}})))
+                 "source_errors": source_errors or {}, "rules": {}, **({"roster": roster} if roster is not None else {})})))
             db.commit()
     return TestClient(app), sf
 
@@ -290,3 +290,51 @@ def test_page_is_branded_and_has_the_deals_screen_hooks(tmp_path):
         assert marker in html, marker
     assert "advmfav2.png" not in html          # no more hotlinking the marketing site
     assert "qa: ['QA', 'good'" in html and "active: ['Active', 'good'" in html
+
+
+# ------------------------------------------------------------ roster comes from the stored Atlas roster
+
+ROSTER = [{"name": "Anthony Aguilar", "email": "anthonyaguilar@advancedmarketers.co"},
+          {"name": "Kyle Kellner", "email": "kylekellner@advancedmarketers.co"}]
+
+
+def test_a_rep_added_in_atlas_can_be_assigned_and_is_pushed_with_the_email_atlas_lists(tmp_path, monkeypatch):
+    atlas = _FakeAtlas()
+    client, sf = _setup(tmp_path, rows=[_row("atlas:1", atlas_id="A1")], roster=ROSTER)
+    monkeypatch.setattr(router_mod, "_atlas_client", lambda: atlas)
+    r = client.post("/reports/sales-audit/push", headers=PW, json={"deal_key": "atlas:1", "owner": "Anthony Aguilar", "set_by": "Bob"})
+    assert r.status_code == 200 and r.json()["pushed"] is True
+    assert atlas.calls == [{"atlas_id": "A1", "actor": "Bob", "sales_rep": "anthonyaguilar@advancedmarketers.co"}]
+    assert client.post("/reports/sales-audit/overrides", headers=PW, json={"deal_key": "atlas:1", "client_name": "x", "owner": "Anthony Aguilar"}).status_code == 200
+
+
+def test_a_rep_not_on_the_current_roster_is_rejected_for_both_override_and_push(tmp_path, monkeypatch):
+    atlas = _FakeAtlas()
+    client, sf = _setup(tmp_path, rows=[_row("atlas:1", atlas_id="A1")], roster=ROSTER)      # Paul is NOT on this roster
+    monkeypatch.setattr(router_mod, "_atlas_client", lambda: atlas)
+    r1 = client.post("/reports/sales-audit/push", headers=PW, json={"deal_key": "atlas:1", "owner": "Paul Rastrelli", "set_by": "Bob"})
+    r2 = client.post("/reports/sales-audit/overrides", headers=PW, json={"deal_key": "atlas:1", "client_name": "x", "owner": "Paul Rastrelli"})
+    assert r1.status_code == 422 and r2.status_code == 422 and "Atlas sales roster" in r1.json()["detail"]
+    assert atlas.calls == []
+    with sf() as db:
+        assert db.query(SalesDealOverride).count() == 0
+
+
+def test_the_page_offers_exactly_the_stored_roster_and_latest_json_exposes_it(tmp_path):
+    client, _ = _setup(tmp_path, rows=[_row("atlas:1")], roster=ROSTER)
+    html = client.get("/reports/sales-audit").text
+    assert 'var ASSIGNABLE = ["Anthony Aguilar", "Kyle Kellner"];' in html and "Paul Rastrelli" not in html
+    assert client.get("/reports/sales-audit/latest").json()["roster"] == ROSTER
+
+
+def test_runs_stored_before_the_roster_existed_fall_back_to_the_legacy_four(tmp_path):
+    client, _ = _setup(tmp_path, rows=[_row("atlas:1")])                                       # no "roster" in the payload
+    html = client.get("/reports/sales-audit").text
+    assert 'var ASSIGNABLE = ["Paul Rastrelli", "Kyle Kellner", "Jaden Bashaw", "Chris Paniagua"];' in html
+
+
+def test_needs_rep_gets_its_gray_as_a_real_statement_not_swallowed_by_a_line_comment(tmp_path):
+    client, _ = _setup(tmp_path, rows=[_row("atlas:1")], roster=ROSTER)
+    html = client.get("/reports/sales-audit").text
+    line = next(l for l in html.splitlines() if "var REP_VAR = {};" in l)
+    assert "//" not in line and "REP_VAR[NEEDS_REP] = 'var(--s-none)';" in line      # a // on this line would comment the rest out

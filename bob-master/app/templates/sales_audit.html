@@ -14,7 +14,7 @@
     --page: #f9f9f7; --surface: #fcfcfb; --sidebar: #f4f4f1;
     --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
     --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,.10); --hover: rgba(11,11,11,.045); --fill: rgba(11,11,11,.06);
-    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s-none: #b4b2a9;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948; --s-none: #b4b2a9;
     --accent: #2a78d6; --good-ink: #006300;
     --st-good: #0ca30c; --st-warning: #fab219; --st-serious: #ec835a; --st-critical: #d03b3b;
     --radius: 10px;
@@ -27,7 +27,7 @@
       --page: #0d0d0d; --surface: #1a1a19; --sidebar: #141413;
       --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
       --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10); --hover: rgba(255,255,255,.06); --fill: rgba(255,255,255,.07);
-      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s-none: #5d5c56;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767; --s-none: #5d5c56;
       --accent: #3987e5; --good-ink: #0ca30c;
     }
   }
@@ -36,7 +36,7 @@
     --page: #0d0d0d; --surface: #1a1a19; --sidebar: #141413;
     --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,.10); --hover: rgba(255,255,255,.06); --fill: rgba(255,255,255,.07);
-    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s-none: #5d5c56;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767; --s-none: #5d5c56;
     --accent: #3987e5; --good-ink: #0ca30c;
   }
   /* DD is its own world: violet accent for single-series marks (slot 7), never a status hue. */
@@ -429,7 +429,8 @@
 (function () {
   'use strict';
   var ADMIN_PASSWORD = {{ admin_password | tojson }};
-  var REPS = {{ reps | tojson }};
+  var ASSIGNABLE = {{ reps | tojson }};   // the current Atlas sales roster -- who can be assigned/pushed
+  var REPS = ASSIGNABLE.slice();          // display list: roster + any former rep still present on a deal
   var NEEDS_REP = {{ needs_rep | tojson }};
   var ATLAS_WEB = {{ atlas_web_base | tojson }};
   var RUN_ID = {{ (run.id if run else none) | tojson }};
@@ -470,13 +471,15 @@
   var DATA = JSON.parse($('sales-data').textContent);
   if (!DATA.rows || !$('grid')) return;
   var ROWS = DATA.rows;
+  ROWS.forEach(function (r) { if (r.owner && r.owner !== {{ needs_rep | tojson }} && REPS.indexOf(r.owner) < 0) REPS.push(r.owner); });
 
   /* ---- constants ---------------------------------------------------------- */
   var VIEWS = [{ key: 'Package', label: 'Packages', icon: 'package' }, { key: 'Digital Diagnosis', label: 'Digital Diagnosis', icon: 'stethoscope' }];
   var SOURCES = ['Event', 'Referral', 'Paid Ads', 'Organic/Website', 'Inbound call (untagged)', 'Unknown'];
   // Series colour is fixed per entity (never by rank): the four reps take categorical slots 1-4 in
   // the order the server lists them; unassigned is a neutral gray, not a hue.
-  var REP_VAR = {}; REPS.forEach(function (n, i) { REP_VAR[n] = 'var(--s' + (i + 1) + ')'; }); REP_VAR[NEEDS_REP] = 'var(--s-none)';
+  // 8 categorical slots, never cycled; unassigned is always the neutral gray.
+  var REP_VAR = {}; REPS.forEach(function (n, i) { REP_VAR[n] = i < 8 ? 'var(--s' + (i + 1) + ')' : 'var(--s-none)'; }); REP_VAR[NEEDS_REP] = 'var(--s-none)';
   var FLAGS = {
     needs_rep: ['Needs rep', 'serious', 'No Atlas rep, GHL assignee, or call evidence credits a core rep. Assign one.'],
     no_amount: ['No amount', 'warning', 'No Atlas billing amount, billing-sheet charge, or notes estimate yet.'],
@@ -866,7 +869,7 @@
   function repCell(r) {
     if (r.owner === NEEDS_REP) {
       return '<span class="rep-warn"><span class="dot"></span>Needs rep</span>' + (r.noncore_assignee ? '<div class="secondary">GHL: ' + esc(r.noncore_assignee) + ' (not credited)</div>' : '') +
-        '<div><select class="quick-assign" data-quick="' + esc(r.key) + '" aria-label="Assign rep to ' + esc(r.client) + '"><option value="">Assign…</option>' + REPS.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('') + '</select></div>';
+        '<div><select class="quick-assign" data-quick="' + esc(r.key) + '" aria-label="Assign rep to ' + esc(r.client) + '"><option value="">Assign…</option>' + ASSIGNABLE.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('') + '</select></div>';
     }
     return esc(r.owner) + (r.overridden && r.owner_basis === 'manual override' ? '<span class="manual-dot" title="' + (r.atlas_pushed_at ? 'Assigned here and written to Atlas' : 'Assigned here only (not in Atlas)') + '"></span>' : '') + '<div class="secondary">' + esc(r.owner_basis) + '</div>';
   }
@@ -925,7 +928,7 @@
       fact('Source detail', esc(r.source_detail || '')) + fact('Referral partner', esc(r.referral_partner)) + fact('Call evidence', score) + fact('Zoom matches', r.zoom_calls ? String(r.zoom_calls) : '') + fact('First seen in audit', esc(r.first_seen)) + '</dl>' +
       (tags ? '<h4>GHL tags</h4><div>' + tags + '</div>' : '') + (zoom ? '<h4>Zoom transcripts matched</h4><ul class="evidence">' + zoom + '</ul>' : '') +
       '</div><form class="edit" data-edit="' + esc(r.key) + '"><h4>Correct this deal</h4>' + atlasLine(r) + '<label>Rep<select name="owner"><option value="">Automatic (' + esc(r.auto_owner || r.owner) + ')</option>' +
-      REPS.map(function (n) { return '<option' + (r.overridden && r.owner === n ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select></label>' +
+      ASSIGNABLE.map(function (n) { return '<option' + (r.overridden && r.owner === n ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select></label>' +
       '<label>Referral partner<input type="text" name="referral_partner" list="partners" autocomplete="off" placeholder="Partner name" value="' + esc(r.referral_partner || '') + '"></label>' +
       '<label>Type<select name="deal_type"><option value="">' + esc(r.auto_type || r.type) + ' (automatic)</option><option value="' + other + '"' + (r.auto_type ? ' selected' : '') + '>Move to ' + other + '</option></select></label>' +
       '<label class="cb"><input type="checkbox" name="excluded"' + (r.excluded ? ' checked' : '') + '> Not a real sale — exclude from all totals</label>' +

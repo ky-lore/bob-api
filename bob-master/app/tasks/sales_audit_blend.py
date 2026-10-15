@@ -28,7 +28,7 @@ import difflib
 import json
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -49,6 +49,64 @@ class Lookups:
     find_contact: Callable[[dict], dict | None]
     # (name tokens, close date or None) -> [{"rep", "date", "min", "topic", "via"}]
     zoom_hits: Callable[[list[str], str | None], list[dict]]
+
+
+# -------------------------------------------------------------------- roster
+
+def tidy_name(name: str | None) -> str:
+    """Atlas stores names as typed ("Chris paniagua"). Capitalise any all-lowercase word, leave the rest alone
+    (so "McDonald" and "DeAngelo" survive)."""
+    return " ".join(w.capitalize() if w.islower() else w for w in (name or "").split())
+
+
+def _name_key(name: str | None) -> str:
+    return " ".join((name or "").lower().split())
+
+
+@dataclass
+class Roster:
+    """Who counts as a sales rep -- exactly Atlas's GET /api/users/sales-reps (Bob, 2026-10-15: "the endpoint is the
+    level of truth"; no exclusion list). reps = [{name, email}]. ghl_user_reps maps a GHL user id to the roster rep
+    it is (matched by email, then name), so a GHL assignee / call is credited to a rep, or to nobody."""
+    reps: list[dict]
+    ghl_user_reps: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def names(self) -> list[str]:
+        return [r["name"] for r in self.reps]
+
+    def resolve(self, *, email: str | None = None, name: str | None = None) -> str | None:
+        """The roster rep (canonical name) matching an email, else a name; None if nobody on the roster."""
+        em = (email or "").strip().lower()
+        if em:
+            for r in self.reps:
+                if r["email"] == em:
+                    return r["name"]
+        key = _name_key(name)
+        if key:
+            for r in self.reps:
+                if _name_key(r["name"]) == key:
+                    return r["name"]
+        return None
+
+    def email_for(self, name: str) -> str | None:
+        return next((r["email"] for r in self.reps if r["name"] == name), None)
+
+    @classmethod
+    def from_atlas(cls, atlas_reps: list[dict], ghl_users: list[dict] | None = None) -> "Roster":
+        seen, reps = set(), []
+        for u in atlas_reps:
+            email = (u.get("email") or "").strip().lower()
+            if not email or email in seen:
+                continue
+            seen.add(email)
+            reps.append({"name": tidy_name(u.get("name")) or email, "email": email})
+        roster = cls(reps)
+        for g in ghl_users or []:
+            rep = roster.resolve(email=g.get("email"), name=g.get("name"))
+            if rep:
+                roster.ghl_user_reps[g["id"]] = rep
+        return roster
 
 
 # --------------------------------------------------------------- normalizing
@@ -225,29 +283,29 @@ class _GhlIndex:
 
 # --------------------------------------------------------------------- deals
 
-def _attribute_owner(atlas_rep: str | None, ghl_assigned: str | None,
-                     call_score: Counter) -> tuple[str, str]:
-    """Priority: Atlas salesRep IF a core rep -> GHL assignee IF a core rep ->
-    most call minutes before close -> Needs rep (BRIEF §3.6). A non-core
-    name (Simon/Allondra/Makayla) is never credited, wherever it comes from
-    (BRIEF §4 -- the prototype would have credited a non-core Atlas rep)."""
-    core_lower = {n.lower(): n for n in cfg.REP_NAMES}
-    if atlas_rep and atlas_rep.strip().lower() in core_lower:
-        return core_lower[atlas_rep.strip().lower()], "Atlas salesRep"
-    if ghl_assigned in cfg.REP_NAMES:
-        return ghl_assigned, "GHL opp assignee"
+def _attribute_owner(atlas_rep: dict | None, ghl_rep: str | None, call_score: Counter, roster: Roster) -> tuple[str, str]:
+    """Priority: Atlas salesRep IF on the roster -> GHL assignee IF on the roster -> most call minutes before close
+    -> Needs rep (BRIEF §3.6). Anyone not on Atlas's sales roster is never credited, wherever the name comes from.
+    (A human override is applied after all of this, at render time.)"""
+    if atlas_rep:
+        name = roster.resolve(email=atlas_rep.get("email"), name=atlas_rep.get("name"))
+        if name:
+            return name, "Atlas salesRep"
+    if ghl_rep:
+        return ghl_rep, "GHL opp assignee"
     if call_score:
         return call_score.most_common(1)[0][0], "call activity (Zoom/GHL)"
     return cfg.NEEDS_REP, "none"
 
 
-def _call_evidence(calls: list[dict], zoom: list[dict], close: str | None) -> Counter:
+def _call_evidence(calls: list[dict], zoom: list[dict], close: str | None, roster: Roster) -> Counter:
     """Score per rep = call minutes + call count. GHL calls only up to close+3
     days (a call long after the close isn't what sold it); Zoom is already
-    gated to close+10 by the lookup. No date gate when there's no close date."""
+    gated to close+10 by the lookup. No date gate when there's no close date.
+    Only roster reps are scored."""
     mins: Counter = Counter()
     for c in calls:
-        rep = cfg.REPS_BY_GHL_USER.get(c.get("userId"))
+        rep = roster.ghl_user_reps.get(c.get("userId"))
         if not rep:
             continue
         if close and (c.get("dateAdded") or "")[:10] > _plus_days(close, 3):
@@ -255,7 +313,8 @@ def _call_evidence(calls: list[dict], zoom: list[dict], close: str | None) -> Co
         dur = (((c.get("meta") or {}).get("call") or {}).get("duration") or 0) // 60
         mins[rep] += dur + 1
     for h in zoom:
-        mins[h["rep"]] += (h.get("min") or 0) + 1
+        if h.get("rep"):
+            mins[h["rep"]] += (h.get("min") or 0) + 1
     return mins
 
 
@@ -320,7 +379,7 @@ def build_deals(data: dict, lk: Lookups) -> list[dict]:
        flagged not_in_atlas). Close date from GHL won date else billing
        month; Atlas createdAt deliberately ignored (backdated imports).
 
-    `data` keys: billing, atlas, master_opps, ghl_users."""
+    `data` keys: billing, atlas, master_opps, ghl_users, roster (a Roster)."""
     start = dt.datetime.fromisoformat(cfg.AUDIT_START)
     atlas = data["atlas"]
     atlas_by_key = {nkey(a["companyName"]): a for a in atlas}
@@ -371,7 +430,9 @@ def _one_deal(a: dict | None, bill: dict | None, o: dict | None, data: dict, lk:
     Master opp, if any."""
     ghl_won = _day(o.get("lastStatusChangeAt")) if o else None
     backfill = bool(o and (ghl_won == cfg.GHL_BACKFILL_DATE or (ghl_won or "") < cfg.AUDIT_START))
+    roster: Roster = data["roster"]
     ghl_assigned = (data.get("ghl_users") or {}).get(o.get("assignedTo")) if o else None
+    ghl_rep = roster.ghl_user_reps.get(o.get("assignedTo")) if o else None
     contact_name = (o["contact"]["name"] if o and o.get("contact") else None) or \
         (a["users"][0]["name"] if a and a.get("users") else None)
     client = a["companyName"] if a else bill["billing_name"]
@@ -424,8 +485,8 @@ def _one_deal(a: dict | None, bill: dict | None, o: dict | None, data: dict, lk:
     # ---- rep
     names = [contact_name, client] + ([u.get("name") for u in a.get("users") or []] if a else [])
     zoom = lk.zoom_hits([n for n in names if n], close)
-    score = _call_evidence(gc.get("calls") or [], zoom, close)
-    owner, basis = _attribute_owner(((a or {}).get("salesRep") or {}).get("name") if a else None, ghl_assigned, score)
+    score = _call_evidence(gc.get("calls") or [], zoom, close, roster)
+    owner, basis = _attribute_owner((a or {}).get("salesRep"), ghl_rep, score, roster)
 
     # ---- type: Atlas-era is ALWAYS a package; elsewhere price decides
     if atlas_era:
@@ -465,7 +526,7 @@ def _one_deal(a: dict | None, bill: dict | None, o: dict | None, data: dict, lk:
         "base_amount": base, "sheet_first_charge": sheet_amt,
         "retainer": (bill or {}).get("retainer"),
         "owner": owner, "owner_basis": basis, "call_score": dict(score),
-        "noncore_assignee": ghl_assigned if ghl_assigned and ghl_assigned not in cfg.REP_NAMES else None,
+        "noncore_assignee": ghl_assigned if ghl_assigned and not ghl_rep else None,
         **src_info, "referral_partner": partner, "referral_partner_id": partner_id, "tags": tags[:8], "where": None,
         "atlas_era": atlas_era, "atlas_id": a["id"] if a else None,
         "atlas_stage": a.get("stage") if a else None, "atlas_created": la_day(a["createdAt"]) if a else None,
@@ -485,6 +546,7 @@ def build_dd_rows(data: dict) -> list[dict]:
     (the same person moves through several pipelines)."""
     stages = data["stages"]
     users = data.get("ghl_users") or {}
+    roster: Roster = data["roster"]
     rows = []
     for o in data["master_opps"] + data["other_opps"]:
         pipeline, stage = stages.get(o.get("pipelineStageId"), ("?", "?"))
@@ -499,7 +561,8 @@ def build_dd_rows(data: dict) -> list[dict]:
         tags = (o.get("contact") or {}).get("tags") or []
         date = _day(o["lastStageChangeAt"])
         assigned = users.get(o.get("assignedTo"))
-        owner = assigned if assigned in cfg.REP_NAMES else cfg.NEEDS_REP
+        ghl_rep = roster.ghl_user_reps.get(o.get("assignedTo"))
+        owner = ghl_rep or cfg.NEEDS_REP
         rows.append({
             "key": f"dd:{o['id']}", "type": DIGITAL_DIAGNOSIS,
             "client": o.get("name"), "contact": o.get("name"),
@@ -508,7 +571,7 @@ def build_dd_rows(data: dict) -> list[dict]:
             "retainer": None, "base_amount": None, "sheet_first_charge": None, "referral_partner": None, "referral_partner_id": None,
             "atlas_era": False, "onboarding": None, "owner": owner,
             "owner_basis": "GHL opp assignee" if owner != cfg.NEEDS_REP else "none", "call_score": {},
-            "noncore_assignee": assigned if assigned and assigned not in cfg.REP_NAMES else None,
+            "noncore_assignee": assigned if assigned and not ghl_rep else None,
             **resolve_source(tags, o.get("source"), None, date), "tags": tags[:8],
             "where": f"{pipeline} · {stage}",
             "atlas_id": None, "atlas_stage": None, "atlas_created": None,

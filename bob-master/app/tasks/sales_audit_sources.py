@@ -17,11 +17,12 @@ import logging
 import re
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import ZoomCallRecord
 from app.tasks import sales_audit_config as cfg
-from app.tasks.sales_audit_blend import Lookups, phone10, vtt_minutes
+from app.tasks.sales_audit_blend import Lookups, Roster, phone10, vtt_minutes
 
 logger = logging.getLogger(__name__)
 
@@ -96,18 +97,20 @@ def read_billing(drive) -> tuple[list[dict], dict]:
 def fetch_ghl(ghl) -> dict:
     """ADV Master opps (all statuses), the two DD-only pipelines' opps, the
     stage id -> (pipeline, stage) map, and GHL user id -> name."""
+    details = ghl.list_user_details()
     return {
         "master_opps": ghl.list_opportunities(cfg.GHL_ADV_MASTER_PIPELINE),
         "other_opps": [o for pid in cfg.GHL_DD_PIPELINES for o in ghl.list_opportunities(pid)],
         "stages": ghl.list_pipeline_stages(),
-        "ghl_users": ghl.list_users(),
+        "ghl_user_details": details,
+        "ghl_users": {u["id"]: u["name"] for u in details},
     }
 
 
 # ------------------------------------------------------------------- lookups
 
 class ZoomIndex:
-    """In-memory index of the four reps' stored transcripts, built once per
+    """In-memory index of the roster reps' stored transcripts, built once per
     run. hits() is the prototype's rule (BRIEF §3.9): a transcript counts for
     a deal if its topic contains the contact/client name, or the text
     mentions the name >=3 times; only meetings on/before close + 10 days."""
@@ -116,19 +119,22 @@ class ZoomIndex:
         self.entries = entries
 
     @classmethod
-    def from_db(cls, db: Session) -> "ZoomIndex":
+    def from_db(cls, db: Session, roster: Roster) -> "ZoomIndex":
+        by_email = {r["email"]: r["name"] for r in roster.reps}
+        if not by_email:
+            return cls([])
         rows = (
             db.query(ZoomCallRecord.host_email, ZoomCallRecord.topic, ZoomCallRecord.start_time, ZoomCallRecord.transcript_text)
             .filter(ZoomCallRecord.start_time >= _ZOOM_LOOKBACK_START)
-            .filter(ZoomCallRecord.host_email.in_(list(cfg.REPS_BY_ZOOM_EMAIL)))
+            .filter(func.lower(ZoomCallRecord.host_email).in_(list(by_email)))
             .all()
         )
         return cls([{
-            "rep": cfg.REPS_BY_ZOOM_EMAIL[r.host_email.lower()] if r.host_email.lower() in cfg.REPS_BY_ZOOM_EMAIL else None,
+            "rep": by_email[r.host_email.lower()],
             "topic": r.topic or "", "topic_lc": (r.topic or "").lower(),
             "date": r.start_time.date().isoformat(), "min": vtt_minutes(r.transcript_text),
             "text": (r.transcript_text or "").lower(),
-        } for r in rows if r.host_email and r.host_email.lower() in cfg.REPS_BY_ZOOM_EMAIL])
+        } for r in rows if r.host_email and r.host_email.lower() in by_email])
 
     def hits(self, names: list[str], close: str | None) -> list[dict]:
         tokens = [n.lower() for n in names if n and len(n) >= 5]

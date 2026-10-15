@@ -25,9 +25,18 @@ def _opp(oid, name, status="won", won="2026-07-10T12:00:00Z", assigned=None, con
             "monetaryValue": value, "contact": {"name": name, "email": "", "phone": "", "tags": [], **(contact or {})}}
 
 
-def _data(atlas=(), billing=(), opps=(), other=(), users=None):
+GHL_USERS = [{"id": PAUL_GHL, "name": "Paul Rastrelli", "email": "paul@advancedmarketers.co"},
+             {"id": "u-simon", "name": "Simon Ting", "email": "simon@advancedmarketers.co"}]
+
+
+def _roster(atlas_reps=None, ghl_users=None):
+    """The Atlas sales roster as the blend sees it. Default = the four legacy reps; Simon is a GHL user who is NOT on it."""
+    return b.Roster.from_atlas(atlas_reps if atlas_reps is not None else cfg.LEGACY_ROSTER, ghl_users if ghl_users is not None else GHL_USERS)
+
+
+def _data(atlas=(), billing=(), opps=(), other=(), users=None, roster=None):
     return {"atlas": list(atlas), "billing": list(billing), "master_opps": list(opps), "other_opps": list(other),
-            "stages": {"s-won": ("ADV - Master Pipeline", "Closed Won")},
+            "stages": {"s-won": ("ADV - Master Pipeline", "Closed Won")}, "roster": roster or _roster(),
             "ghl_users": {PAUL_GHL: "Paul Rastrelli", "u-simon": "Simon Ting", **(users or {})}}
 
 
@@ -243,3 +252,64 @@ def test_vtt_minutes_reads_last_cue_end():
 def test_same_name_needs_two_tokens_for_subset_match():
     assert b.same_name("Mike Jones", "Jones Mike") and b.same_name("Mike Jones Jr", "Mike Jones")
     assert not b.same_name("Mike", "Mike Jones")
+
+
+# ----------------------------------------------------------------- roster = Atlas's sales list
+
+def test_names_are_tidied_but_mixed_case_is_left_alone():
+    assert b.tidy_name("Chris paniagua") == "Chris Paniagua" and b.tidy_name("Mary McDonald") == "Mary McDonald"
+    assert b.tidy_name("  kyle   kellner ") == "Kyle Kellner" and b.tidy_name(None) == ""
+
+
+def test_roster_from_atlas_lowercases_emails_dedupes_and_drops_emailless_users():
+    r = b.Roster.from_atlas([{"name": "chris paniagua", "email": "Chris@AdvancedMarketers.co"},
+                             {"name": "Chris again", "email": "chris@advancedmarketers.co"}, {"name": "No Email", "email": ""}])
+    assert r.reps == [{"name": "Chris Paniagua", "email": "chris@advancedmarketers.co"}]
+
+
+def test_resolve_prefers_email_then_name_and_returns_none_for_strangers():
+    r = _roster()
+    assert r.resolve(email="KYLEKELLNER@advancedmarketers.co", name="whoever") == "Kyle Kellner"
+    assert r.resolve(name="  jaden   BASHAW ") == "Jaden Bashaw"
+    assert r.resolve(email="x@y.co", name="Nobody") is None and r.resolve() is None
+
+
+def test_ghl_users_map_to_roster_reps_by_email_then_name_and_strangers_stay_unmapped():
+    r = b.Roster.from_atlas(cfg.LEGACY_ROSTER, [
+        {"id": "g1", "name": "P. R.", "email": "paul@advancedmarketers.co"},          # email wins over a different name
+        {"id": "g2", "name": "Kyle Kellner", "email": ""},                              # name fallback
+        {"id": "g3", "name": "Simon Ting", "email": "simon@advancedmarketers.co"}])     # not on the roster
+    assert r.ghl_user_reps == {"g1": "Paul Rastrelli", "g2": "Kyle Kellner"}
+
+
+def test_a_new_rep_added_in_atlas_is_credited_at_every_tier_with_no_code_change():
+    new = {"name": "Anthony Aguilar", "email": "anthonyaguilar@advancedmarketers.co"}
+    roster = _roster(cfg.LEGACY_ROSTER + [new], GHL_USERS + [{"id": "u-ant", "name": "Anthony A", "email": "anthonyaguilar@advancedmarketers.co"}])
+    # tier 1: Atlas salesRep (email match; name casing in Atlas is irrelevant)
+    a = _atlas("Acme", "2026-07-10T20:00:00Z", salesRep={"name": "anthony aguilar", "email": "AnthonyAguilar@advancedmarketers.co"})
+    (row,) = _rows(_data(atlas=[a], roster=roster))
+    assert (row["owner"], row["owner_basis"]) == ("Anthony Aguilar", "Atlas salesRep")
+    # tier 2: GHL opp assignee, mapped by email
+    a2 = _atlas("Beta", "2026-07-10T20:00:00Z", users=[{"name": "Al", "email": "al@beta.com", "phone": ""}])
+    o = _opp("o9", "Al", assigned="u-ant", contact={"email": "al@beta.com"})
+    (row,) = _rows(_data(atlas=[a2], opps=[o], users={"u-ant": "Anthony A"}, roster=roster))
+    assert (row["owner"], row["owner_basis"]) == ("Anthony Aguilar", "GHL opp assignee")
+    # tier 3: call evidence (Zoom host resolved to the roster name by the index)
+    zoom = [{"rep": "Anthony Aguilar", "date": "2026-07-08", "min": 30, "topic": "Gamma x AM", "via": "topic"}]
+    (row,) = _rows(_data(atlas=[_atlas("Gamma", "2026-07-10T20:00:00Z")], roster=roster), _lookups(zoom=zoom))
+    assert (row["owner"], row["owner_basis"]) == ("Anthony Aguilar", "call activity (Zoom/GHL)")
+
+
+def test_there_is_no_exclusion_list_if_atlas_lists_simon_he_is_credited():
+    """Bob (2026-10-15): the Atlas endpoint is the level of truth; the old Simon/Allondra/Makayla exclusion was only for manual debug pulls."""
+    roster = _roster(cfg.LEGACY_ROSTER + [{"name": "Simon Ting", "email": "simon@advancedmarketers.co"}])
+    a = _atlas("Acme", "2026-07-10T20:00:00Z", salesRep={"name": "Simon Ting", "email": "simon@advancedmarketers.co"})
+    (row,) = _rows(_data(atlas=[a], roster=roster))
+    assert row["owner"] == "Simon Ting" and row["owner_basis"] == "Atlas salesRep"
+
+
+def test_a_rep_removed_from_the_atlas_roster_is_no_longer_credited():
+    roster = _roster([r for r in cfg.LEGACY_ROSTER if r["name"] != "Kyle Kellner"])
+    a = _atlas("Acme", "2026-07-10T20:00:00Z", salesRep={"name": "Kyle Kellner", "email": "kylekellner@advancedmarketers.co"})
+    (row,) = _rows(_data(atlas=[a], roster=roster))
+    assert row["owner"] == cfg.NEEDS_REP and "needs_rep" in row["flags"]

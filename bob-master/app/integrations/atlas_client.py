@@ -65,6 +65,16 @@ class AtlasClient:
         resp.raise_for_status()
         return resp.json().get("accounts", [])
 
+    def get_sales_reps(self) -> list[dict[str, Any]]:
+        """The sales roster (2026-10-15): active Atlas users in the sales
+        department, [{id, name, email}], via GET /api/users/sales-reps (same
+        x-api-key as /api/accounts). This endpoint IS the definition of a
+        valid sales rep for the sales audit."""
+        resp = self._client.get("/api/users/sales-reps")
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
     def set_sales_attribution(
         self, atlas_id: str, *, actor: str, sales_rep: Any = _UNSET, referral_partner: Any = _UNSET,
     ) -> dict[str, Any]:

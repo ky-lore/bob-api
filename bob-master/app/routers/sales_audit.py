@@ -84,10 +84,22 @@ def _apply_overrides(db: Session, rows: list[dict]) -> int:
     return n
 
 
+def _roster_of(data: dict) -> list[dict]:
+    """[{name, email}] for a stored run. Runs saved before the roster existed carry none -> the legacy four, which is
+    only a bridge until the first run after the roster change."""
+    return data.get("roster") or cfg.LEGACY_ROSTER
+
+
+def _latest_roster(db: Session) -> list[dict]:
+    run = db.query(SalesAuditRun).order_by(SalesAuditRun.run_at.desc()).first()
+    return _roster_of(json.loads(run.report_json) if run else {})
+
+
 def _load(db: Session, run: SalesAuditRun | None) -> dict:
     if run is None:
         return {"generated_at": None, "count": 0, "rows": [], "summary": {}, "source_errors": {}, "rules": {}}
     data = json.loads(run.report_json)
+    data["roster"] = _roster_of(data)
     data["overrides_applied"] = _apply_overrides(db, data.get("rows", []))
     return data
 
@@ -95,7 +107,7 @@ def _load(db: Session, run: SalesAuditRun | None) -> dict:
 def _page(request: Request, db: Session, run: SalesAuditRun | None) -> HTMLResponse:
     history = db.query(SalesAuditRun).order_by(SalesAuditRun.run_at.desc()).limit(30).all()
     return templates.TemplateResponse(request, "sales_audit.html", {
-        "run": run, "history": history, "data": _load(db, run), "reps": cfg.REP_NAMES,
+        "run": run, "history": history, "data": (data := _load(db, run)), "reps": [r["name"] for r in data.get("roster") or _roster_of({})],
         "needs_rep": cfg.NEEDS_REP, "admin_password": _ADMIN_OVERRIDE_PASSWORD,
         "atlas_web_base": get_settings().atlas_web_base_url.rstrip("/"),
     })
@@ -163,8 +175,9 @@ def set_deal_override(payload: _OverrideRequest, db: Session = Depends(get_db)) 
     """Upserts the single override row for a deal. A request that sets nothing
     (no owner, no type, not excluded) clears the row instead of storing an
     empty one."""
-    if payload.owner and payload.owner not in cfg.REP_NAMES:
-        raise HTTPException(status_code=422, detail=f"owner must be one of {cfg.REP_NAMES}")
+    roster_names = [r["name"] for r in _latest_roster(db)]
+    if payload.owner and payload.owner not in roster_names:
+        raise HTTPException(status_code=422, detail=f"owner must be one of the Atlas sales roster: {roster_names}")
     if payload.deal_type and payload.deal_type not in _DEAL_TYPES:
         raise HTTPException(status_code=422, detail=f"deal_type must be one of {sorted(_DEAL_TYPES)}")
 
@@ -223,8 +236,9 @@ def push_to_atlas(payload: _PushRequest, db: Session = Depends(get_db)) -> dict:
     partner = payload.referral_partner.strip() if payload.referral_partner is not None else None
     if owner is None and partner is None:
         raise HTTPException(status_code=422, detail="provide owner and/or referral_partner")
-    if owner is not None and owner not in cfg.REP_ATLAS_EMAILS:
-        raise HTTPException(status_code=422, detail=f"owner must be one of {cfg.REP_NAMES}")
+    roster = {r["name"]: r["email"] for r in _latest_roster(db)}
+    if owner is not None and owner not in roster:
+        raise HTTPException(status_code=422, detail=f"owner must be one of the Atlas sales roster: {list(roster)}")
     if partner is not None and not partner:
         raise HTTPException(status_code=422, detail="referral_partner cannot be blank")
     if payload.deal_type and payload.deal_type not in _DEAL_TYPES:
@@ -260,7 +274,7 @@ def push_to_atlas(payload: _PushRequest, db: Session = Depends(get_db)) -> dict:
 
     kwargs = {}
     if owner is not None:
-        kwargs["sales_rep"] = cfg.REP_ATLAS_EMAILS[owner]
+        kwargs["sales_rep"] = roster[owner]
     if partner is not None:
         kwargs["referral_partner"] = partner
     try:
