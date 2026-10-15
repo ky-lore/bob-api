@@ -21,6 +21,7 @@ from app.routers import (
     zoom_call_sync,
     zoom_review,
 )
+from app.sales_host import SalesHostMiddleware
 from app.scheduler import start_scheduler
 from app.tasks.daily_go_live_audit import run_daily_go_live_audit
 from app.tasks.job_tracker import get_job, start_job
@@ -54,6 +55,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Bob", lifespan=lifespan)
+app.add_middleware(SalesHostMiddleware)
 app.include_router(dashboard.router)
 app.include_router(admin.router)
 app.include_router(atlas_report.router)

@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # (<base>/admin/clients/<atlas id>) on the sales audit. Empty = links hidden. Production URL not
     # known to this repo as of 2026-10-15 (Atlas's own .env only has localhost); set ATLAS_WEB_BASE_URL.
     atlas_web_base_url: str = ""
+    # Dedicated hostname for the sales dashboard (2026-10-15): on this host "/" is the sales audit and only
+    # its routes + /health answer (see app/sales_host.py). Empty = off. Must match the Railway custom domain
+    # and Cloudflare DNS record.
+    sales_dashboard_host: str = "sales.advancedmarketers.co"
 
     # --- ClickUp ---
     clickup_api_token: str
