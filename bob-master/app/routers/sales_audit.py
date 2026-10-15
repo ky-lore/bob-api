@@ -1,0 +1,174 @@
+"""
+Sales audit dashboard routes (2026-10-15) -- "Pulse, but for sales data".
+
+Same shape as routers/atlas_report.py: POST .../run kicks a background job
+(job_tracker) and returns a job_id, GET .../run/{job_id} polls it, the
+durable result is a SalesAuditRun row, and the HTML page always renders the
+latest row (never job state), so it survives Railway redeploys.
+
+Unlike Pulse the page itself is a data grid: the whole row set is embedded
+as JSON and the sorting/filtering/search/rollups all run client-side (~130
+rows -- instant, no round trips). The server's only jobs are persistence and
+applying human overrides, which happens at render time (_apply_overrides) so a
+correction survives every daily rebuild and shows immediately.
+"""
+import json
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.db import get_db, get_session_factory
+from app.models import SalesAuditRun, SalesDealOverride
+from app.routers.atlas_report import _ADMIN_OVERRIDE_PASSWORD, _require_admin_password
+from app.tasks import sales_audit_config as cfg
+from app.tasks.job_tracker import get_job, start_job
+from app.tasks.sales_audit import run_and_store_sales_audit
+
+router = APIRouter()
+templates = Jinja2Templates(directory="app/templates")
+
+_DEAL_TYPES = {"Package", "Digital Diagnosis"}
+
+
+class _OverrideRequest(BaseModel):
+    deal_key: str
+    client_name: str
+    owner: str | None = None
+    deal_type: str | None = None
+    excluded: bool = False
+    note: str | None = None
+    set_by: str | None = None
+
+
+def _apply_overrides(db: Session, rows: list[dict]) -> int:
+    """Overlays current overrides onto a stored run's rows, in place. Returns
+    how many rows carry one. Originals are kept under `auto_*` so the drawer
+    can show what the pipeline said before the human changed it."""
+    overrides = {o.deal_key: o for o in db.query(SalesDealOverride).all()}
+    n = 0
+    for r in rows:
+        o = overrides.get(r["key"])
+        r["overridden"] = bool(o)
+        r["excluded"] = False
+        r["override_note"] = None
+        if not o:
+            continue
+        n += 1
+        r["override_note"] = o.note
+        r["excluded"] = bool(o.excluded)
+        if o.owner:
+            r["auto_owner"], r["auto_owner_basis"] = r["owner"], r["owner_basis"]
+            r["owner"], r["owner_basis"] = o.owner, "manual override"
+            r["flags"] = [f for f in r["flags"] if f != "needs_rep"]
+        if o.deal_type:
+            r["auto_type"], r["type"] = r["type"], o.deal_type
+    return n
+
+
+def _load(db: Session, run: SalesAuditRun | None) -> dict:
+    if run is None:
+        return {"generated_at": None, "count": 0, "rows": [], "summary": {}, "source_errors": {}, "rules": {}}
+    data = json.loads(run.report_json)
+    data["overrides_applied"] = _apply_overrides(db, data.get("rows", []))
+    return data
+
+
+def _page(request: Request, db: Session, run: SalesAuditRun | None) -> HTMLResponse:
+    history = db.query(SalesAuditRun).order_by(SalesAuditRun.run_at.desc()).limit(30).all()
+    return templates.TemplateResponse(request, "sales_audit.html", {
+        "run": run, "history": history, "data": _load(db, run), "reps": cfg.REP_NAMES,
+        "needs_rep": cfg.NEEDS_REP, "admin_password": _ADMIN_OVERRIDE_PASSWORD,
+    })
+
+
+@router.get("/reports/sales-audit", response_class=HTMLResponse)
+def latest_sales_audit(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    run = db.query(SalesAuditRun).order_by(SalesAuditRun.run_at.desc()).first()
+    return _page(request, db, run)
+
+
+@router.get("/reports/sales-audit/view/{run_id}", response_class=HTMLResponse)
+def sales_audit_for_run(run_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    run = db.query(SalesAuditRun).filter_by(id=run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="unknown run_id")
+    return _page(request, db, run)
+
+
+@router.get("/reports/sales-audit/latest")
+def latest_sales_audit_json(run_id: int | None = None, db: Session = Depends(get_db)) -> dict:
+    """Latest run, or a specific one via ?run_id= (the page re-fetches this
+    after an override save, including when viewing a historical run)."""
+    q = db.query(SalesAuditRun)
+    run = q.filter_by(id=run_id).first() if run_id is not None else q.order_by(SalesAuditRun.run_at.desc()).first()
+    return {"run_id": run.id if run else None, "run_at": run.run_at.isoformat() if run else None, **_load(db, run)}
+
+
+def _run_job(report_progress) -> dict:
+    db = get_session_factory()()
+    try:
+        run = run_and_store_sales_audit(db, on_progress=report_progress)
+        return {"run_id": run.id, "run_at": run.run_at.isoformat()}
+    finally:
+        db.close()
+
+
+@router.post("/reports/sales-audit/run")
+def trigger_sales_audit() -> dict:
+    job_id = start_job(lambda report_progress: _run_job(report_progress))
+    return {"job_id": job_id, "job_status": "running"}
+
+
+@router.get("/reports/sales-audit/run/{job_id}")
+def sales_audit_job_status(job_id: str) -> dict:
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    if job["status"] == "running":
+        return {"job_status": "running", "progress": job.get("progress")}
+    if job["status"] == "error":
+        return {"job_status": "error", "error": job["error"]}
+    return {"job_status": "done", **job["result"]}
+
+
+@router.post("/reports/sales-audit/overrides", dependencies=[Depends(_require_admin_password)])
+def set_deal_override(payload: _OverrideRequest, db: Session = Depends(get_db)) -> dict:
+    """Upserts the single override row for a deal. A request that sets nothing
+    (no owner, no type, not excluded) clears the row instead of storing an
+    empty one."""
+    if payload.owner and payload.owner not in cfg.REP_NAMES:
+        raise HTTPException(status_code=422, detail=f"owner must be one of {cfg.REP_NAMES}")
+    if payload.deal_type and payload.deal_type not in _DEAL_TYPES:
+        raise HTTPException(status_code=422, detail=f"deal_type must be one of {sorted(_DEAL_TYPES)}")
+
+    existing = db.query(SalesDealOverride).filter_by(deal_key=payload.deal_key).first()
+    if not (payload.owner or payload.deal_type or payload.excluded):
+        if existing:
+            db.delete(existing)
+            db.commit()
+        return {"ok": True, "cleared": bool(existing)}
+
+    now = datetime.now(timezone.utc)
+    if existing is None:
+        existing = SalesDealOverride(deal_key=payload.deal_key, created_at=now)
+        db.add(existing)
+    existing.client_name = payload.client_name
+    existing.owner = payload.owner
+    existing.deal_type = payload.deal_type
+    existing.excluded = payload.excluded
+    existing.note = payload.note
+    existing.set_by = payload.set_by
+    existing.updated_at = now
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/reports/sales-audit/overrides/{deal_key:path}", dependencies=[Depends(_require_admin_password)])
+def clear_deal_override(deal_key: str, db: Session = Depends(get_db)) -> dict:
+    deleted = db.query(SalesDealOverride).filter_by(deal_key=deal_key).delete()
+    db.commit()
+    return {"ok": True, "cleared": bool(deleted)}

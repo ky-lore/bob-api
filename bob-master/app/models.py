@@ -267,3 +267,47 @@ class AccountHealthOverride(Base):
     set_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class SalesAuditRun(Base):
+    """One row per app/tasks/sales_audit.py run (2026-10-15) -- the daily
+    sales-audit snapshot. Same durable-result convention as AtlasReportRun
+    (report_json is the whole {"rows", "summary", "source_errors", ...}
+    payload, stored verbatim; the page always reads the latest row, never
+    in-memory job state). Append-only on purpose: GHL "won" dates are
+    unreliable (a ~35-deal bulk backfill landed on 2026-06-01), so each
+    daily snapshot is what lets a deal's true first-seen date accumulate
+    from here on -- see build_sales_audit's first_seen carry-forward."""
+
+    __tablename__ = "sales_audit_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    report_json: Mapped[str] = mapped_column(Text)
+
+
+class SalesDealOverride(Base):
+    """A human's manual correction to one audited deal (2026-10-15) -- the
+    main use is assigning a rep to a "Needs rep" deal, since Simon/Allondra/
+    Makayla must never be auto-credited and nobody has said who should be.
+    Keyed on the deal's stable `key` (e.g. "atlas:<id>"), one row per deal,
+    no history -- same rudimentary-correction posture as
+    AccountHealthOverride, and the same shared-password gate (Bob's call).
+    Applied LAST, at render time, so a correction survives every daily
+    rebuild and shows up immediately without waiting for a new run. Every
+    field is optional and independent: owner (rep name), deal_type
+    ("Package"/"Digital Diagnosis"), excluded (hide from all totals -- e.g.
+    an Atlas account that isn't a real sale)."""
+
+    __tablename__ = "sales_deal_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    deal_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    client_name: Mapped[str] = mapped_column(String(255))
+    owner: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    deal_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    set_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)

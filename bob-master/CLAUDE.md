@@ -153,3 +153,32 @@ To generate a sample page locally without hitting real production data: spin up 
 - Last full Pulse run: run_id 3, 2026-09-21T23:10:42Z, 148 accounts — currently live on `/pulse`.
 - Full test suite: 306 passed, 0 failing, as of the last push.
 - No open/pending Pulse work is currently tracked — the last few requests (evidence feature → dropdown reorg → dark-mode icon fix) have all been shipped and verified.
+
+## Sales Audit — daily sales-deal dashboard (built 2026-10-15)
+
+"Pulse for sales data": a daily-refreshed, sortable/filterable/searchable grid of every sold deal, productionized from a one-off Jun–Oct 2026 audit (original scripts + brief live in `sales-audit-handoff.zip`, kept locally and deliberately NOT committed — it holds client/deal data and licensed fonts; a prototype reference only, rewrite not lift).
+
+**URL:** `/reports/sales-audit` (HTML), `/reports/sales-audit/latest[?run_id=]` (JSON, overrides applied), `POST .../run` + `GET .../run/{job_id}` (background refresh), `/view/{run_id}` (history). Cron: `sales_audit_cron = "0 5 * * *"` (Pacific via the scheduler's tz).
+
+| File | Responsibility |
+|---|---|
+| `app/tasks/sales_audit_config.py` | ALL business rules/constants (reps, event map + dates, exclusions, cutoffs). Edit rules here. |
+| `app/tasks/sales_audit_blend.py` | Pure blend (no I/O; GHL/Zoom lookups injected as `Lookups`) → one flat list of rows, `type` = Package \| Digital Diagnosis. |
+| `app/tasks/sales_audit_sources.py` | Billing-sheet reader, GHL fetch, `ZoomIndex` (reads `ZoomCallRecord`, no separate Zoom pull). |
+| `app/tasks/sales_audit.py` | Orchestrator → one `SalesAuditRun` row/day (append-only; `first_seen` carries forward). |
+| `app/routers/sales_audit.py`, `app/templates/sales_audit.html` | Routes + the grid (rows embedded as JSON; sort/filter/search/rollups are client-side; state lives in the URL hash). |
+| `SalesAuditRun`, `SalesDealOverride` (models.py) | Daily snapshot; per-deal human corrections (rep / type / exclude), applied LAST at render time so they survive every rebuild. |
+
+**Deal rules (Bob's decisions — don't re-litigate):**
+- **Atlas era = account created ≥ 2026-07-01 (Pacific day), `legacy` false** → ALWAYS a sold **Package**, never Digital Diagnosis. Close date = Atlas `createdAt`. Initial value = Atlas `billing.baseAmount` (minus $1,000 when `introPricing`), billing sheet's first charge is only a spot check (`amount_mismatch` flag). Before Jul 1 Atlas `createdAt` is NOT real: the legacy import (`importClients.js --legacy`) backdated it across Jan 15–Jun 30. June deals come from the billing sheet + GHL.
+- **Reps who count:** Paul Rastrelli, Kyle Kellner, Jaden Bashaw, Chris Paniagua. Simon Ting / Allondra Guitierrez / Makayla Hudgens are NEVER credited (their GHL assignment is ignored → call evidence → "Needs rep"); a human assigns via an override. Priority: Atlas `salesRep` (core only) → GHL assignee (core only) → most call minutes → Needs rep.
+- **Digital Diagnosis** is always its own view/table/total — never mixed with packages. DD comes from GHL only (stage-name scan across ADV Master / RAW Houston / Dispatch 01, or a won opp at $499/$500).
+- **Source:** Atlas referral partner → Event (date-gated: an event only counts if on/before close; retro-tags ignored) → Referral → Paid Ads → Organic → Inbound call → Unknown. Event dates in config are still ASSUMED (not confirmed); May 15 counts are an upper bound.
+
+**Gotchas:**
+- Atlas `/api/accounts` did NOT expose `billing`, `legacy`, or any referral field as of 2026-10-15 — Bob is adding them in the `roadmap` repo. Until then those read as absent (amounts fall back to the sheet/notes; referral falls back to GHL tags). `referralPartner` is read defensively (string or `{name}`); confirm the final field name once shipped.
+- The billing sheet holds full card numbers/CVVs in columns C–G. `GoogleDriveClient.read_sheet_columns_by_header` is a positive header allowlist (month columns + "Rentainer") and never reads anything else — do NOT swap in the blanket `read_sheet_values` (`A:Z`). Monthly cells above $50k are dropped as bad data (a card-number-shaped value was found in the prototype snapshot).
+- Zoom evidence comes from `ZoomCallRecord`: a first deploy needs a one-time `backfill_zoom_calls` back to ~Jun 2026 or early deals show no Zoom evidence. Call length is recovered from the VTT's last cue (the table has no duration).
+- Atlas + GHL-opps failure = the run raises and stores nothing (page keeps the last good run); billing-sheet/Zoom failure = soft, recorded under `source_errors` and shown as a page banner.
+- Not built yet (Phase 2): LLM synthesis (exec narrative; rep suggestions from transcripts — suggestions only, never auto-assign), persisted Atlas↔GHL↔billing id mappings, `SalesAuditConfig` as a DB table.
+- Page was verified in real Chrome against the handoff snapshot mapped into the row shape (not live prod data): sort/filter/search/overrides/mobile/XSS-escaping. First live run still needs eyeballing against the audit's known numbers (64 packages / 51 DD, ~$180.9k / $29.7k as of 2026-10-14).

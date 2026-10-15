@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     # Atlas's POST /api/pulse-runs upserts per-account rather than
     # replacing the whole stored picture.
     cmdctr_report_cron: str = "0 * * * *"
+    # 5 AM Pacific, every day (2026-10-15) -- the sales audit's full refresh
+    # (Atlas + GHL + billing sheet + Zoom index -> blend -> one SalesAuditRun).
+    # Pacific via scheduler.py's _SCHEDULE_TIMEZONE, so unlike the handoff
+    # brief's UTC cron there is no DST drift to chase in November. Runs
+    # after the 8 PM Zoom sync, so the prior day's transcripts are in.
+    sales_audit_cron: str = "0 5 * * *"
 
     # --- Debug knob (Bob, 2026-08-06) — TEMPORARY: caps the Atlas account
     # universe to a random N so a full run doesn't take minutes while the

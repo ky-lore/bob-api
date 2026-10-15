@@ -16,6 +16,7 @@ from app.routers import (
     cmdctr_report,
     dashboard,
     runs,
+    sales_audit,
     standup_action_items,
     zoom_call_sync,
     zoom_review,
@@ -63,6 +64,7 @@ app.include_router(standup_action_items.router)
 app.include_router(admin_task_create.router)
 app.include_router(cmdctr_report.router)
 app.include_router(runs.router)
+app.include_router(sales_audit.router)
 # adspend (2026-08-06) mounted under this same deployment rather than run as
 # its own Railway service -- one base URL for every consumer, current and
 # future, instead of managing several. Its code (adspend/) stays a

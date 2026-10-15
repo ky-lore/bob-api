@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.db import get_session_factory
 from app.tasks.cmdctr_report import run_and_push_cmdctr_report
 from app.tasks.daily_go_live_audit import run_daily_go_live_audit
+from app.tasks.sales_audit import run_and_store_sales_audit
 from app.tasks.zoom_call_sync import sync_zoom_calls
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,20 @@ def _run_cmdctr_report_job() -> None:
         db.close()
 
 
+def _run_sales_audit_job() -> None:
+    """Daily sales-audit refresh. A failure here (Atlas or GHL down) stores
+    nothing on purpose -- see sales_audit.py's docstring -- so the page keeps
+    yesterday's good run; the exception is logged for Railway to retain."""
+    db = get_session_factory()()
+    try:
+        run = run_and_store_sales_audit(db)
+        logger.info("sales-audit: run %s complete", run.id)
+    except Exception:
+        logger.exception("sales-audit: scheduled run failed")
+    finally:
+        db.close()
+
+
 def start_scheduler() -> BackgroundScheduler:
     settings = get_settings()
     audit_trigger = CronTrigger.from_crontab(settings.daily_go_live_audit_cron, timezone=_SCHEDULE_TIMEZONE)
@@ -74,6 +89,9 @@ def start_scheduler() -> BackgroundScheduler:
 
     cmdctr_trigger = CronTrigger.from_crontab(settings.cmdctr_report_cron, timezone=_SCHEDULE_TIMEZONE)
     _scheduler.add_job(_run_cmdctr_report_job, cmdctr_trigger, id="cmdctr-report", replace_existing=True)
+
+    sales_audit_trigger = CronTrigger.from_crontab(settings.sales_audit_cron, timezone=_SCHEDULE_TIMEZONE)
+    _scheduler.add_job(_run_sales_audit_job, sales_audit_trigger, id="sales-audit", replace_existing=True)
 
     _scheduler.start()
     return _scheduler
