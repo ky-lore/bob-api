@@ -14,9 +14,10 @@ correction survives every daily rebuild and shows immediately.
 """
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -34,6 +35,11 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 _DEAL_TYPES = {"Package", "Digital Diagnosis"}
+
+# Brand images (2026-10-15), shipped in the repo rather than hotlinked from the marketing site so the dashboard
+# can't break if that site's asset paths change. Whitelist of exact names -- never a path built from the request.
+_BRAND_DIR = Path(__file__).resolve().parent.parent / "static" / "brand"
+_BRAND_ASSETS = {"wordmark-black.png", "icon-mark-white.png", "favicon-64.png"}
 
 
 class _OverrideRequest(BaseModel):
@@ -107,6 +113,13 @@ def sales_audit_for_run(run_id: int, request: Request, db: Session = Depends(get
     if run is None:
         raise HTTPException(status_code=404, detail="unknown run_id")
     return _page(request, db, run)
+
+
+@router.get("/reports/sales-audit/assets/{name}")
+def brand_asset(name: str) -> FileResponse:
+    if name not in _BRAND_ASSETS:
+        raise HTTPException(status_code=404, detail="unknown asset")
+    return FileResponse(_BRAND_DIR / name, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/reports/sales-audit/latest")

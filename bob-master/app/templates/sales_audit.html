@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sales Audit</title>
-<link rel="icon" type="image/png" href="https://advancedmarketers.co/wp-content/uploads/2025/01/advmfav2.png">
+<title>Sales Audit · Advanced Marketers</title>
+<link rel="icon" type="image/png" href="/reports/sales-audit/assets/favicon-64.png">
 <style>
   /* Neutral shadcn-style shell (sidebar + header + bordered cards, 10px radius) on the
      data-viz palette's own surfaces/ink so charts and chrome share one set of tokens.
@@ -58,8 +58,18 @@
   .app[data-sidebar="closed"] { grid-template-columns: 0 1fr; }
   .sidebar { background: var(--sidebar); border-right: 1px solid var(--ring); position: sticky; top: 0; height: 100vh; overflow: hidden auto; display: flex; flex-direction: column; min-width: 0; }
   .app[data-sidebar="closed"] .sidebar { visibility: hidden; }
-  .brand { display: flex; align-items: center; gap: 10px; padding: 16px 16px 12px; font-weight: 600; letter-spacing: -.01em; white-space: nowrap; }
-  .brand .logo { width: 26px; height: 26px; border-radius: 7px; background: var(--ink); color: var(--page); display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+  .brand { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; padding: 20px 16px 12px; white-space: nowrap; }
+  /* Brand art is solid single-colour on transparency: the wordmark ships BLACK (inverted to white in dark mode),
+     the icon mark ships WHITE (so it only ever sits on the dark tile below). */
+  .brand-wordmark { height: 21px; width: auto; display: block; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .brand-wordmark { filter: invert(1); } }
+  :root[data-theme="dark"] .brand-wordmark { filter: invert(1); }
+  .brand-sub { font-size: 11px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+  /* compact brand shown in the header only when the sidebar (and its wordmark) is hidden */
+  .brand-tile { display: none; width: 30px; height: 30px; border-radius: 8px; background: #0b0b0b; border: 1px solid var(--ring); place-items: center; flex: none; }
+  .brand-tile img { display: block; width: 17px; height: auto; }
+  .app[data-sidebar="closed"] .brand-tile { display: grid; }
+  @media (max-width: 860px) { .brand-tile { display: grid; } }
   .nav-group { padding: 8px 10px; }
   .nav-label { font-size: 11.5px; color: var(--muted); padding: 6px 8px; font-weight: 500; }
   .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; background: none; border: none; text-align: left; padding: 7px 8px; border-radius: 8px; color: var(--ink-2); text-decoration: none; font-size: 13.5px; white-space: nowrap; }
@@ -267,6 +277,10 @@
   .bar-row.both { grid-template-columns: minmax(0, 2fr) minmax(36px, 1fr) 86px; }
   .hm.both .cell { height: 46px; flex-direction: column; gap: 0; line-height: 1.15; } .hm .cell { display: flex; align-items: center; justify-content: center; }
   .hm .cell small { display: block; font-size: 10px; opacity: .85; }
+  /* Deals screen: the same table card, full-page. The charts/tiles/rollups are Overview-only; filters stay on both. */
+  .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+  body[data-active-screen="deals"] .ov-only { display: none; }
+  body[data-active-screen="deals"] .table-card { box-shadow: 0 1px 3px rgba(0,0,0,.06); }
   .scrim { display: none; }
   @media (max-width: 1100px) { .grid-2, .grid-2b { grid-template-columns: 1fr; } .drawer { grid-template-columns: 1fr; } }
   @media (max-width: 860px) {
@@ -312,7 +326,8 @@
 
 <div class="app" id="app" data-sidebar="open">
   <aside class="sidebar" id="sidebar" aria-label="Navigation">
-    <div class="brand"><span class="logo">A</span><span>Advanced Marketers</span></div>
+    <div class="brand"><img class="brand-wordmark" src="/reports/sales-audit/assets/wordmark-black.png" alt="Advanced Marketers" width="150" height="21"><span class="brand-sub">Sales Audit</span></div>
+    <div class="nav-group"><div class="nav-label">Screens</div><div id="nav-screens"></div></div>
     <div class="nav-group"><div class="nav-label">Sales audit</div><div id="nav-views"></div></div>
     <div class="nav-group"><div class="nav-label">Queues</div><div id="nav-queues"></div></div>
     <div class="nav-group">
@@ -329,6 +344,7 @@
   <div class="main">
     <header class="header">
       <button class="icon-btn" id="sidebar-btn" type="button" aria-label="Toggle sidebar"><svg class="ic"><use href="#i-panel"/></svg></button>
+      <span class="brand-tile" aria-hidden="true"><img src="/reports/sales-audit/assets/icon-mark-white.png" alt="" width="17" height="12"></span>
       <div class="crumbs"><span>Sales</span><span>/</span><b id="crumb">Packages</b></div>
       <div class="search"><svg class="ic"><use href="#i-search"/></svg><input id="q" type="search" placeholder="Search deals…" aria-label="Search deals" autocomplete="off"><kbd>/</kbd></div>
       <button class="icon-btn" id="theme-btn" type="button" aria-label="Toggle theme"><svg class="ic"><use href="#i-sun"/></svg></button>
@@ -336,7 +352,7 @@
     </header>
 
     <main class="content">
-      <div><h1>Sales Audit</h1><p class="sub" id="dek"></p></div>
+      <div class="page-head"><div><h1 id="page-h1">Sales Audit</h1><p class="sub" id="dek"></p></div><div class="tabs" id="screen-tabs" role="group" aria-label="Screen"></div></div>
       {% if data.source_errors %}
         <div class="banner" role="status"><strong>Some sources failed on this run:</strong>
           {% for k, v in data.source_errors.items() %} {{ k }} — {{ v }}{% if not loop.last %}; {% endif %}{% endfor %}.
@@ -359,9 +375,9 @@
         <div class="fp-group fp-signals"><div class="fp-title">Signals</div><div class="fp-body" id="flag-chips"></div></div>
       </section>
 
-      <section class="tiles" id="tiles" aria-label="Key figures"></section>
+      <section class="tiles ov-only" id="tiles" aria-label="Key figures"></section>
 
-      <section class="grid-2">
+      <section class="grid-2 ov-only">
         <div class="card">
           <div class="card-head">
             <div><div class="card-title" id="trend-title">Closed per week</div><div class="card-desc" id="trend-desc"></div></div>
@@ -378,7 +394,7 @@
         </div>
       </section>
 
-      <section class="grid-2b">
+      <section class="grid-2b ov-only">
         <div class="card">
           <div class="card-head"><div><div class="card-title">Rep × month</div><div class="card-desc">Who closed what, when · click a cell to filter</div></div></div>
           <div class="card-body"><div id="heat"></div><div class="ramp"><span>fewer</span><i></i><span>more</span></div></div>
@@ -474,8 +490,8 @@
   };
   var SOFT_FLAGS = ['estimated_date', 'onboarding_incomplete'];
   // Atlas account status (client.clientStatus). In-progress stages are neutral; the others carry reserved status colours + an icon.
-  var STAGES = { closed: ['Closed', 'critical', 'x'], at_risk: ['At risk', 'serious', 'alert'], onboarding: ['Onboarding', '', 'clock'], development: ['Development', '', 'wrench'], qa: ['QA', '', 'wrench'], active: ['Active', '', 'check'], live: ['Live', 'good', 'check'] };
-  // 'qa' and 'active' exist in live Atlas data but not in its documented enum; deliberately NEUTRAL (no health colour) until their meaning is confirmed.
+  var STAGES = { closed: ['Closed', 'critical', 'x'], at_risk: ['At risk', 'serious', 'alert'], onboarding: ['Onboarding', '', 'clock'], development: ['Development', '', 'wrench'], qa: ['QA', 'good', 'wrench'], active: ['Active', 'good', 'check'], live: ['Live', 'good', 'check'] };
+  // 'qa' and 'active' exist in live Atlas data but not in its documented enum; Bob (2026-10-15): both are healthy, shown GREEN like Live.
   var STAGE_ORDER = ['live', 'active', 'onboarding', 'development', 'qa', 'at_risk', 'closed'];
   var STAGE_RANK = { closed: 0, at_risk: 1, onboarding: 2, development: 3, qa: 4, active: 5, live: 6, unknown: 7, none: 8 };
   var STAGE_VAR = { good: 'var(--st-good)', serious: 'var(--st-serious)', critical: 'var(--st-critical)', '': 'var(--muted)' };
@@ -489,7 +505,7 @@
   var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
   /* ---- state (URL hash keeps a filtered view shareable) ----------------- */
-  var DEFAULTS = { view: 'Package', q: '', from: '', to: '', preset: 'all', months: [], reps: [], sources: [], events: [], flags: [], stages: [], tab: 'all',
+  var DEFAULTS = { screen: 'overview', view: 'Package', q: '', from: '', to: '', preset: 'all', months: [], reps: [], sources: [], events: [], flags: [], stages: [], tab: 'all',
                    showExcluded: false, sort: { k: 'date', d: -1 }, metric: 'count', tmode: 'total', tview: 'chart', repOpen: [], open: null, page: 0, size: 25 };
   var S = JSON.parse(JSON.stringify(DEFAULTS));
   try { var h = location.hash.slice(1); if (h) Object.assign(S, JSON.parse(decodeURIComponent(h))); } catch (e) {}
@@ -569,6 +585,13 @@
   }
 
   /* ---- sidebar nav -------------------------------------------------------- */
+  function renderScreens() {
+    document.body.setAttribute('data-active-screen', S.screen);
+    var n = counted(inView()).length, defs = [['overview', 'Overview', 'chart'], ['deals', 'Deals', 'table']];
+    $('screen-tabs').innerHTML = defs.map(function (d) { return '<button type="button" data-screen-go="' + d[0] + '" aria-pressed="' + (S.screen === d[0]) + '">' + d[1] + (d[0] === 'deals' ? '<span class="n">' + n + '</span>' : '') + '</button>'; }).join('');
+    $('nav-screens').innerHTML = defs.map(function (d) { return '<button type="button" class="nav-item" data-screen-go="' + d[0] + '" aria-pressed="' + (S.screen === d[0]) + '">' + ic(d[2]) + d[1] + (d[0] === 'deals' ? '<span class="n">' + n + '</span>' : '') + '</button>'; }).join('');
+    $('page-h1').textContent = S.screen === 'deals' ? 'Deals' : 'Sales Audit';
+  }
   function renderNav() {
     document.body.setAttribute('data-active-view', S.view);
     $('nav-views').innerHTML = VIEWS.map(function (v) {
@@ -580,7 +603,7 @@
       '<button type="button" class="nav-item" data-tab-nav="risk" aria-pressed="' + (S.tab === 'risk') + '">' + ic('alert') + 'Retention risk<span class="n">' + risk + '</span></button>' +
       '<button type="button" class="nav-item" data-tab-nav="needs" aria-pressed="' + (S.tab === 'needs') + '">' + ic('alert') + 'Needs rep<span class="n">' + needs + '</span></button>' +
       '<button type="button" class="nav-item" data-tab-nav="flagged" aria-pressed="' + (S.tab === 'flagged') + '">' + ic('flag') + 'Flagged<span class="n">' + fl + '</span></button>';
-    $('crumb').textContent = (VIEWS.filter(function (v) { return v.key === S.view; })[0] || {}).label || '';
+    $('crumb').textContent = (S.screen === 'deals' ? 'Deals' : 'Overview') + ' · ' + ((VIEWS.filter(function (v) { return v.key === S.view; })[0] || {}).label || '');
   }
 
   /* ---- stat tiles: value, period delta, sparkline / meter ----------------- */
@@ -912,7 +935,7 @@
   }
 
   /* ---- render + actions --------------------------------------------------------- */
-  function renderAll() { persist(); renderNav(); renderTiles(); renderFilters(); renderTrend(); renderSources(); renderStages(); renderHeat(); renderReps(); renderTabs(); renderTable(); }
+  function renderAll() { persist(); renderScreens(); renderNav(); renderTiles(); renderFilters(); renderTrend(); renderSources(); renderStages(); renderHeat(); renderReps(); renderTabs(); renderTable(); }
   function who() { var n = ''; try { n = localStorage.getItem('salesAuditName') || ''; } catch (e) {} if (!n) { n = (prompt('Your name, for the change log:') || '').trim(); if (n) { try { localStorage.setItem('salesAuditName', n); } catch (e) {} } } return n || null; }
   function reload() { return fetch('/reports/sales-audit/latest' + (IS_LATEST ? '' : '?run_id=' + RUN_ID)).then(function (r) { return r.json(); }).then(function (j) { ROWS = j.rows; renderAll(); }); }
   function saveOverride(key, body, statusEl) {
@@ -930,13 +953,14 @@
       .then(function (j) { if (!j.pushed) alert('Saved here, but Atlas was NOT updated:\n' + j.error + '\n\nThe change stays local until it is pushed again.'); return reload(); })
       .catch(function (e) { alert('Could not push: ' + e.message); });
   }
-  function resetFilters() { var keep = { view: S.view, sort: S.sort, metric: S.metric, tmode: S.tmode, tview: S.tview, size: S.size }; S = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), keep); $('q').value = ''; renderAll(); }
+  function resetFilters() { var keep = { screen: S.screen, view: S.view, sort: S.sort, metric: S.metric, tmode: S.tmode, tview: S.tview, size: S.size }; S = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), keep); $('q').value = ''; renderAll(); }
 
   document.addEventListener('click', function (e) {
-    var t = e.target.closest('[data-view],[data-tab-nav],[data-tab],[data-preset],[data-rep],[data-flag],[data-stage-f],[data-month],[data-hm-rep],[data-repbar],[data-source],[data-event],[data-twisty],[data-open],[data-metric],[data-tmode],[data-tview],[data-sort],[data-page],[data-reset],[data-clear],tr.row');
+    var t = e.target.closest('[data-screen-go],[data-view],[data-tab-nav],[data-tab],[data-preset],[data-rep],[data-flag],[data-stage-f],[data-month],[data-hm-rep],[data-repbar],[data-source],[data-event],[data-twisty],[data-open],[data-metric],[data-tmode],[data-tview],[data-sort],[data-page],[data-reset],[data-clear],tr.row');
     if (!t) return;
     var keepPage = false;
-    if (t.dataset.view) { S.view = t.dataset.view; S.open = null; S.events = []; S.sources = []; S.tab = 'all'; }
+    if (t.dataset.screenGo) { S.screen = t.dataset.screenGo; S.open = null; }
+    else if (t.dataset.view) { S.view = t.dataset.view; S.open = null; S.events = []; S.sources = []; S.tab = 'all'; }
     else if (t.dataset.tabNav) { S.tab = S.tab === t.dataset.tabNav ? 'all' : t.dataset.tabNav; }
     else if (t.dataset.tab) S.tab = t.dataset.tab;
     else if (t.dataset.preset) { S.preset = t.dataset.preset; applyPreset(); }

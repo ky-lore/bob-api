@@ -265,3 +265,28 @@ def test_page_ships_the_filter_panel_measure_both_and_atlas_status_hooks(tmp_pat
     for marker in ('class="filter-panel"', 'id="stage-chips"', 'data-metric="both"', 'data-tab-nav="risk"', 'id="stages"', "--st-good: #0ca30c"):
         assert marker in html, marker
     assert html.count('class="fp-group') == 5           # Date range, Rep, Measure, Atlas status, Signals
+
+
+# ------------------------------------------------------------------ brand assets
+
+def test_brand_assets_are_real_pngs_with_caching_and_only_the_whitelisted_names(tmp_path):
+    client, _ = _setup(tmp_path, rows=[_row("atlas:1")])
+    for name in ("wordmark-black.png", "icon-mark-white.png", "favicon-64.png"):
+        r = client.get(f"/reports/sales-audit/assets/{name}")
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png", name
+        assert r.content[:8] == b"\x89PNG\r\n\x1a\n" and len(r.content) > 500, name
+        assert "max-age" in r.headers["cache-control"]
+    for bad in ("secret.png", "..%2F..%2Fconfig.py", "%2e%2e%2f%2e%2e%2fapp%2fconfig.py", "wordmark-black.png.bak", "WORDMARK-BLACK.PNG"):
+        assert client.get(f"/reports/sales-audit/assets/{bad}").status_code == 404, bad
+    assert client.get("/reports/sales-audit/assets/../../app/config.py").status_code in (404, 307)   # client-normalised; never a 200
+
+
+def test_page_is_branded_and_has_the_deals_screen_hooks(tmp_path):
+    client, _ = _setup(tmp_path, rows=[_row("atlas:1")])
+    html = client.get("/reports/sales-audit").text
+    for marker in ("/reports/sales-audit/assets/wordmark-black.png", "/reports/sales-audit/assets/icon-mark-white.png",
+                   'href="/reports/sales-audit/assets/favicon-64.png"', "Sales Audit · Advanced Marketers",
+                   'id="screen-tabs"', 'id="nav-screens"', "ov-only", "data-screen-go"):
+        assert marker in html, marker
+    assert "advmfav2.png" not in html          # no more hotlinking the marketing site
+    assert "qa: ['QA', 'good'" in html and "active: ['Active', 'good'" in html

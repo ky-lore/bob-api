@@ -101,3 +101,8 @@ def test_empty_setting_turns_the_feature_off(tmp_path, monkeypatch):
 
     assert TestClient(app).get("/", headers={"host": SALES}).json() == {"app": "bob-root"}
     get_settings.cache_clear()
+
+
+def test_brand_images_load_on_the_sales_host(client):
+    r = _get(client, "/reports/sales-audit/assets/wordmark-black.png", SALES)
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
