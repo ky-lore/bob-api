@@ -135,3 +135,11 @@ def test_access_token_is_sent_via_authorization_header_not_query_param(monkeypat
     for r in fake.requests:
         assert r["headers"]["Authorization"] == "Bearer x"
         assert "access_token" not in (r["params"] or {})
+
+
+def test_normalize_ad_account_id_adds_missing_act_prefix():
+    from adspend.meta_ads_client import _normalize_ad_account_id
+
+    assert _normalize_ad_account_id("1434182596437650") == "act_1434182596437650"
+    assert _normalize_ad_account_id("act_1434182596437650") == "act_1434182596437650"
+    assert _normalize_ad_account_id(" 1434182596437650 ") == "act_1434182596437650"

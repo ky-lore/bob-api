@@ -76,6 +76,14 @@ def _build_date_params(date_range: str) -> dict[str, str]:
     return {"time_range": f'{{"since":"{start.isoformat()}","until":"{end.isoformat()}"}}'}
 
 
+
+def _normalize_ad_account_id(ad_account_id: str) -> str:
+    """Atlas's metaAdAccountId is USUALLY "act_"-prefixed, but some accounts
+    have the bare numeric ID (2026-11-12: 11 of ~60 Meta accounts), which
+    Graph rejects with a 400. Accept either."""
+    ad_account_id = ad_account_id.strip()
+    return ad_account_id if ad_account_id.startswith("act_") else f"act_{ad_account_id}"
+
 class MetaAdsClient:
     def __init__(self) -> None:
         self._settings = get_settings()
@@ -103,6 +111,7 @@ class MetaAdsClient:
         — lets daily_go_live_audit.py and ads_off_classification.py treat
         both platforms' results identically."""
         date_params = _build_date_params(date_range)
+        ad_account_id = _normalize_ad_account_id(ad_account_id)
 
         campaigns_list = self._get(f"{ad_account_id}/campaigns", {
             "fields": "id,name,status,effective_status,objective",
