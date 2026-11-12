@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     # brief's UTC cron there is no DST drift to chase in November. Runs
     # after the 8 PM Zoom sync, so the prior day's transcripts are in.
     sales_audit_cron: str = "0 5 * * *"
+    # 4 AM Pacific, every day (Bob, 2026-11-12) -- pushes rolling-30-day
+    # Google + Meta spend into Atlas (app/tasks/atlas_campaign_push.py).
+    # Promoted from manual-trigger only: Atlas's spend figures went stale
+    # whenever nobody remembered to fire it. The window ends yesterday, so
+    # more than once a day mostly re-sends the same numbers.
+    atlas_campaign_push_cron: str = "0 4 * * *"
 
     # --- Debug knob (Bob, 2026-08-06) — TEMPORARY: caps the Atlas account
     # universe to a random N so a full run doesn't take minutes while the

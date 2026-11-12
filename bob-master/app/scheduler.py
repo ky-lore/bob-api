@@ -6,6 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.config import get_settings
 from app.db import get_session_factory
+from app.tasks.atlas_campaign_push import push_campaign_spend
 from app.tasks.cmdctr_report import run_and_push_cmdctr_report
 from app.tasks.daily_go_live_audit import run_daily_go_live_audit
 from app.tasks.sales_audit import run_and_store_sales_audit
@@ -79,6 +80,23 @@ def _run_sales_audit_job() -> None:
         db.close()
 
 
+def _run_atlas_campaign_push_job() -> None:
+    """Daily ad-spend push into Atlas. push_campaign_spend already records
+    per-(account, platform) failures in its results instead of raising, so
+    one bad ad account doesn't block the rest; failures are logged here."""
+    try:
+        results = push_campaign_spend(dry_run=False)
+        failed = [r for r in results if not r["ok"]]
+        logger.info("atlas-campaign-push: %d pushed, %d failed", len(results) - len(failed), len(failed))
+        for r in failed:
+            logger.warning(
+                "atlas-campaign-push: %s (%s) %s -- %s",
+                r["company_name"], r["atlas_id"], r["platform"], r["error"],
+            )
+    except Exception:
+        logger.exception("atlas-campaign-push: scheduled run failed")
+
+
 def start_scheduler() -> BackgroundScheduler:
     settings = get_settings()
     audit_trigger = CronTrigger.from_crontab(settings.daily_go_live_audit_cron, timezone=_SCHEDULE_TIMEZONE)
@@ -92,6 +110,9 @@ def start_scheduler() -> BackgroundScheduler:
 
     sales_audit_trigger = CronTrigger.from_crontab(settings.sales_audit_cron, timezone=_SCHEDULE_TIMEZONE)
     _scheduler.add_job(_run_sales_audit_job, sales_audit_trigger, id="sales-audit", replace_existing=True)
+
+    push_trigger = CronTrigger.from_crontab(settings.atlas_campaign_push_cron, timezone=_SCHEDULE_TIMEZONE)
+    _scheduler.add_job(_run_atlas_campaign_push_job, push_trigger, id="atlas-campaign-push", replace_existing=True)
 
     _scheduler.start()
     return _scheduler

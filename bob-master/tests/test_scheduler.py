@@ -33,6 +33,7 @@ class _FakeSettings:
     zoom_call_sync_cron = "0 20 * * *"
     cmdctr_report_cron = "0 * * * *"
     sales_audit_cron = "0 5 * * *"
+    atlas_campaign_push_cron = "0 4 * * *"
 
 
 def test_start_scheduler_registers_all_jobs_with_configured_crontabs(monkeypatch):
@@ -43,7 +44,9 @@ def test_start_scheduler_registers_all_jobs_with_configured_crontabs(monkeypatch
     mod.start_scheduler()
 
     job_ids = {job.id for job in mod._scheduler.get_jobs()}
-    assert job_ids == {"daily-go-live-audit", "zoom-call-sync", "cmdctr-report", "sales-audit"}
+    assert job_ids == {
+        "daily-go-live-audit", "zoom-call-sync", "cmdctr-report", "sales-audit", "atlas-campaign-push",
+    }
 
     zoom_job = mod._scheduler.get_job("zoom-call-sync")
     assert str(zoom_job.trigger.timezone) == "America/Los_Angeles"
@@ -53,6 +56,9 @@ def test_start_scheduler_registers_all_jobs_with_configured_crontabs(monkeypatch
 
     sales_job = mod._scheduler.get_job("sales-audit")
     assert str(sales_job.trigger.timezone) == "America/Los_Angeles"
+
+    push_job = mod._scheduler.get_job("atlas-campaign-push")
+    assert str(push_job.trigger.timezone) == "America/Los_Angeles"
 
 
 def test_zoom_call_sync_job_uses_its_own_session_and_closes_it(monkeypatch):
@@ -133,3 +139,35 @@ def test_sales_audit_job_logs_and_swallows_a_failure(monkeypatch, caplog):
 
     assert _FakeDb.closed is True
     assert any("sales-audit" in r.message for r in caplog.records)
+
+
+def test_atlas_campaign_push_job_pushes_for_real_and_logs_failures(monkeypatch, caplog):
+    calls = []
+
+    def _fake_push(dry_run=True, limit=None):
+        calls.append(dry_run)
+        return [
+            {"atlas_id": "a1", "company_name": "Acme", "platform": "google", "ok": True, "error": None},
+            {"atlas_id": "a2", "company_name": "Beta", "platform": "meta", "ok": False, "error": "spend pull failed: x"},
+        ]
+
+    monkeypatch.setattr(mod, "push_campaign_spend", _fake_push)
+
+    with caplog.at_level(logging.INFO):
+        mod._run_atlas_campaign_push_job()
+
+    assert calls == [False]
+    assert any("1 pushed, 1 failed" in r.message for r in caplog.records)
+    assert any("Beta" in r.message and r.levelno == logging.WARNING for r in caplog.records)
+
+
+def test_atlas_campaign_push_job_logs_and_swallows_a_failure(monkeypatch, caplog):
+    def _boom(dry_run=True, limit=None):
+        raise RuntimeError("atlas is down")
+
+    monkeypatch.setattr(mod, "push_campaign_spend", _boom)
+
+    with caplog.at_level(logging.ERROR):
+        mod._run_atlas_campaign_push_job()  # must not raise
+
+    assert any("atlas-campaign-push" in r.message for r in caplog.records)

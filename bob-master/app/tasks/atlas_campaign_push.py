@@ -9,9 +9,9 @@ sample payload Atlas's team provided (2026-09-02):
      "capturedAt": <ISO8601 UTC>, "summary": {spend, currency, impressions,
      clicks, conversions, periodStart, periodEnd}, "campaigns": [...]}
 
-Manual-trigger only for now (see app/routers/atlas_campaign_push.py) -- this
-is bob-master's first-ever WRITE into a live external system Atlas itself
-serves execs from, so it doesn't run on the unattended daily cron yet.
+Runs daily via the scheduler (Settings.atlas_campaign_push_cron, since
+2026-11-12; manual-trigger only before that) and can still be fired on
+demand through app/routers/atlas_campaign_push.py.
 
 Reporting window is a rolling 30 days ending yesterday (_PUSH_WINDOW_DAYS),
 not a calendar month like the sample's Aug 1-31 example -- that specific

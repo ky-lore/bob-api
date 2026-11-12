@@ -1,10 +1,8 @@
 """
 Manual-trigger endpoint for pushing real campaign spend (Google Ads + Meta)
-INTO Atlas -- see app/tasks/atlas_campaign_push.py. Manual-trigger only for
-now (Bob, 2026-09-02): this is bob-master's first-ever write into a live
-external system Atlas itself serves execs from, so nothing here runs on the
-unattended daily cron yet -- review a real (or dry-run) trigger's output
-first. Same job_id/poll shape as the daily-go-live-audit trigger (see
+INTO Atlas -- see app/tasks/atlas_campaign_push.py. The same push also runs
+daily on the scheduler (Settings.atlas_campaign_push_cron, 2026-11-12); this
+endpoint is for on-demand runs. Same job_id/poll shape as the daily-go-live-audit trigger (see
 app/main.py, app/tasks/job_tracker.py) since a full run over every account
 can take a while. dry_run defaults to True -- a bare POST with no query
 params never writes to Atlas.
