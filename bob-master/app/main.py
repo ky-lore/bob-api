@@ -13,6 +13,7 @@ from app.routers import (
     admin_task_create,
     atlas_campaign_push,
     atlas_report,
+    clickup_webhook,
     cmdctr_report,
     dashboard,
     runs,
@@ -73,6 +74,7 @@ app.include_router(admin_task_create.router)
 app.include_router(cmdctr_report.router)
 app.include_router(runs.router)
 app.include_router(sales_audit.router)
+app.include_router(clickup_webhook.router)
 # adspend (2026-08-06) mounted under this same deployment rather than run as
 # its own Railway service -- one base URL for every consumer, current and
 # future, instead of managing several. Its code (adspend/) stays a

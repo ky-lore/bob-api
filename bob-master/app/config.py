@@ -43,11 +43,17 @@ class Settings(BaseSettings):
     clickup_api_token: str
     clickup_base_url: str = "https://api.clickup.com/api/v2"
     clickup_workspace_id: str = "10552018"
+    clickup_am_delivery_space_id: str = "90147058709"   # "🚀 AM Delivery 2.0" -- one folder per client
     clickup_go_live_list_id: str = "901417990784"       # "Go-Live Pipeline (last 90 days)"
     clickup_web_build_list_id: str = "901413623955"
     clickup_retention_list_id: str = "901417897821"     # current — see known drift re: old ID below
     clickup_retention_list_id_deprecated: str = "901417799940"  # do NOT use; drift artifact only
     clickup_chris_action_items_list_id: str = "901417226802"
+    # Task created / task completed -> Slack (2026-11-23, Bob). The webhook is registered on the AM Delivery 2.0
+    # space (scripts/register_clickup_webhook.py); ClickUp returns a per-webhook signing secret at registration,
+    # which goes ONLY in the Railway env as CLICKUP_WEBHOOK_SECRET. Unset = the receiver rejects every call (503).
+    clickup_webhook_secret: str | None = None
+    clickup_notify_space_id: str = "90147058709"        # "🚀 AM Delivery 2.0"
 
     # --- Slack ---
     slack_bot_token: str

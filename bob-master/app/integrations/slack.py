@@ -51,6 +51,19 @@ class SlackClient:
         channel_id = dm["channel"]["id"]
         return self._client.chat_postMessage(channel=channel_id, text=text)
 
+    def post_message(self, channel_id: str, text: str) -> dict[str, Any]:
+        """Plain mrkdwn post as the bot. Link unfurls off -- a ClickUp task
+        link would otherwise expand into a large card on every notification."""
+        return self._client.chat_postMessage(
+            channel=channel_id, text=text, unfurl_links=False, unfurl_media=False,
+        )
+
+    def get_channel_name(self, channel_id: str) -> str | None:
+        try:
+            return self._client.conversations_info(channel=channel_id)["channel"]["name"]
+        except Exception:
+            return None
+
     def list_channels(self, *, types: str = "public_channel,private_channel") -> list[dict[str, Any]]:
         channels: list[dict[str, Any]] = []
         cursor: str | None = None
