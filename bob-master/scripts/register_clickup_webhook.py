@@ -14,6 +14,9 @@ suspend the webhook; set the variable promptly after creating.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import get_settings
 from app.integrations.clickup import ClickUpClient

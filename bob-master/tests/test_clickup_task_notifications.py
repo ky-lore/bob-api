@@ -61,7 +61,7 @@ class FakeSlack:
     def get_channel_name(self, cid):
         return self.names.get(cid)
 
-    def list_channels(self):
+    def list_channels(self, **kwargs):
         return self.channels
 
     def post_message(self, channel, text):

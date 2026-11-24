@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -25,6 +26,7 @@ from app.routers import (
 from app.sales_access import SalesAccessMiddleware, enabled as sales_gate_enabled
 from app.sales_host import SalesHostMiddleware
 from app.scheduler import start_scheduler
+from app.tasks.clickup_task_notifications import warm_channel_index
 from app.tasks.daily_go_live_audit import run_daily_go_live_audit
 from app.tasks.job_tracker import get_job, start_job
 
@@ -54,6 +56,7 @@ async def lifespan(app: FastAPI):
         logger.warning("sales dashboard access-password gate is OFF (SALES_DASHBOARD_PASSWORD is not set)")
     init_db()
     start_scheduler()
+    threading.Thread(target=warm_channel_index, daemon=True).start()
     yield
     logger.info("Bob shutting down")
 

@@ -53,6 +53,7 @@ _DEDUPE_MAX = 2000
 class _Cache:
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.fetch_lock = threading.Lock()
         self.accounts: tuple[float, list[dict[str, Any]]] | None = None
         self.channels: tuple[float, dict[str, str]] | None = None
         self.seen: OrderedDict[str, None] = OrderedDict()
@@ -152,23 +153,41 @@ def _accounts(atlas: Any) -> list[dict[str, Any]]:
 
 
 def _channel_index(slack: Any, *, refresh: bool = False) -> dict[str, str]:
-    with _cache.lock:
-        if _cache.channels:
-            age = time.time() - _cache.channels[0]
-            # A forced refresh (lookup miss) is throttled: most clients have no
-            # internal channel at all, and re-listing 750+ channels on every
-            # one of their task events would burn Slack's rate limit.
-            if age < (_CHANNELS_MIN_REFRESH if refresh else _CHANNELS_TTL):
-                return _cache.channels[1]
-    # Keyed by NORMALIZED name (lowercase alnum only) so old-style
-    # "internal-cambria_windows" and new-style "internal-c3-sewer-and-drains"
-    # match the same way; oldest first so the newest channel wins a collision
-    # (e.g. internal-sky_clean_air vs internal-sky-clean-air).
-    rows = sorted((c for c in slack.list_channels() if not c.get("is_archived")), key=lambda c: c.get("created") or 0)
-    index = {_norm(c["name"]): c["id"] for c in rows}
-    with _cache.lock:
-        _cache.channels = (time.time(), index)
-    return index
+    # Single-flight: conversations.list is Slack Tier 2 (~20/min). Concurrent
+    # webhook deliveries on a cold cache each listing the whole workspace hit
+    # 429s and stalled for minutes (seen live 2026-11-23) -- so one fetch at a
+    # time, and everyone else waits for and reuses its result.
+    with _cache.fetch_lock:
+        with _cache.lock:
+            if _cache.channels:
+                age = time.time() - _cache.channels[0]
+                # A forced refresh (lookup miss) is throttled: most clients have no
+                # internal channel at all, and re-listing on every one of their
+                # task events would burn Slack's rate limit.
+                if age < (_CHANNELS_MIN_REFRESH if refresh else _CHANNELS_TTL):
+                    return _cache.channels[1]
+        # Keyed by NORMALIZED name (lowercase alnum only) so old-style
+        # "internal-cambria_windows" and new-style "internal-c3-sewer-and-drains"
+        # match the same way; oldest first so the newest channel wins a collision
+        # (e.g. internal-sky_clean_air vs internal-sky-clean-air). Archived
+        # channels are excluded server-side (~580 of the public ones), and 1000
+        # per page keeps the whole workspace to about one call.
+        rows = sorted(slack.list_channels(exclude_archived=True, limit=1000), key=lambda c: c.get("created") or 0)
+        index = {_norm(c["name"]): c["id"] for c in rows if not c.get("is_archived")}
+        with _cache.lock:
+            _cache.channels = (time.time(), index)
+        return index
+
+
+def warm_channel_index() -> None:
+    """Called once at startup on a background thread so the first webhook
+    delivery after a deploy doesn't pay for the listing."""
+    try:
+        from app.integrations.slack import SlackClient
+
+        _channel_index(SlackClient())
+    except Exception:
+        logger.exception("clickup notify: channel index warm-up failed")
 
 
 def _norm(name: str | None) -> str:

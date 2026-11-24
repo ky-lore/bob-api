@@ -64,11 +64,16 @@ class SlackClient:
         except Exception:
             return None
 
-    def list_channels(self, *, types: str = "public_channel,private_channel") -> list[dict[str, Any]]:
+    def list_channels(
+        self, *, types: str = "public_channel,private_channel", exclude_archived: bool = False, limit: int = 200,
+    ) -> list[dict[str, Any]]:
         channels: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
-            resp = self._client.conversations_list(types=types, cursor=cursor, limit=200)
+            kwargs: dict[str, Any] = {"types": types, "cursor": cursor, "limit": limit}
+            if exclude_archived:
+                kwargs["exclude_archived"] = True
+            resp = self._client.conversations_list(**kwargs)
             channels.extend(resp["channels"])
             cursor = resp.get("response_metadata", {}).get("next_cursor")
             if not cursor:
